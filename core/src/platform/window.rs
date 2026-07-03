@@ -48,7 +48,7 @@ impl Window {
                 height,
                 None,
                 None,
-                hinstance,
+                Some(hinstance),
                 None,
             )?;
 
@@ -89,7 +89,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 if let Some(state) = state_ptr(hwnd).as_mut() {
                     state.renderer.render();
                 }
-                let _ = ValidateRect(hwnd, None);
+                let _ = ValidateRect(Some(hwnd), None);
                 LRESULT(0)
             }
 
