@@ -102,7 +102,7 @@ impl Renderer {
         unsafe {
             if let Some(rtv) = &self.rtv {
                 let clear_color: [f32; 4] = [0.06, 0.06, 0.07, 1.0];
-                self.context.ClearRenderTargetView(rtv, clear_color.as_ptr());
+                self.context.ClearRenderTargetView(rtv, &clear_color);
             }
             let _ = self.swap_chain.Present(1, DXGI_PRESENT(0));
         }

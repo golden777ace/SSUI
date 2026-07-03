@@ -1,7 +1,7 @@
 use std::sync::Once;
 use windows::core::*;
 use windows::Win32::Foundation::*;
-use windows::Win32::Graphics::Gdi::ValidateRect;
+use windows::Win32::Graphics::Gdi::{UpdateWindow, ValidateRect};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use crate::render::Renderer;
@@ -20,13 +20,14 @@ impl Window {
     pub fn new(title: &str, width: i32, height: i32) -> Result<Self> {
         unsafe {
             let instance = GetModuleHandleW(None)?;
+            let hinstance: HINSTANCE = instance.into();
             let class_name = w!("SSUI.Window");
 
             REGISTER_CLASS.call_once(|| {
                 let wc = WNDCLASSW {
                     style: CS_HREDRAW | CS_VREDRAW,
                     lpfnWndProc: Some(wndproc),
-                    hInstance: instance.into(),
+                    hInstance: hinstance,
                     hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
                     lpszClassName: class_name,
                     ..Default::default()
@@ -47,7 +48,7 @@ impl Window {
                 height,
                 None,
                 None,
-                Some(instance.into()),
+                hinstance,
                 None,
             )?;
 
