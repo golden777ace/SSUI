@@ -8,19 +8,16 @@ use windows::Win32::Graphics::DirectWrite::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::Win32::Graphics::Dxgi::*;
 
+use super::canvas::Canvas;
+use super::types::{Color, Rect};
+
 pub struct Renderer {
     swap_chain: IDXGISwapChain1,
     context: ID2D1DeviceContext,
     rt: ID2D1RenderTarget,
     target: Option<ID2D1Bitmap1>,
-    brush_panel: ID2D1SolidColorBrush,
-    brush_text: ID2D1SolidColorBrush,
     text_format: IDWriteTextFormat,
     text: Vec<u16>,
-}
-
-fn color(r: f32, g: f32, b: f32, a: f32) -> D2D1_COLOR_F {
-    D2D1_COLOR_F { r, g, b, a }
 }
 
 impl Renderer {
@@ -87,11 +84,6 @@ impl Renderer {
                 w!("en-us"),
             )?;
 
-            let brush_panel =
-                rt.CreateSolidColorBrush(&color(0.14, 0.15, 0.18, 1.0), None)?;
-            let brush_text =
-                rt.CreateSolidColorBrush(&color(0.95, 0.96, 0.98, 1.0), None)?;
-
             let text: Vec<u16> = "Hello, SSUI".encode_utf16().collect();
 
             let mut renderer = Renderer {
@@ -99,8 +91,6 @@ impl Renderer {
                 context,
                 rt,
                 target: None,
-                brush_panel,
-                brush_text,
                 text_format,
                 text,
             };
@@ -154,35 +144,23 @@ impl Renderer {
     pub fn render(&mut self) {
         unsafe {
             self.rt.BeginDraw();
-            self.rt.Clear(Some(&color(0.06, 0.06, 0.07, 1.0)));
-
-            let rrect = D2D1_ROUNDED_RECT {
-                rect: D2D_RECT_F {
-                    left: 40.0,
-                    top: 40.0,
-                    right: 380.0,
-                    bottom: 200.0,
-                },
-                radiusX: 16.0,
-                radiusY: 16.0,
-            };
-            self.rt.FillRoundedRectangle(&rrect, &self.brush_panel);
-
-            let layout = D2D_RECT_F {
-                left: 64.0,
-                top: 96.0,
-                right: 360.0,
-                bottom: 170.0,
-            };
-            self.rt.DrawText(
+        }
+        {
+            let canvas = Canvas::new(&self.rt);
+            canvas.clear(Color::rgb(0.06, 0.06, 0.07));
+            canvas.fill_rounded_rect(
+                Rect::new(40.0, 40.0, 340.0, 160.0),
+                16.0,
+                Color::rgb(0.14, 0.15, 0.18),
+            );
+            canvas.draw_text(
                 &self.text,
                 &self.text_format,
-                &layout,
-                &self.brush_text,
-                D2D1_DRAW_TEXT_OPTIONS_NONE,
-                DWRITE_MEASURING_MODE_NATURAL,
+                Rect::new(64.0, 96.0, 296.0, 74.0),
+                Color::rgb(0.95, 0.96, 0.98),
             );
-
+        }
+        unsafe {
             let _ = self.rt.EndDraw(None, None);
             let _ = self.swap_chain.Present(1, DXGI_PRESENT(0));
         }
