@@ -5,4 +5,5 @@
 
 pub mod platform;
 pub mod render;
+pub mod theme;
 pub mod tree;

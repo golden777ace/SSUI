@@ -9,7 +9,8 @@ use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::Win32::Graphics::Dxgi::*;
 
 use super::canvas::Canvas;
-use super::types::{Color, Rect};
+use super::types::Rect;
+use crate::theme::Theme;
 use crate::tree::{Axis, NodeId, NodeKind, Props, Tree};
 
 pub struct Renderer {
@@ -25,6 +26,8 @@ pub struct Renderer {
     pressed: Option<NodeId>,
     counter: u32,
     count_label: NodeId,
+    theme: Theme,
+    theme_index: usize,
 }
 
 impl Renderer {
@@ -107,10 +110,7 @@ impl Renderer {
             );
             let panel = tree.add_child(
                 root,
-                NodeKind::Frame {
-                    color: Color::rgb(0.14, 0.15, 0.18),
-                    radius: 16.0,
-                },
+                NodeKind::Frame { radius: 16.0 },
                 Props {
                     axis: Axis::Vertical,
                     padding: 20.0,
@@ -123,7 +123,6 @@ impl Renderer {
                 panel,
                 NodeKind::Label {
                     text: "Clicks: 0".encode_utf16().collect(),
-                    color: Color::rgb(0.95, 0.96, 0.98),
                 },
                 Props {
                     height: Some(40.0),
@@ -132,12 +131,18 @@ impl Renderer {
             );
             tree.add_child(
                 panel,
+                NodeKind::Label {
+                    text: "Press Space to cycle themes".encode_utf16().collect(),
+                },
+                Props {
+                    height: Some(28.0),
+                    ..Default::default()
+                },
+            );
+            tree.add_child(
+                panel,
                 NodeKind::Button {
                     label: "Click me".encode_utf16().collect(),
-                    base: Color::rgb(0.20, 0.45, 0.95),
-                    hover: Color::rgb(0.28, 0.53, 1.0),
-                    pressed: Color::rgb(0.15, 0.36, 0.80),
-                    text: Color::rgb(1.0, 1.0, 1.0),
                     radius: 10.0,
                 },
                 Props {
@@ -160,6 +165,8 @@ impl Renderer {
                 pressed: None,
                 counter: 0,
                 count_label,
+                theme: Theme::dark(),
+                theme_index: 2,
             };
             renderer.create_target()?;
             Ok(renderer)
@@ -241,6 +248,23 @@ impl Renderer {
         was_pressed || clicked
     }
 
+    /// Обрабатывает нажатие клавиши. Возвращает true, если нужна перерисовка.
+    pub fn on_key(&mut self, vk: u32) -> bool {
+        const VK_SPACE: u32 = 0x20;
+        if vk == VK_SPACE {
+            self.theme_index = (self.theme_index + 1) % 4;
+            self.theme = match self.theme_index {
+                0 => Theme::white(),
+                1 => Theme::light(),
+                2 => Theme::dark(),
+                _ => Theme::black(),
+            };
+            true
+        } else {
+            false
+        }
+    }
+
     fn on_click(&mut self) {
         self.counter += 1;
         let text: Vec<u16> = format!("Clicks: {}", self.counter).encode_utf16().collect();
@@ -252,38 +276,32 @@ impl Renderer {
         self.tree.layout(Rect::new(0.0, 0.0, self.width, self.height));
         let hovered = self.hovered;
         let pressed = self.pressed;
+        let theme = self.theme;
         unsafe {
             self.rt.BeginDraw();
         }
         {
             let canvas = Canvas::new(&self.rt);
             let format = &self.text_format;
-            canvas.clear(Color::rgb(0.06, 0.06, 0.07));
+            canvas.clear(theme.background);
             self.tree.for_each(|id, node| match &node.kind {
                 NodeKind::Container => {}
-                NodeKind::Frame { color, radius } => {
-                    canvas.fill_rounded_rect(node.rect, *radius, *color);
+                NodeKind::Frame { radius } => {
+                    canvas.fill_rounded_rect(node.rect, *radius, theme.surface);
                 }
-                NodeKind::Label { text, color } => {
-                    canvas.draw_text(text, format, node.rect, *color);
+                NodeKind::Label { text } => {
+                    canvas.draw_text(text, format, node.rect, theme.content);
                 }
-                NodeKind::Button {
-                    label,
-                    base,
-                    hover,
-                    pressed: pressed_color,
-                    text,
-                    radius,
-                } => {
+                NodeKind::Button { label, radius } => {
                     let fill = if pressed == Some(id) {
-                        *pressed_color
+                        theme.accent_pressed
                     } else if hovered == Some(id) {
-                        *hover
+                        theme.accent_hover
                     } else {
-                        *base
+                        theme.accent
                     };
                     canvas.fill_rounded_rect(node.rect, *radius, fill);
-                    canvas.draw_text(label, format, node.rect, *text);
+                    canvas.draw_text(label, format, node.rect, theme.on_accent);
                 }
             });
         }

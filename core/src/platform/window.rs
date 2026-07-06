@@ -140,6 +140,15 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 LRESULT(0)
             }
 
+            WM_KEYDOWN => {
+                if let Some(state) = state_ptr(hwnd).as_mut() {
+                    if state.renderer.on_key(wparam.0 as u32) {
+                        let _ = InvalidateRect(Some(hwnd), None, false);
+                    }
+                }
+                LRESULT(0)
+            }
+
             WM_ERASEBKGND => LRESULT(1),
 
             WM_DPICHANGED => {

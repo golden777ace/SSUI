@@ -17,6 +17,15 @@ impl Color {
         Self { r, g, b, a: 1.0 }
     }
 
+    pub fn hex(value: u32) -> Self {
+        Self {
+            r: ((value >> 16) & 0xFF) as f32 / 255.0,
+            g: ((value >> 8) & 0xFF) as f32 / 255.0,
+            b: (value & 0xFF) as f32 / 255.0,
+            a: 1.0,
+        }
+    }
+
     pub(crate) fn to_d2d(self) -> D2D1_COLOR_F {
         D2D1_COLOR_F {
             r: self.r,

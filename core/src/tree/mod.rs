@@ -1,4 +1,4 @@
-use crate::render::types::{Color, Rect};
+use crate::render::types::Rect;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct NodeId(usize);
@@ -32,22 +32,9 @@ impl Default for Props {
 
 pub enum NodeKind {
     Container,
-    Frame {
-        color: Color,
-        radius: f32,
-    },
-    Label {
-        text: Vec<u16>,
-        color: Color,
-    },
-    Button {
-        label: Vec<u16>,
-        base: Color,
-        hover: Color,
-        pressed: Color,
-        text: Color,
-        radius: f32,
-    },
+    Frame { radius: f32 },
+    Label { text: Vec<u16> },
+    Button { label: Vec<u16>, radius: f32 },
 }
 
 pub struct Node {
@@ -87,7 +74,7 @@ impl Tree {
     }
 
     pub fn set_label_text(&mut self, id: NodeId, text: Vec<u16>) {
-        if let NodeKind::Label { text: t, .. } = &mut self.nodes[id.0].kind {
+        if let NodeKind::Label { text: t } = &mut self.nodes[id.0].kind {
             *t = text;
         }
     }
@@ -123,8 +110,8 @@ impl Tree {
         if contains(self.nodes[id.0].rect, x, y) {
             *hit = Some(id);
         }
-        let children = &self.nodes[id.0].children;
-        for i in 0..children.len() {
+        let count = self.nodes[id.0].children.len();
+        for i in 0..count {
             let child = self.nodes[id.0].children[i];
             self.hit_walk(child, x, y, hit);
         }
