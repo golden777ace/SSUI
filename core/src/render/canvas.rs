@@ -52,4 +52,20 @@ impl<'a> Canvas<'a> {
             }
         }
     }
+
+    /// Ограничивает последующую отрисовку прямоугольником `rect`.
+    pub fn push_clip(&self, rect: Rect) {
+        let r = rect.to_d2d();
+        unsafe {
+            self.rt
+                .PushAxisAlignedClip(&r, D2D1_ANTIALIAS_MODE_ALIASED);
+        }
+    }
+
+    /// Снимает последнее ограничение отрисовки.
+    pub fn pop_clip(&self) {
+        unsafe {
+            self.rt.PopAxisAlignedClip();
+        }
+    }
 }

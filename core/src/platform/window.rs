@@ -7,7 +7,7 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::render::Renderer;
+use crate::render::{CursorKind, Renderer};
 
 struct WindowState {
     renderer: Renderer,
@@ -147,6 +147,33 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                     }
                 }
                 LRESULT(0)
+            }
+
+            WM_CHAR => {
+                if let Some(state) = state_ptr(hwnd).as_mut() {
+                    if state.renderer.on_char(wparam.0 as u16) {
+                        let _ = InvalidateRect(Some(hwnd), None, false);
+                    }
+                }
+                LRESULT(0)
+            }
+
+            WM_SETCURSOR => {
+                let ht = (lparam.0 & 0xFFFF) as i32;
+                if ht == HTCLIENT as i32 {
+                    if let Some(state) = state_ptr(hwnd).as_mut() {
+                        let id = match state.renderer.cursor_kind() {
+                            CursorKind::Hand => IDC_HAND,
+                            CursorKind::IBeam => IDC_IBEAM,
+                            CursorKind::Arrow => IDC_ARROW,
+                        };
+                        if let Ok(cur) = LoadCursorW(None, id) {
+                            let _ = SetCursor(Some(cur));
+                        }
+                    }
+                    return LRESULT(1);
+                }
+                DefWindowProcW(hwnd, msg, wparam, lparam)
             }
 
             WM_ERASEBKGND => LRESULT(1),

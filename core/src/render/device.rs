@@ -7,25 +7,43 @@ use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::DirectWrite::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::Win32::Graphics::Dxgi::*;
+use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState;
+use windows::Win32::System::DataExchange::{
+    CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
+};
+use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+use windows::Win32::System::Ole::CF_UNICODETEXT;
 
 use super::canvas::Canvas;
 use super::types::{Color, Rect};
 use crate::theme::Theme;
-use crate::tree::{Axis, NodeId, NodeKind, Props, Style, Tree};
+use crate::tree::{Action, Axis, NodeId, NodeKind, Props, Style, Tree};
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum CursorKind {
+    Arrow,
+    Hand,
+    IBeam,
+}
 
 pub struct Renderer {
     swap_chain: IDXGISwapChain1,
     context: ID2D1DeviceContext,
     rt: ID2D1RenderTarget,
     target: Option<ID2D1Bitmap1>,
+    dwrite: IDWriteFactory,
     text_format: IDWriteTextFormat,
+    text_format_left: IDWriteTextFormat,
     tree: Tree,
     width: f32,
     height: f32,
     hovered: Option<NodeId>,
     pressed: Option<NodeId>,
     dragging: Option<NodeId>,
-    counter: u32,
+    focused: Option<NodeId>,
+    hot: Option<NodeId>,
+    text_selecting: bool,
+    counter: i32,
     count_label: NodeId,
     value_label: NodeId,
     theme: Theme,
@@ -98,6 +116,18 @@ impl Renderer {
             let _ = text_format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
             let _ = text_format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 
+            let text_format_left = dwrite.CreateTextFormat(
+                w!("Segoe UI"),
+                None,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                20.0,
+                w!("en-us"),
+            )?;
+            let _ = text_format_left.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            let _ = text_format_left.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+
             let mut tree = Tree::new();
             let root = tree.root();
             tree.set_props(
@@ -131,6 +161,91 @@ impl Renderer {
                     ..Default::default()
                 },
             );
+
+            let row = tree.add_child(
+                panel,
+                NodeKind::Container,
+                Props {
+                    axis: Axis::Horizontal,
+                    gap: 12.0,
+                    height: Some(48.0),
+                    ..Default::default()
+                },
+            );
+            let minus = tree.add_child(
+                row,
+                NodeKind::Button {
+                    label: "-".encode_utf16().collect(),
+                    radius: 10.0,
+                },
+                Props {
+                    width: Some(64.0),
+                    ..Default::default()
+                },
+            );
+            tree.set_action(minus, Action::Decrement);
+            tree.set_style(
+                minus,
+                Style {
+                    fill: Some(Color::hex(0xE5484D)),
+                    text: Some(Color::hex(0xFFFFFF)),
+                },
+            );
+            let plus = tree.add_child(
+                row,
+                NodeKind::Button {
+                    label: "+".encode_utf16().collect(),
+                    radius: 10.0,
+                },
+                Props {
+                    width: Some(64.0),
+                    ..Default::default()
+                },
+            );
+            tree.set_action(plus, Action::Increment);
+            tree.set_style(
+                plus,
+                Style {
+                    fill: Some(Color::hex(0x2FBF71)),
+                    text: Some(Color::hex(0xFFFFFF)),
+                },
+            );
+
+            let checkbox = tree.add_child(
+                panel,
+                NodeKind::Checkbox {
+                    label: "Enable feature".encode_utf16().collect(),
+                    checked: false,
+                },
+                Props {
+                    height: Some(28.0),
+                    ..Default::default()
+                },
+            );
+            tree.set_action(checkbox, Action::Toggle);
+
+            tree.add_child(
+                panel,
+                NodeKind::Label {
+                    text: "Type in the box:".encode_utf16().collect(),
+                },
+                Props {
+                    height: Some(24.0),
+                    ..Default::default()
+                },
+            );
+            tree.add_child(
+                panel,
+                NodeKind::TextBox {
+                    state: crate::tree::TextState::new(),
+                },
+                Props {
+                    height: Some(44.0),
+                    width: Some(280.0),
+                    ..Default::default()
+                },
+            );
+
             tree.add_child(
                 panel,
                 NodeKind::Label {
@@ -139,25 +254,6 @@ impl Renderer {
                 Props {
                     height: Some(28.0),
                     ..Default::default()
-                },
-            );
-            let button = tree.add_child(
-                panel,
-                NodeKind::Button {
-                    label: "Click me".encode_utf16().collect(),
-                    radius: 10.0,
-                },
-                Props {
-                    height: Some(48.0),
-                    width: Some(200.0),
-                    ..Default::default()
-                },
-            );
-            tree.set_style(
-                button,
-                Style {
-                    fill: Some(Color::hex(0x2FBF71)),
-                    text: Some(Color::hex(0xFFFFFF)),
                 },
             );
             let value_label = tree.add_child(
@@ -185,13 +281,18 @@ impl Renderer {
                 context,
                 rt,
                 target: None,
+                dwrite,
                 text_format,
+                text_format_left,
                 tree,
                 width: 1280.0,
                 height: 720.0,
                 hovered: None,
                 pressed: None,
                 dragging: None,
+                focused: None,
+                hot: None,
+                text_selecting: false,
                 counter: 0,
                 count_label,
                 value_label,
@@ -246,10 +347,33 @@ impl Renderer {
         }
     }
 
+    /// Тип курсора под текущим положением мыши.
+    pub fn cursor_kind(&self) -> CursorKind {
+        match self.hot {
+            Some(id) if self.tree.is_interactive(id) => CursorKind::Hand,
+            Some(id) if self.tree.is_textbox(id) => CursorKind::IBeam,
+            _ => CursorKind::Arrow,
+        }
+    }
+
+    fn textbox_index_at(&self, id: NodeId, x: f32) -> usize {
+        let rect = self.tree.get(id).rect;
+        let pad = 12.0;
+        match self.tree.textbox_state(id) {
+            Some(st) => {
+                let local_x = x - (rect.x + pad - st.scroll);
+                index_at_x(&self.dwrite, &self.text_format_left, &st.text, local_x)
+            }
+            None => 0,
+        }
+    }
+
     /// Обрабатывает движение мыши. Возвращает true, если нужна перерисовка.
     pub fn on_mouse_move(&mut self, x: f32, y: f32) -> bool {
         let mut dirty = false;
-        let hover = self.tree.hit_test(x, y).filter(|&id| self.tree.is_button(id));
+        let hit = self.tree.hit_test(x, y);
+        self.hot = hit;
+        let hover = hit.filter(|&id| self.tree.is_interactive(id));
         if hover != self.hovered {
             self.hovered = hover;
             dirty = true;
@@ -258,13 +382,35 @@ impl Renderer {
             self.set_slider_from_x(id, x);
             dirty = true;
         }
+        if self.text_selecting {
+            if let Some(id) = self.focused {
+                let idx = self.textbox_index_at(id, x);
+                if let Some(st) = self.tree.textbox_state_mut(id) {
+                    st.set_caret(idx, true);
+                }
+                dirty = true;
+            }
+        }
         dirty
     }
 
     /// Обрабатывает нажатие левой кнопки. Возвращает true, если нужна перерисовка.
     pub fn on_mouse_down(&mut self, x: f32, y: f32) -> bool {
-        if let Some(id) = self.tree.hit_test(x, y) {
-            if self.tree.is_button(id) {
+        self.text_selecting = false;
+        let hit = self.tree.hit_test(x, y);
+        let new_focus = hit.filter(|&id| self.tree.is_textbox(id));
+        self.focused = new_focus;
+
+        if let Some(id) = hit {
+            if self.tree.is_textbox(id) {
+                let idx = self.textbox_index_at(id, x);
+                if let Some(st) = self.tree.textbox_state_mut(id) {
+                    st.set_caret(idx, false);
+                }
+                self.text_selecting = true;
+                return true;
+            }
+            if self.tree.is_interactive(id) {
                 self.pressed = Some(id);
                 return true;
             }
@@ -274,24 +420,136 @@ impl Renderer {
                 return true;
             }
         }
-        false
+        true
     }
 
     /// Обрабатывает отпускание левой кнопки. Возвращает true, если нужна перерисовка.
     pub fn on_mouse_up(&mut self) -> bool {
-        let clicked = self.pressed.is_some() && self.pressed == self.hovered;
+        let click_id = if self.pressed.is_some() && self.pressed == self.hovered {
+            self.pressed
+        } else {
+            None
+        };
         let was_pressed = self.pressed.take().is_some();
         let was_dragging = self.dragging.take().is_some();
-        if clicked {
-            self.on_click();
+        let was_selecting = self.text_selecting;
+        self.text_selecting = false;
+        if let Some(id) = click_id {
+            self.dispatch(id);
         }
-        was_pressed || clicked || was_dragging
+        was_pressed || was_dragging || was_selecting || click_id.is_some()
+    }
+
+    /// Обрабатывает символьный ввод. Возвращает true, если нужна перерисовка.
+    pub fn on_char(&mut self, ch: u16) -> bool {
+        const BACKSPACE: u16 = 0x08;
+        if let Some(id) = self.focused {
+            if let Some(st) = self.tree.textbox_state_mut(id) {
+                if ch == BACKSPACE {
+                    st.backspace();
+                    return true;
+                }
+                if ch >= 0x20 {
+                    st.insert(&[ch]);
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Обрабатывает нажатие клавиши. Возвращает true, если нужна перерисовка.
     pub fn on_key(&mut self, vk: u32) -> bool {
         const VK_SPACE: u32 = 0x20;
-        if vk == VK_SPACE {
+        const VK_END: u32 = 0x23;
+        const VK_HOME: u32 = 0x24;
+        const VK_LEFT: u32 = 0x25;
+        const VK_RIGHT: u32 = 0x27;
+        const VK_DELETE: u32 = 0x2E;
+        const KEY_A: u32 = 0x41;
+        const KEY_Y: u32 = 0x59;
+        const KEY_Z: u32 = 0x5A;
+        const KEY_C: u32 = 0x43;
+        const KEY_V: u32 = 0x56;
+        const KEY_X: u32 = 0x58;
+
+        if let Some(id) = self.focused {
+            if self.tree.is_textbox(id) {
+                let shift = key_down(0x10);
+                let ctrl = key_down(0x11);
+                if let Some(st) = self.tree.textbox_state_mut(id) {
+                    match vk {
+                        VK_LEFT => {
+                            st.move_left(shift);
+                            return true;
+                        }
+                        VK_RIGHT => {
+                            st.move_right(shift);
+                            return true;
+                        }
+                        VK_HOME => {
+                            st.home(shift);
+                            return true;
+                        }
+                        VK_END => {
+                            st.end(shift);
+                            return true;
+                        }
+                        VK_DELETE => {
+                            st.delete_forward();
+                            return true;
+                        }
+                        _ => {}
+                    }
+                    if ctrl {
+                        match vk {
+                            KEY_A => {
+                                st.select_all();
+                                return true;
+                            }
+                            KEY_Z => {
+                                st.undo();
+                                return true;
+                            }
+                            KEY_Y => {
+                                st.redo();
+                                return true;
+                            }
+                            KEY_C => {
+                                let (a, b) = st.sel_range();
+                                if a != b {
+                                    let sel: Vec<u16> = st.text[a..b].to_vec();
+                                    set_clipboard_text(&sel);
+                                }
+                                return true;
+                            }
+                            KEY_X => {
+                                let (a, b) = st.sel_range();
+                                if a != b {
+                                    let sel: Vec<u16> = st.text[a..b].to_vec();
+                                    set_clipboard_text(&sel);
+                                    st.backspace();
+                                }
+                                return true;
+                            }
+                            KEY_V => {
+                                let clip = get_clipboard_text();
+                                let filtered: Vec<u16> =
+                                    clip.into_iter().filter(|&c| c >= 0x20).collect();
+                                if !filtered.is_empty() {
+                                    st.insert(&filtered);
+                                }
+                                return true;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                return false;
+            }
+        }
+
+        if vk == VK_SPACE && self.focused.is_none() {
             self.theme_index = (self.theme_index + 1) % 4;
             self.theme = match self.theme_index {
                 0 => Theme::white(),
@@ -299,14 +557,27 @@ impl Renderer {
                 2 => Theme::dark(),
                 _ => Theme::black(),
             };
-            true
-        } else {
-            false
+            return true;
+        }
+        false
+    }
+
+    fn dispatch(&mut self, id: NodeId) {
+        match self.tree.get_action(id) {
+            Action::Increment => {
+                self.counter += 1;
+                self.update_count();
+            }
+            Action::Decrement => {
+                self.counter -= 1;
+                self.update_count();
+            }
+            Action::Toggle => self.tree.toggle_checkbox(id),
+            Action::None => {}
         }
     }
 
-    fn on_click(&mut self) {
-        self.counter += 1;
+    fn update_count(&mut self) {
         let text: Vec<u16> = format!("Clicks: {}", self.counter).encode_utf16().collect();
         self.tree.set_label_text(self.count_label, text);
     }
@@ -323,18 +594,47 @@ impl Renderer {
         self.tree.set_label_text(self.value_label, text);
     }
 
+    fn update_scroll(&mut self) {
+        if let Some(id) = self.focused {
+            if self.tree.is_textbox(id) {
+                let rect = self.tree.get(id).rect;
+                let avail = (rect.width - 24.0).max(0.0);
+                let (text, caret) = match self.tree.textbox_state(id) {
+                    Some(s) => (s.text.clone(), s.caret),
+                    None => return,
+                };
+                let caret_px = x_at_index(&self.dwrite, &self.text_format_left, &text, caret);
+                if let Some(s) = self.tree.textbox_state_mut(id) {
+                    if caret_px - s.scroll < 0.0 {
+                        s.scroll = caret_px;
+                    }
+                    if caret_px - s.scroll > avail {
+                        s.scroll = caret_px - avail;
+                    }
+                    if s.scroll < 0.0 {
+                        s.scroll = 0.0;
+                    }
+                }
+            }
+        }
+    }
+
     /// Пересчитывает раскладку и перерисовывает окно из дерева элементов.
     pub fn render(&mut self) {
         self.tree.layout(Rect::new(0.0, 0.0, self.width, self.height));
+        self.update_scroll();
         let hovered = self.hovered;
         let pressed = self.pressed;
+        let focused = self.focused;
         let theme = self.theme;
+        let dwrite = &self.dwrite;
         unsafe {
             self.rt.BeginDraw();
         }
         {
             let canvas = Canvas::new(&self.rt);
             let format = &self.text_format;
+            let format_left = &self.text_format_left;
             canvas.clear(theme.background);
             self.tree.for_each(|id, node| {
                 let style = node.style;
@@ -381,6 +681,70 @@ impl Renderer {
                         let knob = Rect::new(knob_x, cy - knob_d / 2.0, knob_d, knob_d);
                         canvas.fill_rounded_rect(knob, knob_d / 2.0, theme.content);
                     }
+                    NodeKind::Checkbox { label, checked } => {
+                        let r = node.rect;
+                        let box_d = 22.0;
+                        let bx = r.x;
+                        let by = r.y + (r.height - box_d) / 2.0;
+                        let box_rect = Rect::new(bx, by, box_d, box_d);
+                        if *checked {
+                            let fill = style.fill.unwrap_or(theme.accent);
+                            canvas.fill_rounded_rect(box_rect, 5.0, fill);
+                            let check: Vec<u16> = "\u{2713}".encode_utf16().collect();
+                            canvas.draw_text(&check, format, box_rect, theme.on_accent);
+                        } else {
+                            canvas.fill_rounded_rect(box_rect, 5.0, theme.track);
+                            let inner = Rect::new(bx + 2.0, by + 2.0, box_d - 4.0, box_d - 4.0);
+                            canvas.fill_rounded_rect(inner, 4.0, theme.surface);
+                        }
+                        let label_rect = Rect::new(
+                            bx + box_d + 10.0,
+                            r.y,
+                            (r.width - box_d - 10.0).max(0.0),
+                            r.height,
+                        );
+                        let color = style.text.unwrap_or(theme.content);
+                        canvas.draw_text(label, format_left, label_rect, color);
+                    }
+                    NodeKind::TextBox { state } => {
+                        let r = node.rect;
+                        let is_focused = focused == Some(id);
+                        let border = if is_focused { theme.accent } else { theme.track };
+                        canvas.fill_rounded_rect(r, 8.0, border);
+                        let inner =
+                            Rect::new(r.x + 2.0, r.y + 2.0, r.width - 4.0, r.height - 4.0);
+                        canvas.fill_rounded_rect(inner, 6.0, theme.surface);
+
+                        let pad = 12.0;
+                        let base_x = r.x + pad - state.scroll;
+                        let clip = Rect::new(r.x + 4.0, r.y, (r.width - 8.0).max(0.0), r.height);
+                        canvas.push_clip(clip);
+
+                        let (sa, sb) = state.sel_range();
+                        if sa != sb {
+                            let xa = x_at_index(dwrite, format_left, &state.text, sa);
+                            let xb = x_at_index(dwrite, format_left, &state.text, sb);
+                            let sel = Rect::new(
+                                base_x + xa,
+                                r.y + 8.0,
+                                (xb - xa).max(0.0),
+                                (r.height - 16.0).max(0.0),
+                            );
+                            canvas.fill_rounded_rect(sel, 3.0, theme.selection);
+                        }
+
+                        let text_rect = Rect::new(base_x, r.y, 100000.0, r.height);
+                        canvas.draw_text(&state.text, format_left, text_rect, theme.content);
+
+                        if is_focused {
+                            let cx = base_x
+                                + x_at_index(dwrite, format_left, &state.text, state.caret);
+                            let caret =
+                                Rect::new(cx, r.y + 10.0, 2.0, (r.height - 20.0).max(2.0));
+                            canvas.fill_rounded_rect(caret, 1.0, theme.accent);
+                        }
+                        canvas.pop_clip();
+                    }
                 }
             });
         }
@@ -389,4 +753,103 @@ impl Renderer {
             let _ = self.swap_chain.Present(1, DXGI_PRESENT(0));
         }
     }
+}
+
+fn key_down(vk: i32) -> bool {
+    unsafe { GetKeyState(vk) < 0 }
+}
+
+fn index_at_x(dwrite: &IDWriteFactory, format: &IDWriteTextFormat, text: &[u16], x: f32) -> usize {
+    if text.is_empty() {
+        return 0;
+    }
+    unsafe {
+        if let Ok(layout) = dwrite.CreateTextLayout(text, format, 100000.0, 100.0) {
+            let mut trailing = BOOL(0);
+            let mut inside = BOOL(0);
+            let mut m = DWRITE_HIT_TEST_METRICS::default();
+            if layout
+                .HitTestPoint(x.max(0.0), 0.0, &mut trailing, &mut inside, &mut m)
+                .is_ok()
+            {
+                let mut idx = m.textPosition as usize;
+                if trailing.as_bool() {
+                    idx += 1;
+                }
+                return idx.min(text.len());
+            }
+        }
+    }
+    text.len()
+}
+
+fn x_at_index(dwrite: &IDWriteFactory, format: &IDWriteTextFormat, text: &[u16], index: usize) -> f32 {
+    if text.is_empty() {
+        return 0.0;
+    }
+    unsafe {
+        if let Ok(layout) = dwrite.CreateTextLayout(text, format, 100000.0, 100.0) {
+            let mut px = 0.0f32;
+            let mut py = 0.0f32;
+            let mut m = DWRITE_HIT_TEST_METRICS::default();
+            if layout
+                .HitTestTextPosition(index as u32, false, &mut px, &mut py, &mut m)
+                .is_ok()
+            {
+                return px;
+            }
+        }
+    }
+    0.0
+}
+
+fn set_clipboard_text(text: &[u16]) {
+    unsafe {
+        if OpenClipboard(None).is_err() {
+            return;
+        }
+        let _ = EmptyClipboard();
+        let count = text.len() + 1;
+        let bytes = count * std::mem::size_of::<u16>();
+        if let Ok(hmem) = GlobalAlloc(GMEM_MOVEABLE, bytes) {
+            let ptr = GlobalLock(hmem) as *mut u16;
+            if !ptr.is_null() {
+                std::ptr::copy_nonoverlapping(text.as_ptr(), ptr, text.len());
+                *ptr.add(text.len()) = 0;
+                let _ = GlobalUnlock(hmem);
+                let _ = SetClipboardData(CF_UNICODETEXT.0 as u32, Some(HANDLE(hmem.0)));
+            }
+        }
+        let _ = CloseClipboard();
+    }
+}
+
+fn get_clipboard_text() -> Vec<u16> {
+    let mut out = Vec::new();
+    unsafe {
+        if OpenClipboard(None).is_err() {
+            return out;
+        }
+        if let Ok(handle) = GetClipboardData(CF_UNICODETEXT.0 as u32) {
+            let hmem = HGLOBAL(handle.0);
+            let ptr = GlobalLock(hmem) as *const u16;
+            if !ptr.is_null() {
+                let mut i = 0isize;
+                loop {
+                    let c = *ptr.offset(i);
+                    if c == 0 {
+                        break;
+                    }
+                    out.push(c);
+                    i += 1;
+                    if i > 1_000_000 {
+                        break;
+                    }
+                }
+                let _ = GlobalUnlock(hmem);
+            }
+        }
+        let _ = CloseClipboard();
+    }
+    out
 }
