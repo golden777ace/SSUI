@@ -1,9 +1,12 @@
 use std::sync::Once;
+
 use windows::core::*;
 use windows::Win32::Foundation::*;
-use windows::Win32::Graphics::Gdi::{UpdateWindow, ValidateRect};
+use windows::Win32::Graphics::Gdi::{InvalidateRect, UpdateWindow, ValidateRect};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows::Win32::UI::WindowsAndMessaging::*;
+
 use crate::render::Renderer;
 
 struct WindowState {
@@ -17,6 +20,7 @@ pub struct Window {
 static REGISTER_CLASS: Once = Once::new();
 
 impl Window {
+    /// Создаёт окно, инициализирует рендерер и показывает его.
     pub fn new(title: &str, width: i32, height: i32) -> Result<Self> {
         unsafe {
             let instance = GetModuleHandleW(None)?;
@@ -37,6 +41,7 @@ impl Window {
             });
 
             let title_w: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
+
             let hwnd = CreateWindowExW(
                 WINDOW_EX_STYLE::default(),
                 class_name,
@@ -63,10 +68,12 @@ impl Window {
         }
     }
 
+    /// HWND окна.
     pub fn hwnd(&self) -> HWND {
         self.hwnd
     }
 
+    /// Запускает блокирующий цикл сообщений до закрытия окна.
     pub fn run(&self) {
         unsafe {
             let mut msg = MSG::default();
@@ -98,6 +105,37 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                     let width = loword(lparam.0 as u32);
                     let height = hiword(lparam.0 as u32);
                     state.renderer.resize(width, height);
+                }
+                LRESULT(0)
+            }
+
+            WM_MOUSEMOVE => {
+                if let Some(state) = state_ptr(hwnd).as_mut() {
+                    let (x, y) = mouse_xy(lparam);
+                    if state.renderer.on_mouse_move(x, y) {
+                        let _ = InvalidateRect(Some(hwnd), None, false);
+                    }
+                }
+                LRESULT(0)
+            }
+
+            WM_LBUTTONDOWN => {
+                if let Some(state) = state_ptr(hwnd).as_mut() {
+                    let (x, y) = mouse_xy(lparam);
+                    let _ = SetCapture(hwnd);
+                    if state.renderer.on_mouse_down(x, y) {
+                        let _ = InvalidateRect(Some(hwnd), None, false);
+                    }
+                }
+                LRESULT(0)
+            }
+
+            WM_LBUTTONUP => {
+                if let Some(state) = state_ptr(hwnd).as_mut() {
+                    let _ = ReleaseCapture();
+                    if state.renderer.on_mouse_up() {
+                        let _ = InvalidateRect(Some(hwnd), None, false);
+                    }
                 }
                 LRESULT(0)
             }
@@ -135,6 +173,12 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
     }
+}
+
+fn mouse_xy(lparam: LPARAM) -> (f32, f32) {
+    let x = (lparam.0 & 0xFFFF) as u16 as i16 as f32;
+    let y = ((lparam.0 >> 16) & 0xFFFF) as u16 as i16 as f32;
+    (x, y)
 }
 
 #[inline]

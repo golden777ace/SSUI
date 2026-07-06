@@ -10,6 +10,7 @@ use windows::Win32::Graphics::Dxgi::*;
 
 use super::canvas::Canvas;
 use super::types::{Color, Rect};
+use crate::tree::{Axis, NodeId, NodeKind, Props, Tree};
 
 pub struct Renderer {
     swap_chain: IDXGISwapChain1,
@@ -17,7 +18,11 @@ pub struct Renderer {
     rt: ID2D1RenderTarget,
     target: Option<ID2D1Bitmap1>,
     text_format: IDWriteTextFormat,
-    text: Vec<u16>,
+    tree: Tree,
+    width: f32,
+    height: f32,
+    hovered: Option<NodeId>,
+    pressed: Option<NodeId>,
 }
 
 impl Renderer {
@@ -80,11 +85,65 @@ impl Renderer {
                 DWRITE_FONT_WEIGHT_SEMI_BOLD,
                 DWRITE_FONT_STYLE_NORMAL,
                 DWRITE_FONT_STRETCH_NORMAL,
-                28.0,
+                24.0,
                 w!("en-us"),
             )?;
+            let _ = text_format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            let _ = text_format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 
-            let text: Vec<u16> = "Hello, SSUI".encode_utf16().collect();
+            let mut tree = Tree::new();
+            let root = tree.root();
+            tree.set_props(
+                root,
+                Props {
+                    axis: Axis::Vertical,
+                    padding: 24.0,
+                    gap: 16.0,
+                    width: None,
+                    height: None,
+                },
+            );
+            let panel = tree.add_child(
+                root,
+                NodeKind::Frame {
+                    color: Color::rgb(0.14, 0.15, 0.18),
+                    radius: 16.0,
+                },
+                Props {
+                    axis: Axis::Vertical,
+                    padding: 20.0,
+                    gap: 12.0,
+                    width: None,
+                    height: None,
+                },
+            );
+            tree.add_child(
+                panel,
+                NodeKind::Label {
+                    text: "Hello, SSUI".encode_utf16().collect(),
+                    color: Color::rgb(0.95, 0.96, 0.98),
+                },
+                Props {
+                    height: Some(40.0),
+                    ..Default::default()
+                },
+            );
+            tree.add_child(
+                panel,
+                NodeKind::Button {
+                    label: "Click me".encode_utf16().collect(),
+                    base: Color::rgb(0.20, 0.45, 0.95),
+                    hover: Color::rgb(0.28, 0.53, 1.0),
+                    pressed: Color::rgb(0.15, 0.36, 0.80),
+                    text: Color::rgb(1.0, 1.0, 1.0),
+                    radius: 10.0,
+                },
+                Props {
+                    height: Some(48.0),
+                    width: Some(200.0),
+                    ..Default::default()
+                },
+            );
 
             let mut renderer = Renderer {
                 swap_chain,
@@ -92,7 +151,11 @@ impl Renderer {
                 rt,
                 target: None,
                 text_format,
-                text,
+                tree,
+                width: 1280.0,
+                height: 720.0,
+                hovered: None,
+                pressed: None,
             };
             renderer.create_target()?;
             Ok(renderer)
@@ -126,6 +189,8 @@ impl Renderer {
         if width == 0 || height == 0 {
             return;
         }
+        self.width = width as f32;
+        self.height = height as f32;
         unsafe {
             self.context.SetTarget(None);
             self.target = None;
@@ -140,25 +205,77 @@ impl Renderer {
         }
     }
 
-    /// Перерисовывает содержимое окна.
+    /// Обрабатывает движение мыши. Возвращает true, если нужна перерисовка.
+    pub fn on_mouse_move(&mut self, x: f32, y: f32) -> bool {
+        let hit = self.tree.hit_test(x, y).filter(|&id| self.tree.is_button(id));
+        if hit != self.hovered {
+            self.hovered = hit;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Обрабатывает нажатие левой кнопки. Возвращает true, если нужна перерисовка.
+    pub fn on_mouse_down(&mut self, x: f32, y: f32) -> bool {
+        let hit = self.tree.hit_test(x, y).filter(|&id| self.tree.is_button(id));
+        if hit.is_some() {
+            self.pressed = hit;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Обрабатывает отпускание левой кнопки. Возвращает true, если нужна перерисовка.
+    pub fn on_mouse_up(&mut self) -> bool {
+        if self.pressed.is_some() {
+            self.pressed = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Пересчитывает раскладку и перерисовывает окно из дерева элементов.
     pub fn render(&mut self) {
+        self.tree.layout(Rect::new(0.0, 0.0, self.width, self.height));
+        let hovered = self.hovered;
+        let pressed = self.pressed;
         unsafe {
             self.rt.BeginDraw();
         }
         {
             let canvas = Canvas::new(&self.rt);
+            let format = &self.text_format;
             canvas.clear(Color::rgb(0.06, 0.06, 0.07));
-            canvas.fill_rounded_rect(
-                Rect::new(40.0, 40.0, 340.0, 160.0),
-                16.0,
-                Color::rgb(0.14, 0.15, 0.18),
-            );
-            canvas.draw_text(
-                &self.text,
-                &self.text_format,
-                Rect::new(64.0, 96.0, 296.0, 74.0),
-                Color::rgb(0.95, 0.96, 0.98),
-            );
+            self.tree.for_each(|id, node| match &node.kind {
+                NodeKind::Container => {}
+                NodeKind::Frame { color, radius } => {
+                    canvas.fill_rounded_rect(node.rect, *radius, *color);
+                }
+                NodeKind::Label { text, color } => {
+                    canvas.draw_text(text, format, node.rect, *color);
+                }
+                NodeKind::Button {
+                    label,
+                    base,
+                    hover,
+                    pressed: pressed_color,
+                    text,
+                    radius,
+                } => {
+                    let fill = if pressed == Some(id) {
+                        *pressed_color
+                    } else if hovered == Some(id) {
+                        *hover
+                    } else {
+                        *base
+                    };
+                    canvas.fill_rounded_rect(node.rect, *radius, fill);
+                    canvas.draw_text(label, format, node.rect, *text);
+                }
+            });
         }
         unsafe {
             let _ = self.rt.EndDraw(None, None);
