@@ -23,6 +23,8 @@ pub struct Renderer {
     height: f32,
     hovered: Option<NodeId>,
     pressed: Option<NodeId>,
+    counter: u32,
+    count_label: NodeId,
 }
 
 impl Renderer {
@@ -117,10 +119,10 @@ impl Renderer {
                     height: None,
                 },
             );
-            tree.add_child(
+            let count_label = tree.add_child(
                 panel,
                 NodeKind::Label {
-                    text: "Hello, SSUI".encode_utf16().collect(),
+                    text: "Clicks: 0".encode_utf16().collect(),
                     color: Color::rgb(0.95, 0.96, 0.98),
                 },
                 Props {
@@ -156,6 +158,8 @@ impl Renderer {
                 height: 720.0,
                 hovered: None,
                 pressed: None,
+                counter: 0,
+                count_label,
             };
             renderer.create_target()?;
             Ok(renderer)
@@ -229,12 +233,18 @@ impl Renderer {
 
     /// Обрабатывает отпускание левой кнопки. Возвращает true, если нужна перерисовка.
     pub fn on_mouse_up(&mut self) -> bool {
-        if self.pressed.is_some() {
-            self.pressed = None;
-            true
-        } else {
-            false
+        let clicked = self.pressed.is_some() && self.pressed == self.hovered;
+        let was_pressed = self.pressed.take().is_some();
+        if clicked {
+            self.on_click();
         }
+        was_pressed || clicked
+    }
+
+    fn on_click(&mut self) {
+        self.counter += 1;
+        let text: Vec<u16> = format!("Clicks: {}", self.counter).encode_utf16().collect();
+        self.tree.set_label_text(self.count_label, text);
     }
 
     /// Пересчитывает раскладку и перерисовывает окно из дерева элементов.

@@ -64,7 +64,6 @@ pub struct Tree {
 }
 
 impl Tree {
-    /// Создаёт дерево с пустым корневым контейнером.
     pub fn new() -> Self {
         let root = Node {
             parent: None,
@@ -79,17 +78,20 @@ impl Tree {
         }
     }
 
-    /// Идентификатор корневого узла.
     pub fn root(&self) -> NodeId {
         self.root
     }
 
-    /// Задаёт свойства раскладки для узла.
     pub fn set_props(&mut self, id: NodeId, props: Props) {
         self.nodes[id.0].props = props;
     }
 
-    /// Добавляет узел ребёнком к `parent` и возвращает его идентификатор.
+    pub fn set_label_text(&mut self, id: NodeId, text: Vec<u16>) {
+        if let NodeKind::Label { text: t, .. } = &mut self.nodes[id.0].kind {
+            *t = text;
+        }
+    }
+
     pub fn add_child(&mut self, parent: NodeId, kind: NodeKind, props: Props) -> NodeId {
         let id = NodeId(self.nodes.len());
         self.nodes.push(Node {
@@ -103,17 +105,14 @@ impl Tree {
         id
     }
 
-    /// Возвращает узел по идентификатору.
     pub fn get(&self, id: NodeId) -> &Node {
         &self.nodes[id.0]
     }
 
-    /// Является ли узел кнопкой.
     pub fn is_button(&self, id: NodeId) -> bool {
         matches!(self.nodes[id.0].kind, NodeKind::Button { .. })
     }
 
-    /// Возвращает верхний узел, содержащий точку `(x, y)`.
     pub fn hit_test(&self, x: f32, y: f32) -> Option<NodeId> {
         let mut hit = None;
         self.hit_walk(self.root, x, y, &mut hit);
@@ -131,7 +130,6 @@ impl Tree {
         }
     }
 
-    /// Вычисляет прямоугольники всех узлов линейной раскладкой.
     pub fn layout(&mut self, root_rect: Rect) {
         self.layout_node(self.root, root_rect);
     }
@@ -203,7 +201,6 @@ impl Tree {
         }
     }
 
-    /// Обходит дерево в глубину, вызывая `visit(id, node)` для каждого узла.
     pub fn for_each<F: FnMut(NodeId, &Node)>(&self, mut visit: F) {
         self.walk(self.root, &mut visit);
     }
