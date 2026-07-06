@@ -26,6 +26,24 @@ impl Color {
         }
     }
 
+    pub fn lighten(self, amount: f32) -> Self {
+        Self {
+            r: self.r + (1.0 - self.r) * amount,
+            g: self.g + (1.0 - self.g) * amount,
+            b: self.b + (1.0 - self.b) * amount,
+            a: self.a,
+        }
+    }
+
+    pub fn darken(self, amount: f32) -> Self {
+        Self {
+            r: self.r * (1.0 - amount),
+            g: self.g * (1.0 - amount),
+            b: self.b * (1.0 - amount),
+            a: self.a,
+        }
+    }
+
     pub(crate) fn to_d2d(self) -> D2D1_COLOR_F {
         D2D1_COLOR_F {
             r: self.r,

@@ -1,4 +1,4 @@
-use crate::render::types::Rect;
+use crate::render::types::{Color, Rect};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct NodeId(usize);
@@ -30,11 +30,18 @@ impl Default for Props {
     }
 }
 
+#[derive(Clone, Copy, Default)]
+pub struct Style {
+    pub fill: Option<Color>,
+    pub text: Option<Color>,
+}
+
 pub enum NodeKind {
     Container,
     Frame { radius: f32 },
     Label { text: Vec<u16> },
     Button { label: Vec<u16>, radius: f32 },
+    Slider { value: f32 },
 }
 
 pub struct Node {
@@ -43,6 +50,7 @@ pub struct Node {
     pub rect: Rect,
     pub kind: NodeKind,
     pub props: Props,
+    pub style: Style,
 }
 
 pub struct Tree {
@@ -58,6 +66,7 @@ impl Tree {
             rect: Rect::new(0.0, 0.0, 0.0, 0.0),
             kind: NodeKind::Container,
             props: Props::default(),
+            style: Style::default(),
         };
         Self {
             nodes: vec![root],
@@ -73,6 +82,12 @@ impl Tree {
         self.nodes[id.0].props = props;
     }
 
+    /// Переопределяет цвета элемента поверх темы.
+    pub fn set_style(&mut self, id: NodeId, style: Style) {
+        self.nodes[id.0].style = style;
+    }
+
+    /// Меняет текст у узла-метки.
     pub fn set_label_text(&mut self, id: NodeId, text: Vec<u16>) {
         if let NodeKind::Label { text: t } = &mut self.nodes[id.0].kind {
             *t = text;
@@ -87,6 +102,7 @@ impl Tree {
             rect: Rect::new(0.0, 0.0, 0.0, 0.0),
             kind,
             props,
+            style: Style::default(),
         });
         self.nodes[parent.0].children.push(id);
         id
@@ -98,6 +114,16 @@ impl Tree {
 
     pub fn is_button(&self, id: NodeId) -> bool {
         matches!(self.nodes[id.0].kind, NodeKind::Button { .. })
+    }
+
+    pub fn is_slider(&self, id: NodeId) -> bool {
+        matches!(self.nodes[id.0].kind, NodeKind::Slider { .. })
+    }
+
+    pub fn set_slider_value(&mut self, id: NodeId, value: f32) {
+        if let NodeKind::Slider { value: v } = &mut self.nodes[id.0].kind {
+            *v = value;
+        }
     }
 
     pub fn hit_test(&self, x: f32, y: f32) -> Option<NodeId> {

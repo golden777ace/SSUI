@@ -9,9 +9,9 @@ use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::Win32::Graphics::Dxgi::*;
 
 use super::canvas::Canvas;
-use super::types::Rect;
+use super::types::{Color, Rect};
 use crate::theme::Theme;
-use crate::tree::{Axis, NodeId, NodeKind, Props, Tree};
+use crate::tree::{Axis, NodeId, NodeKind, Props, Style, Tree};
 
 pub struct Renderer {
     swap_chain: IDXGISwapChain1,
@@ -24,8 +24,10 @@ pub struct Renderer {
     height: f32,
     hovered: Option<NodeId>,
     pressed: Option<NodeId>,
+    dragging: Option<NodeId>,
     counter: u32,
     count_label: NodeId,
+    value_label: NodeId,
     theme: Theme,
     theme_index: usize,
 }
@@ -139,7 +141,7 @@ impl Renderer {
                     ..Default::default()
                 },
             );
-            tree.add_child(
+            let button = tree.add_child(
                 panel,
                 NodeKind::Button {
                     label: "Click me".encode_utf16().collect(),
@@ -148,6 +150,32 @@ impl Renderer {
                 Props {
                     height: Some(48.0),
                     width: Some(200.0),
+                    ..Default::default()
+                },
+            );
+            tree.set_style(
+                button,
+                Style {
+                    fill: Some(Color::hex(0x2FBF71)),
+                    text: Some(Color::hex(0xFFFFFF)),
+                },
+            );
+            let value_label = tree.add_child(
+                panel,
+                NodeKind::Label {
+                    text: "Value: 50%".encode_utf16().collect(),
+                },
+                Props {
+                    height: Some(28.0),
+                    ..Default::default()
+                },
+            );
+            tree.add_child(
+                panel,
+                NodeKind::Slider { value: 0.5 },
+                Props {
+                    height: Some(40.0),
+                    width: Some(240.0),
                     ..Default::default()
                 },
             );
@@ -163,8 +191,10 @@ impl Renderer {
                 height: 720.0,
                 hovered: None,
                 pressed: None,
+                dragging: None,
                 counter: 0,
                 count_label,
+                value_label,
                 theme: Theme::dark(),
                 theme_index: 2,
             };
@@ -218,34 +248,44 @@ impl Renderer {
 
     /// Обрабатывает движение мыши. Возвращает true, если нужна перерисовка.
     pub fn on_mouse_move(&mut self, x: f32, y: f32) -> bool {
-        let hit = self.tree.hit_test(x, y).filter(|&id| self.tree.is_button(id));
-        if hit != self.hovered {
-            self.hovered = hit;
-            true
-        } else {
-            false
+        let mut dirty = false;
+        let hover = self.tree.hit_test(x, y).filter(|&id| self.tree.is_button(id));
+        if hover != self.hovered {
+            self.hovered = hover;
+            dirty = true;
         }
+        if let Some(id) = self.dragging {
+            self.set_slider_from_x(id, x);
+            dirty = true;
+        }
+        dirty
     }
 
     /// Обрабатывает нажатие левой кнопки. Возвращает true, если нужна перерисовка.
     pub fn on_mouse_down(&mut self, x: f32, y: f32) -> bool {
-        let hit = self.tree.hit_test(x, y).filter(|&id| self.tree.is_button(id));
-        if hit.is_some() {
-            self.pressed = hit;
-            true
-        } else {
-            false
+        if let Some(id) = self.tree.hit_test(x, y) {
+            if self.tree.is_button(id) {
+                self.pressed = Some(id);
+                return true;
+            }
+            if self.tree.is_slider(id) {
+                self.dragging = Some(id);
+                self.set_slider_from_x(id, x);
+                return true;
+            }
         }
+        false
     }
 
     /// Обрабатывает отпускание левой кнопки. Возвращает true, если нужна перерисовка.
     pub fn on_mouse_up(&mut self) -> bool {
         let clicked = self.pressed.is_some() && self.pressed == self.hovered;
         let was_pressed = self.pressed.take().is_some();
+        let was_dragging = self.dragging.take().is_some();
         if clicked {
             self.on_click();
         }
-        was_pressed || clicked
+        was_pressed || clicked || was_dragging
     }
 
     /// Обрабатывает нажатие клавиши. Возвращает true, если нужна перерисовка.
@@ -271,6 +311,18 @@ impl Renderer {
         self.tree.set_label_text(self.count_label, text);
     }
 
+    fn set_slider_from_x(&mut self, id: NodeId, x: f32) {
+        let rect = self.tree.get(id).rect;
+        if rect.width <= 0.0 {
+            return;
+        }
+        let value = ((x - rect.x) / rect.width).clamp(0.0, 1.0);
+        self.tree.set_slider_value(id, value);
+        let percent = (value * 100.0).round() as i32;
+        let text: Vec<u16> = format!("Value: {}%", percent).encode_utf16().collect();
+        self.tree.set_label_text(self.value_label, text);
+    }
+
     /// Пересчитывает раскладку и перерисовывает окно из дерева элементов.
     pub fn render(&mut self) {
         self.tree.layout(Rect::new(0.0, 0.0, self.width, self.height));
@@ -284,24 +336,51 @@ impl Renderer {
             let canvas = Canvas::new(&self.rt);
             let format = &self.text_format;
             canvas.clear(theme.background);
-            self.tree.for_each(|id, node| match &node.kind {
-                NodeKind::Container => {}
-                NodeKind::Frame { radius } => {
-                    canvas.fill_rounded_rect(node.rect, *radius, theme.surface);
-                }
-                NodeKind::Label { text } => {
-                    canvas.draw_text(text, format, node.rect, theme.content);
-                }
-                NodeKind::Button { label, radius } => {
-                    let fill = if pressed == Some(id) {
-                        theme.accent_pressed
-                    } else if hovered == Some(id) {
-                        theme.accent_hover
-                    } else {
-                        theme.accent
-                    };
-                    canvas.fill_rounded_rect(node.rect, *radius, fill);
-                    canvas.draw_text(label, format, node.rect, theme.on_accent);
+            self.tree.for_each(|id, node| {
+                let style = node.style;
+                match &node.kind {
+                    NodeKind::Container => {}
+                    NodeKind::Frame { radius } => {
+                        let fill = style.fill.unwrap_or(theme.surface);
+                        canvas.fill_rounded_rect(node.rect, *radius, fill);
+                    }
+                    NodeKind::Label { text } => {
+                        let color = style.text.unwrap_or(theme.content);
+                        canvas.draw_text(text, format, node.rect, color);
+                    }
+                    NodeKind::Button { label, radius } => {
+                        let (base, hov, prs) = match style.fill {
+                            Some(f) => (f, f.lighten(0.1), f.darken(0.1)),
+                            None => (theme.accent, theme.accent_hover, theme.accent_pressed),
+                        };
+                        let fill = if pressed == Some(id) {
+                            prs
+                        } else if hovered == Some(id) {
+                            hov
+                        } else {
+                            base
+                        };
+                        let text_color = style.text.unwrap_or(theme.on_accent);
+                        canvas.fill_rounded_rect(node.rect, *radius, fill);
+                        canvas.draw_text(label, format, node.rect, text_color);
+                    }
+                    NodeKind::Slider { value } => {
+                        let v = value.clamp(0.0, 1.0);
+                        let r = node.rect;
+                        let track_h = 6.0;
+                        let cy = r.y + r.height / 2.0;
+                        let track = Rect::new(r.x, cy - track_h / 2.0, r.width, track_h);
+                        canvas.fill_rounded_rect(track, track_h / 2.0, theme.track);
+                        let filled_w = r.width * v;
+                        let fill = style.fill.unwrap_or(theme.accent);
+                        let filled = Rect::new(r.x, cy - track_h / 2.0, filled_w, track_h);
+                        canvas.fill_rounded_rect(filled, track_h / 2.0, fill);
+                        let knob_d = 16.0;
+                        let knob_x =
+                            (r.x + filled_w - knob_d / 2.0).clamp(r.x, r.x + r.width - knob_d);
+                        let knob = Rect::new(knob_x, cy - knob_d / 2.0, knob_d, knob_d);
+                        canvas.fill_rounded_rect(knob, knob_d / 2.0, theme.content);
+                    }
                 }
             });
         }
