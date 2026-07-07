@@ -8,6 +8,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::render::{CursorKind, Renderer};
+use crate::tree::Tree;
 
 struct WindowState {
     renderer: Renderer,
@@ -20,8 +21,8 @@ pub struct Window {
 static REGISTER_CLASS: Once = Once::new();
 
 impl Window {
-    /// Создаёт окно, инициализирует рендерер и показывает его.
-    pub fn new(title: &str, width: i32, height: i32) -> Result<Self> {
+    /// Создаёт окно, инициализирует рендерер деревом `tree` и показывает его.
+    pub fn new(title: &str, width: i32, height: i32, tree: Tree) -> Result<Self> {
         unsafe {
             let instance = GetModuleHandleW(None)?;
             let hinstance: HINSTANCE = instance.into();
@@ -57,7 +58,7 @@ impl Window {
                 None,
             )?;
 
-            let renderer = Renderer::new(hwnd)?;
+            let renderer = Renderer::new(hwnd, tree)?;
             let state = Box::new(WindowState { renderer });
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
 

@@ -15,9 +15,9 @@ use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM
 use windows::Win32::System::Ole::CF_UNICODETEXT;
 
 use super::canvas::Canvas;
-use super::types::{Color, Rect};
+use super::types::Rect;
 use crate::theme::Theme;
-use crate::tree::{Action, Axis, NodeId, NodeKind, Props, Style, Tree};
+use crate::tree::{NodeId, NodeKind, Tree};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum CursorKind {
@@ -43,16 +43,13 @@ pub struct Renderer {
     focused: Option<NodeId>,
     hot: Option<NodeId>,
     text_selecting: bool,
-    counter: i32,
-    count_label: NodeId,
-    value_label: NodeId,
     theme: Theme,
     theme_index: usize,
 }
 
 impl Renderer {
     /// Создаёт рендерер Direct2D, привязанный к окну `hwnd`.
-    pub fn new(hwnd: HWND) -> Result<Self> {
+    pub fn new(hwnd: HWND, tree: Tree) -> Result<Self> {
         unsafe {
             let feature_levels = [D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0];
             let flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
@@ -128,154 +125,6 @@ impl Renderer {
             let _ = text_format_left.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
             let _ = text_format_left.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 
-            let mut tree = Tree::new();
-            let root = tree.root();
-            tree.set_props(
-                root,
-                Props {
-                    axis: Axis::Vertical,
-                    padding: 24.0,
-                    gap: 16.0,
-                    width: None,
-                    height: None,
-                },
-            );
-            let panel = tree.add_child(
-                root,
-                NodeKind::Frame { radius: 16.0 },
-                Props {
-                    axis: Axis::Vertical,
-                    padding: 20.0,
-                    gap: 12.0,
-                    width: None,
-                    height: None,
-                },
-            );
-            let count_label = tree.add_child(
-                panel,
-                NodeKind::Label {
-                    text: "Clicks: 0".encode_utf16().collect(),
-                },
-                Props {
-                    height: Some(40.0),
-                    ..Default::default()
-                },
-            );
-
-            let row = tree.add_child(
-                panel,
-                NodeKind::Container,
-                Props {
-                    axis: Axis::Horizontal,
-                    gap: 12.0,
-                    height: Some(48.0),
-                    ..Default::default()
-                },
-            );
-            let minus = tree.add_child(
-                row,
-                NodeKind::Button {
-                    label: "-".encode_utf16().collect(),
-                    radius: 10.0,
-                },
-                Props {
-                    width: Some(64.0),
-                    ..Default::default()
-                },
-            );
-            tree.set_action(minus, Action::Decrement);
-            tree.set_style(
-                minus,
-                Style {
-                    fill: Some(Color::hex(0xE5484D)),
-                    text: Some(Color::hex(0xFFFFFF)),
-                },
-            );
-            let plus = tree.add_child(
-                row,
-                NodeKind::Button {
-                    label: "+".encode_utf16().collect(),
-                    radius: 10.0,
-                },
-                Props {
-                    width: Some(64.0),
-                    ..Default::default()
-                },
-            );
-            tree.set_action(plus, Action::Increment);
-            tree.set_style(
-                plus,
-                Style {
-                    fill: Some(Color::hex(0x2FBF71)),
-                    text: Some(Color::hex(0xFFFFFF)),
-                },
-            );
-
-            let checkbox = tree.add_child(
-                panel,
-                NodeKind::Checkbox {
-                    label: "Enable feature".encode_utf16().collect(),
-                    checked: false,
-                },
-                Props {
-                    height: Some(28.0),
-                    ..Default::default()
-                },
-            );
-            tree.set_action(checkbox, Action::Toggle);
-
-            tree.add_child(
-                panel,
-                NodeKind::Label {
-                    text: "Type in the box:".encode_utf16().collect(),
-                },
-                Props {
-                    height: Some(24.0),
-                    ..Default::default()
-                },
-            );
-            tree.add_child(
-                panel,
-                NodeKind::TextBox {
-                    state: crate::tree::TextState::new(),
-                },
-                Props {
-                    height: Some(44.0),
-                    width: Some(280.0),
-                    ..Default::default()
-                },
-            );
-
-            tree.add_child(
-                panel,
-                NodeKind::Label {
-                    text: "Press Space to cycle themes".encode_utf16().collect(),
-                },
-                Props {
-                    height: Some(28.0),
-                    ..Default::default()
-                },
-            );
-            let value_label = tree.add_child(
-                panel,
-                NodeKind::Label {
-                    text: "Value: 50%".encode_utf16().collect(),
-                },
-                Props {
-                    height: Some(28.0),
-                    ..Default::default()
-                },
-            );
-            tree.add_child(
-                panel,
-                NodeKind::Slider { value: 0.5 },
-                Props {
-                    height: Some(40.0),
-                    width: Some(240.0),
-                    ..Default::default()
-                },
-            );
-
             let mut renderer = Renderer {
                 swap_chain,
                 context,
@@ -293,9 +142,6 @@ impl Renderer {
                 focused: None,
                 hot: None,
                 text_selecting: false,
-                counter: 0,
-                count_label,
-                value_label,
                 theme: Theme::dark(),
                 theme_index: 2,
             };
@@ -398,7 +244,7 @@ impl Renderer {
     pub fn on_mouse_down(&mut self, x: f32, y: f32) -> bool {
         self.text_selecting = false;
         let hit = self.tree.hit_test(x, y);
-        let new_focus = hit.filter(|&id| self.tree.is_textbox(id));
+        let new_focus = hit.filter(|&id| self.tree.is_focusable(id));
         self.focused = new_focus;
 
         if let Some(id) = hit {
@@ -460,6 +306,8 @@ impl Renderer {
 
     /// Обрабатывает нажатие клавиши. Возвращает true, если нужна перерисовка.
     pub fn on_key(&mut self, vk: u32) -> bool {
+        const VK_TAB: u32 = 0x09;
+        const VK_RETURN: u32 = 0x0D;
         const VK_SPACE: u32 = 0x20;
         const VK_END: u32 = 0x23;
         const VK_HOME: u32 = 0x24;
@@ -472,6 +320,11 @@ impl Renderer {
         const KEY_C: u32 = 0x43;
         const KEY_V: u32 = 0x56;
         const KEY_X: u32 = 0x58;
+
+        if vk == VK_TAB {
+            self.move_focus(!key_down(0x10));
+            return true;
+        }
 
         if let Some(id) = self.focused {
             if self.tree.is_textbox(id) {
@@ -547,6 +400,27 @@ impl Renderer {
                 }
                 return false;
             }
+            if self.tree.is_interactive(id) {
+                if vk == VK_RETURN || vk == VK_SPACE {
+                    self.dispatch(id);
+                    return true;
+                }
+                return false;
+            }
+            if self.tree.is_slider(id) {
+                if vk == VK_LEFT || vk == VK_RIGHT {
+                    let cur = match &self.tree.get(id).kind {
+                        NodeKind::Slider { value } => *value,
+                        _ => 0.0,
+                    };
+                    let step = if vk == VK_LEFT { -0.05 } else { 0.05 };
+                    let v = (cur + step).clamp(0.0, 1.0);
+                    self.tree.set_slider_value(id, v);
+                    self.tree.fire_change(id, v);
+                    return true;
+                }
+                return false;
+            }
         }
 
         if vk == VK_SPACE && self.focused.is_none() {
@@ -562,24 +436,38 @@ impl Renderer {
         false
     }
 
-    fn dispatch(&mut self, id: NodeId) {
-        match self.tree.get_action(id) {
-            Action::Increment => {
-                self.counter += 1;
-                self.update_count();
-            }
-            Action::Decrement => {
-                self.counter -= 1;
-                self.update_count();
-            }
-            Action::Toggle => self.tree.toggle_checkbox(id),
-            Action::None => {}
+    fn move_focus(&mut self, forward: bool) {
+        let list = self.tree.focusables();
+        if list.is_empty() {
+            self.focused = None;
+            return;
         }
+        let idx = self.focused.and_then(|f| list.iter().position(|&x| x == f));
+        let next = match idx {
+            Some(i) => {
+                if forward {
+                    (i + 1) % list.len()
+                } else {
+                    (i + list.len() - 1) % list.len()
+                }
+            }
+            None => {
+                if forward {
+                    0
+                } else {
+                    list.len() - 1
+                }
+            }
+        };
+        self.focused = Some(list[next]);
+        self.text_selecting = false;
     }
 
-    fn update_count(&mut self) {
-        let text: Vec<u16> = format!("Clicks: {}", self.counter).encode_utf16().collect();
-        self.tree.set_label_text(self.count_label, text);
+    fn dispatch(&mut self, id: NodeId) {
+        if self.tree.is_checkbox(id) {
+            self.tree.toggle_checkbox(id);
+        }
+        self.tree.fire_click(id);
     }
 
     fn set_slider_from_x(&mut self, id: NodeId, x: f32) {
@@ -589,9 +477,7 @@ impl Renderer {
         }
         let value = ((x - rect.x) / rect.width).clamp(0.0, 1.0);
         self.tree.set_slider_value(id, value);
-        let percent = (value * 100.0).round() as i32;
-        let text: Vec<u16> = format!("Value: {}%", percent).encode_utf16().collect();
-        self.tree.set_label_text(self.value_label, text);
+        self.tree.fire_change(id, value);
     }
 
     fn update_scroll(&mut self) {
@@ -661,6 +547,15 @@ impl Renderer {
                             base
                         };
                         let text_color = style.text.unwrap_or(theme.on_accent);
+                        if focused == Some(id) {
+                            let ring = Rect::new(
+                                node.rect.x - 3.0,
+                                node.rect.y - 3.0,
+                                node.rect.width + 6.0,
+                                node.rect.height + 6.0,
+                            );
+                            canvas.fill_rounded_rect(ring, *radius + 3.0, theme.content);
+                        }
                         canvas.fill_rounded_rect(node.rect, *radius, fill);
                         canvas.draw_text(label, format, node.rect, text_color);
                     }
@@ -679,7 +574,19 @@ impl Renderer {
                         let knob_x =
                             (r.x + filled_w - knob_d / 2.0).clamp(r.x, r.x + r.width - knob_d);
                         let knob = Rect::new(knob_x, cy - knob_d / 2.0, knob_d, knob_d);
-                        canvas.fill_rounded_rect(knob, knob_d / 2.0, theme.content);
+                        let knob_color = if focused == Some(id) { theme.accent } else { theme.content };
+                        canvas.fill_rounded_rect(knob, knob_d / 2.0, knob_color);
+                    }
+                    NodeKind::Progress { value } => {
+                        let v = value.clamp(0.0, 1.0);
+                        let r = node.rect;
+                        let bar_h = 10.0;
+                        let cy = r.y + r.height / 2.0;
+                        let track = Rect::new(r.x, cy - bar_h / 2.0, r.width, bar_h);
+                        canvas.fill_rounded_rect(track, bar_h / 2.0, theme.track);
+                        let fill = style.fill.unwrap_or(theme.accent);
+                        let filled = Rect::new(r.x, cy - bar_h / 2.0, r.width * v, bar_h);
+                        canvas.fill_rounded_rect(filled, bar_h / 2.0, fill);
                     }
                     NodeKind::Checkbox { label, checked } => {
                         let r = node.rect;
@@ -687,6 +594,10 @@ impl Renderer {
                         let bx = r.x;
                         let by = r.y + (r.height - box_d) / 2.0;
                         let box_rect = Rect::new(bx, by, box_d, box_d);
+                        if focused == Some(id) {
+                            let ring = Rect::new(bx - 3.0, by - 3.0, box_d + 6.0, box_d + 6.0);
+                            canvas.fill_rounded_rect(ring, 8.0, theme.content);
+                        }
                         if *checked {
                             let fill = style.fill.unwrap_or(theme.accent);
                             canvas.fill_rounded_rect(box_rect, 5.0, fill);

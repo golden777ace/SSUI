@@ -36,15 +36,6 @@ pub struct Style {
     pub text: Option<Color>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum Action {
-    #[default]
-    None,
-    Increment,
-    Decrement,
-    Toggle,
-}
-
 #[derive(Clone)]
 pub struct TextState {
     pub text: Vec<u16>,
@@ -209,6 +200,7 @@ pub enum NodeKind {
     Label { text: Vec<u16> },
     Button { label: Vec<u16>, radius: f32 },
     Slider { value: f32 },
+    Progress { value: f32 },
     Checkbox { label: Vec<u16>, checked: bool },
     TextBox { state: TextState },
 }
@@ -220,7 +212,8 @@ pub struct Node {
     pub kind: NodeKind,
     pub props: Props,
     pub style: Style,
-    pub action: Action,
+    on_click: Option<Box<dyn FnMut(&mut Tree)>>,
+    on_change: Option<Box<dyn FnMut(&mut Tree, f32)>>,
 }
 
 pub struct Tree {
@@ -238,7 +231,8 @@ impl Tree {
             kind: NodeKind::Container,
             props: Props::default(),
             style: Style::default(),
-            action: Action::default(),
+            on_click: None,
+            on_change: None,
         };
         Self {
             nodes: vec![root],
@@ -268,6 +262,48 @@ impl Tree {
         }
     }
 
+    /// Назначает обработчик клика для узла.
+    pub fn set_on_click<F: FnMut(&mut Tree) + 'static>(&mut self, id: NodeId, f: F) {
+        self.nodes[id.0].on_click = Some(Box::new(f));
+    }
+
+    /// Назначает обработчик изменения значения (ползунок).
+    pub fn set_on_change<F: FnMut(&mut Tree, f32) + 'static>(&mut self, id: NodeId, f: F) {
+        self.nodes[id.0].on_change = Some(Box::new(f));
+    }
+
+    fn take_on_click(&mut self, id: NodeId) -> Option<Box<dyn FnMut(&mut Tree)>> {
+        self.nodes[id.0].on_click.take()
+    }
+
+    fn put_on_click(&mut self, id: NodeId, cb: Box<dyn FnMut(&mut Tree)>) {
+        self.nodes[id.0].on_click = Some(cb);
+    }
+
+    fn take_on_change(&mut self, id: NodeId) -> Option<Box<dyn FnMut(&mut Tree, f32)>> {
+        self.nodes[id.0].on_change.take()
+    }
+
+    fn put_on_change(&mut self, id: NodeId, cb: Box<dyn FnMut(&mut Tree, f32)>) {
+        self.nodes[id.0].on_change = Some(cb);
+    }
+
+    /// Вызывает обработчик клика узла, если он назначен.
+    pub fn fire_click(&mut self, id: NodeId) {
+        if let Some(mut cb) = self.take_on_click(id) {
+            cb(self);
+            self.put_on_click(id, cb);
+        }
+    }
+
+    /// Вызывает обработчик изменения значения, если он назначен.
+    pub fn fire_change(&mut self, id: NodeId, value: f32) {
+        if let Some(mut cb) = self.take_on_change(id) {
+            cb(self, value);
+            self.put_on_change(id, cb);
+        }
+    }
+
     /// Добавляет узел ребёнком к `parent` и возвращает его идентификатор.
     pub fn add_child(&mut self, parent: NodeId, kind: NodeKind, props: Props) -> NodeId {
         let id = NodeId(self.nodes.len());
@@ -278,7 +314,8 @@ impl Tree {
             kind,
             props,
             style: Style::default(),
-            action: Action::default(),
+            on_click: None,
+            on_change: None,
         });
         self.nodes[parent.0].children.push(id);
         id
@@ -314,9 +351,39 @@ impl Tree {
         matches!(self.nodes[id.0].kind, NodeKind::Slider { .. })
     }
 
+    /// Может ли узел получать фокус клавиатуры.
+    pub fn is_focusable(&self, id: NodeId) -> bool {
+        self.is_button(id) || self.is_checkbox(id) || self.is_textbox(id) || self.is_slider(id)
+    }
+
+    /// Список фокусируемых узлов в порядке обхода дерева.
+    pub fn focusables(&self) -> Vec<NodeId> {
+        let mut out = Vec::new();
+        self.collect_focus(self.root, &mut out);
+        out
+    }
+
+    fn collect_focus(&self, id: NodeId, out: &mut Vec<NodeId>) {
+        if self.is_focusable(id) {
+            out.push(id);
+        }
+        let count = self.nodes[id.0].children.len();
+        for i in 0..count {
+            let child = self.nodes[id.0].children[i];
+            self.collect_focus(child, out);
+        }
+    }
+
     /// Задаёт значение ползунка в диапазоне 0..1.
     pub fn set_slider_value(&mut self, id: NodeId, value: f32) {
         if let NodeKind::Slider { value: v } = &mut self.nodes[id.0].kind {
+            *v = value;
+        }
+    }
+
+    /// Задаёт значение прогресс-бара в диапазоне 0..1.
+    pub fn set_progress_value(&mut self, id: NodeId, value: f32) {
+        if let NodeKind::Progress { value: v } = &mut self.nodes[id.0].kind {
             *v = value;
         }
     }
@@ -344,16 +411,6 @@ impl Tree {
         } else {
             None
         }
-    }
-
-    /// Возвращает действие узла.
-    pub fn get_action(&self, id: NodeId) -> Action {
-        self.nodes[id.0].action
-    }
-
-    /// Назначает действие узлу.
-    pub fn set_action(&mut self, id: NodeId, action: Action) {
-        self.nodes[id.0].action = action;
     }
 
     /// Возвращает верхний узел, содержащий точку `(x, y)`.
