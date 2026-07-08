@@ -125,6 +125,8 @@ impl Renderer {
             let _ = text_format_left.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
             let _ = text_format_left.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 
+            let theme_index = tree.theme();
+            let theme = theme_from_index(theme_index);
             let mut renderer = Renderer {
                 swap_chain,
                 context,
@@ -142,8 +144,8 @@ impl Renderer {
                 focused: None,
                 hot: None,
                 text_selecting: false,
-                theme: Theme::dark(),
-                theme_index: 2,
+                theme,
+                theme_index,
             };
             renderer.create_target()?;
             Ok(renderer)
@@ -425,12 +427,7 @@ impl Renderer {
 
         if vk == VK_SPACE && self.focused.is_none() {
             self.theme_index = (self.theme_index + 1) % 4;
-            self.theme = match self.theme_index {
-                0 => Theme::white(),
-                1 => Theme::light(),
-                2 => Theme::dark(),
-                _ => Theme::black(),
-            };
+            self.theme = theme_from_index(self.theme_index);
             return true;
         }
         false
@@ -668,6 +665,15 @@ impl Renderer {
 
 fn key_down(vk: i32) -> bool {
     unsafe { GetKeyState(vk) < 0 }
+}
+
+fn theme_from_index(index: usize) -> Theme {
+    match index {
+        0 => Theme::white(),
+        1 => Theme::light(),
+        2 => Theme::dark(),
+        _ => Theme::black(),
+    }
 }
 
 fn index_at_x(dwrite: &IDWriteFactory, format: &IDWriteTextFormat, text: &[u16], x: f32) -> usize {

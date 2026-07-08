@@ -219,6 +219,7 @@ pub struct Node {
 pub struct Tree {
     nodes: Vec<Node>,
     root: NodeId,
+    theme: usize,
 }
 
 impl Tree {
@@ -237,7 +238,18 @@ impl Tree {
         Self {
             nodes: vec![root],
             root: NodeId(0),
+            theme: 2,
         }
+    }
+
+    /// Задаёт стартовую тему: 0=white, 1=light, 2=dark, 3=black.
+    pub fn set_theme(&mut self, index: usize) {
+        self.theme = index.min(3);
+    }
+
+    /// Возвращает индекс стартовой темы.
+    pub fn theme(&self) -> usize {
+        self.theme
     }
 
     /// Идентификатор корневого узла.
