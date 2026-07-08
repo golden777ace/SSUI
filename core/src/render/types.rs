@@ -72,6 +72,11 @@ impl Rect {
         }
     }
 
+    /// Содержит ли прямоугольник точку `(x, y)`.
+    pub fn contains(self, x: f32, y: f32) -> bool {
+        x >= self.x && x <= self.x + self.width && y >= self.y && y <= self.y + self.height
+    }
+
     pub(crate) fn to_d2d(self) -> D2D_RECT_F {
         D2D_RECT_F {
             left: self.x,

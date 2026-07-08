@@ -206,7 +206,19 @@ pub enum NodeKind {
     Progress { value: f32 },
     Checkbox { label: Vec<u16>, checked: bool },
     TextBox { state: TextState },
+    Dropdown {
+        options: Vec<Vec<u16>>,
+        selected: usize,
+        open: bool,
+    },
+    Tabs {
+        labels: Vec<Vec<u16>>,
+        selected: usize,
+    },
 }
+
+/// Высота полосы вкладок в пикселях.
+pub const TAB_HEADER: f32 = 40.0;
 
 #[derive(Clone, Copy)]
 pub enum Ease {
@@ -466,6 +478,82 @@ impl Tree {
         matches!(self.nodes[id.0].kind, NodeKind::TextBox { .. })
     }
 
+    /// Является ли узел выпадающим списком.
+    pub fn is_dropdown(&self, id: NodeId) -> bool {
+        matches!(self.nodes[id.0].kind, NodeKind::Dropdown { .. })
+    }
+
+    /// Открыт ли выпадающий список.
+    pub fn dropdown_is_open(&self, id: NodeId) -> bool {
+        if let NodeKind::Dropdown { open, .. } = &self.nodes[id.0].kind {
+            *open
+        } else {
+            false
+        }
+    }
+
+    /// Открывает или закрывает выпадающий список.
+    pub fn set_dropdown_open(&mut self, id: NodeId, value: bool) {
+        if let NodeKind::Dropdown { open, .. } = &mut self.nodes[id.0].kind {
+            *open = value;
+        }
+    }
+
+    /// Число пунктов выпадающего списка.
+    pub fn dropdown_len(&self, id: NodeId) -> usize {
+        if let NodeKind::Dropdown { options, .. } = &self.nodes[id.0].kind {
+            options.len()
+        } else {
+            0
+        }
+    }
+
+    /// Задаёт выбранный пункт выпадающего списка.
+    pub fn set_dropdown_selected(&mut self, id: NodeId, index: usize) {
+        if let NodeKind::Dropdown { selected, .. } = &mut self.nodes[id.0].kind {
+            *selected = index;
+        }
+    }
+
+    /// Возвращает выбранный пункт выпадающего списка.
+    pub fn dropdown_selected(&self, id: NodeId) -> usize {
+        if let NodeKind::Dropdown { selected, .. } = &self.nodes[id.0].kind {
+            *selected
+        } else {
+            0
+        }
+    }
+
+    /// Является ли узел вкладками.
+    pub fn is_tabs(&self, id: NodeId) -> bool {
+        matches!(self.nodes[id.0].kind, NodeKind::Tabs { .. })
+    }
+
+    /// Число вкладок.
+    pub fn tabs_len(&self, id: NodeId) -> usize {
+        if let NodeKind::Tabs { labels, .. } = &self.nodes[id.0].kind {
+            labels.len()
+        } else {
+            0
+        }
+    }
+
+    /// Возвращает активную вкладку.
+    pub fn tabs_selected(&self, id: NodeId) -> usize {
+        if let NodeKind::Tabs { selected, .. } = &self.nodes[id.0].kind {
+            *selected
+        } else {
+            0
+        }
+    }
+
+    /// Задаёт активную вкладку.
+    pub fn set_tabs_selected(&mut self, id: NodeId, index: usize) {
+        if let NodeKind::Tabs { selected, .. } = &mut self.nodes[id.0].kind {
+            *selected = index;
+        }
+    }
+
     /// Реагирует ли узел на клик (кнопка или чекбокс).
     pub fn is_interactive(&self, id: NodeId) -> bool {
         self.is_button(id) || self.is_checkbox(id)
@@ -478,7 +566,12 @@ impl Tree {
 
     /// Может ли узел получать фокус клавиатуры.
     pub fn is_focusable(&self, id: NodeId) -> bool {
-        self.is_button(id) || self.is_checkbox(id) || self.is_textbox(id) || self.is_slider(id)
+        self.is_button(id)
+            || self.is_checkbox(id)
+            || self.is_textbox(id)
+            || self.is_slider(id)
+            || self.is_dropdown(id)
+            || self.is_tabs(id)
     }
 
     /// Список фокусируемых узлов в порядке обхода дерева.
@@ -566,6 +659,26 @@ impl Tree {
         let props = self.nodes[id.0].props;
         let children = self.nodes[id.0].children.clone();
         if children.is_empty() {
+            return;
+        }
+
+        let tabs_sel = if let NodeKind::Tabs { selected, .. } = &self.nodes[id.0].kind {
+            Some(*selected)
+        } else {
+            None
+        };
+        if let Some(selected) = tabs_sel {
+            let content = Rect::new(
+                rect.x,
+                rect.y + TAB_HEADER,
+                rect.width,
+                (rect.height - TAB_HEADER).max(0.0),
+            );
+            let off = Rect::new(-1.0e6, -1.0e6, 0.0, 0.0);
+            for (i, &c) in children.iter().enumerate() {
+                let cr = if i == selected { content } else { off };
+                self.layout_node(c, cr);
+            }
             return;
         }
 

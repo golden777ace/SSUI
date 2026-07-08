@@ -19,7 +19,7 @@ use windows::Win32::System::Ole::CF_UNICODETEXT;
 use super::canvas::Canvas;
 use super::types::{Color, Rect};
 use crate::theme::Theme;
-use crate::tree::{NodeId, NodeKind, Tree};
+use crate::tree::{NodeId, NodeKind, Tree, TAB_HEADER};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum CursorKind {
@@ -49,6 +49,8 @@ pub struct Renderer {
     theme_index: usize,
     last_tick: Instant,
     inspector: bool,
+    open_dropdown: Option<NodeId>,
+    dropdown_hover: Option<usize>,
 }
 
 impl Renderer {
@@ -152,6 +154,8 @@ impl Renderer {
                 theme_index,
                 last_tick: Instant::now(),
                 inspector: false,
+                open_dropdown: None,
+                dropdown_hover: None,
             };
             renderer.create_target()?;
             Ok(renderer)
@@ -213,6 +217,8 @@ impl Renderer {
     pub fn cursor_kind(&self) -> CursorKind {
         match self.hot {
             Some(id) if self.tree.is_interactive(id) => CursorKind::Hand,
+            Some(id) if self.tree.is_dropdown(id) => CursorKind::Hand,
+            Some(id) if self.tree.is_tabs(id) => CursorKind::Hand,
             Some(id) if self.tree.is_textbox(id) => CursorKind::IBeam,
             _ => CursorKind::Arrow,
         }
@@ -230,11 +236,54 @@ impl Renderer {
         }
     }
 
+    fn dropdown_popup_rect(&self, id: NodeId) -> Rect {
+        let r = self.tree.get(id).rect;
+        let n = self.tree.dropdown_len(id);
+        Rect::new(r.x, r.y + r.height, r.width, r.height * n as f32)
+    }
+
+    fn dropdown_option_at(&self, id: NodeId, y: f32) -> Option<usize> {
+        let r = self.tree.get(id).rect;
+        let n = self.tree.dropdown_len(id);
+        if r.height <= 0.0 || n == 0 {
+            return None;
+        }
+        let i = ((y - (r.y + r.height)) / r.height).floor();
+        if i < 0.0 {
+            return None;
+        }
+        let i = i as usize;
+        if i < n {
+            Some(i)
+        } else {
+            None
+        }
+    }
+
+    fn close_dropdown(&mut self) {
+        if let Some(dd) = self.open_dropdown.take() {
+            self.tree.set_dropdown_open(dd, false);
+        }
+        self.dropdown_hover = None;
+    }
+
     /// Обрабатывает движение мыши. Возвращает true, если нужна перерисовка.
     pub fn on_mouse_move(&mut self, x: f32, y: f32) -> bool {
         let mut dirty = false;
         let hit = self.tree.hit_test(x, y);
         self.hot = hit;
+        if let Some(dd) = self.open_dropdown {
+            let popup = self.dropdown_popup_rect(dd);
+            let hv = if popup.contains(x, y) {
+                self.dropdown_option_at(dd, y)
+            } else {
+                None
+            };
+            if hv != self.dropdown_hover {
+                self.dropdown_hover = hv;
+                dirty = true;
+            }
+        }
         let hover = hit.filter(|&id| self.tree.is_interactive(id));
         if hover != self.hovered {
             self.hovered = hover;
@@ -258,12 +307,51 @@ impl Renderer {
 
     /// Обрабатывает нажатие левой кнопки. Возвращает true, если нужна перерисовка.
     pub fn on_mouse_down(&mut self, x: f32, y: f32) -> bool {
+        if let Some(dd) = self.open_dropdown {
+            let popup = self.dropdown_popup_rect(dd);
+            let header = self.tree.get(dd).rect;
+            if popup.contains(x, y) {
+                if let Some(i) = self.dropdown_option_at(dd, y) {
+                    self.tree.set_dropdown_selected(dd, i);
+                    self.tree.fire_change(dd, i as f32);
+                }
+                self.close_dropdown();
+                return true;
+            }
+            self.close_dropdown();
+            if header.contains(x, y) {
+                return true;
+            }
+        }
+
         self.text_selecting = false;
         let hit = self.tree.hit_test(x, y);
         let new_focus = hit.filter(|&id| self.tree.is_textbox(id) || self.tree.is_slider(id));
         self.focused = new_focus;
 
         if let Some(id) = hit {
+            if self.tree.is_dropdown(id) {
+                let sel = self.tree.dropdown_selected(id);
+                self.tree.set_dropdown_open(id, true);
+                self.open_dropdown = Some(id);
+                self.dropdown_hover = Some(sel);
+                self.focused = Some(id);
+                return true;
+            }
+            if self.tree.is_tabs(id) {
+                let r = self.tree.get(id).rect;
+                if y <= r.y + TAB_HEADER {
+                    let n = self.tree.tabs_len(id);
+                    if n > 0 {
+                        let step = r.width / n as f32;
+                        let i = (((x - r.x) / step).floor() as i32).clamp(0, n as i32 - 1) as usize;
+                        self.tree.set_tabs_selected(id, i);
+                        self.tree.fire_change(id, i as f32);
+                    }
+                }
+                self.focused = Some(id);
+                return true;
+            }
             if self.tree.is_textbox(id) {
                 let idx = self.textbox_index_at(id, x);
                 if let Some(st) = self.tree.textbox_state_mut(id) {
@@ -341,6 +429,9 @@ impl Renderer {
         const KEY_V: u32 = 0x56;
         const KEY_X: u32 = 0x58;
         const VK_F12: u32 = 0x7B;
+        const VK_UP: u32 = 0x26;
+        const VK_DOWN: u32 = 0x28;
+        const VK_ESCAPE: u32 = 0x1B;
 
         if vk == VK_F12 {
             self.inspector = !self.inspector;
@@ -348,11 +439,68 @@ impl Renderer {
         }
 
         if vk == VK_TAB {
+            self.close_dropdown();
             self.move_focus(!key_down(0x10));
             return true;
         }
 
         if let Some(id) = self.focused {
+            if self.tree.is_dropdown(id) {
+                let n = self.tree.dropdown_len(id);
+                if self.open_dropdown == Some(id) {
+                    match vk {
+                        VK_UP => {
+                            let cur = self.dropdown_hover.unwrap_or(0);
+                            self.dropdown_hover = Some(if cur == 0 { 0 } else { cur - 1 });
+                            return true;
+                        }
+                        VK_DOWN => {
+                            let cur = self.dropdown_hover.unwrap_or(0);
+                            let next = if n == 0 { 0 } else { (cur + 1).min(n - 1) };
+                            self.dropdown_hover = Some(next);
+                            return true;
+                        }
+                        VK_RETURN | VK_SPACE => {
+                            if let Some(hv) = self.dropdown_hover {
+                                self.tree.set_dropdown_selected(id, hv);
+                                self.tree.fire_change(id, hv as f32);
+                            }
+                            self.close_dropdown();
+                            return true;
+                        }
+                        VK_ESCAPE => {
+                            self.close_dropdown();
+                            return true;
+                        }
+                        _ => return false,
+                    }
+                } else if vk == VK_RETURN || vk == VK_SPACE {
+                    self.close_dropdown();
+                    let sel = self.tree.dropdown_selected(id);
+                    self.tree.set_dropdown_open(id, true);
+                    self.open_dropdown = Some(id);
+                    self.dropdown_hover = Some(sel);
+                    return true;
+                }
+                return false;
+            }
+            if self.tree.is_tabs(id) {
+                let n = self.tree.tabs_len(id);
+                if n > 0 && (vk == VK_LEFT || vk == VK_RIGHT) {
+                    let cur = self.tree.tabs_selected(id);
+                    let next = if vk == VK_LEFT {
+                        if cur == 0 { 0 } else { cur - 1 }
+                    } else {
+                        (cur + 1).min(n - 1)
+                    };
+                    if next != cur {
+                        self.tree.set_tabs_selected(id, next);
+                        self.tree.fire_change(id, next as f32);
+                    }
+                    return true;
+                }
+                return false;
+            }
             if self.tree.is_textbox(id) {
                 let shift = key_down(0x10);
                 let ctrl = key_down(0x11);
@@ -687,8 +835,82 @@ impl Renderer {
                         }
                         canvas.pop_clip();
                     }
+                    NodeKind::Dropdown {
+                        options,
+                        selected,
+                        ..
+                    } => {
+                        let r = node.rect;
+                        let border = if focused == Some(id) { theme.accent } else { theme.track };
+                        let fill = style.fill.unwrap_or(theme.surface);
+                        canvas.fill_rounded_rect(r, 8.0, fill);
+                        canvas.stroke_rect(r, if focused == Some(id) { 2.0 } else { 1.0 }, border);
+                        let label = options.get(*selected).cloned().unwrap_or_default();
+                        let color = style.text.unwrap_or(theme.content);
+                        let tr = Rect::new(r.x + 12.0, r.y, (r.width - 40.0).max(0.0), r.height);
+                        canvas.draw_text(&label, format_left, tr, color);
+                        let chev: Vec<u16> = "\u{25BE}".encode_utf16().collect();
+                        let cr = Rect::new(r.x + r.width - 28.0, r.y, 20.0, r.height);
+                        canvas.draw_text(&chev, format, cr, color);
+                    }
+                    NodeKind::Tabs { labels, selected } => {
+                        let r = node.rect;
+                        let header = Rect::new(r.x, r.y, r.width, TAB_HEADER);
+                        canvas.fill_rounded_rect(header, 8.0, theme.surface);
+                        let n = labels.len().max(1);
+                        let tab_w = r.width / n as f32;
+                        for (i, lab) in labels.iter().enumerate() {
+                            let tx = r.x + tab_w * i as f32;
+                            let tab_rect = Rect::new(tx, r.y, tab_w, TAB_HEADER);
+                            if i == *selected {
+                                let hl =
+                                    Rect::new(tx + 4.0, r.y + 4.0, tab_w - 8.0, TAB_HEADER - 8.0);
+                                canvas.fill_rounded_rect(hl, 6.0, theme.accent);
+                            }
+                            let color = if i == *selected {
+                                theme.on_accent
+                            } else {
+                                theme.content
+                            };
+                            canvas.draw_text(lab, format, tab_rect, color);
+                        }
+                        if focused == Some(id) {
+                            canvas.stroke_rect(header, 2.0, theme.accent);
+                        }
+                    }
                 }
             });
+
+            if let Some(dd) = self.open_dropdown {
+                let header = self.tree.get(dd).rect;
+                let n = self.tree.dropdown_len(dd);
+                let row_h = header.height;
+                let popup = Rect::new(
+                    header.x,
+                    header.y + header.height,
+                    header.width,
+                    row_h * n as f32,
+                );
+                canvas.fill_rounded_rect(popup, 8.0, theme.surface);
+                canvas.stroke_rect(popup, 1.0, theme.track);
+                if let NodeKind::Dropdown { options, .. } = &self.tree.get(dd).kind {
+                    for (i, opt) in options.iter().enumerate() {
+                        let ry = popup.y + row_h * i as f32;
+                        if self.dropdown_hover == Some(i) {
+                            let hl = Rect::new(
+                                popup.x + 3.0,
+                                ry + 2.0,
+                                popup.width - 6.0,
+                                row_h - 4.0,
+                            );
+                            canvas.fill_rounded_rect(hl, 5.0, theme.selection);
+                        }
+                        let tr =
+                            Rect::new(popup.x + 12.0, ry, (popup.width - 24.0).max(0.0), row_h);
+                        canvas.draw_text(opt, format_left, tr, theme.content);
+                    }
+                }
+            }
 
             if self.inspector {
                 let hot = self.hot;
@@ -743,6 +965,8 @@ fn kind_name(kind: &NodeKind) -> &'static str {
         NodeKind::Progress { .. } => "Progress",
         NodeKind::Checkbox { .. } => "Checkbox",
         NodeKind::TextBox { .. } => "TextBox",
+        NodeKind::Dropdown { .. } => "Dropdown",
+        NodeKind::Tabs { .. } => "Tabs",
     }
 }
 

@@ -385,6 +385,90 @@ impl PyWindow {
         Ok(tree.textbox_text(n.id).unwrap_or_default())
     }
 
+    /// Добавляет выпадающий список; `ch(index)` при выборе.
+    #[pyo3(signature = (options, *, pr=None, sel=0, ch=None, pd=0.0, gp=0.0, w=None, h=None))]
+    fn dd(
+        &mut self,
+        options: Vec<String>,
+        pr: Option<PyNode>,
+        sel: usize,
+        ch: Option<PyObject>,
+        pd: f32,
+        gp: f32,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<PyNode> {
+        let opts: Vec<Vec<u16>> = options.iter().map(|s| utf16(s)).collect();
+        let props = make_props("v", pd, gp, w, h);
+        let parent = self.parent_of(pr);
+        let texts = self.bindings.clone();
+        let values = self.value_bindings.clone();
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let id = tree.add_child(
+            parent,
+            NodeKind::Dropdown {
+                options: opts,
+                selected: sel,
+                open: false,
+            },
+            props,
+        );
+        tree.set_on_change(id, move |t, v| {
+            Python::with_gil(|py| {
+                if let Some(cb) = &ch {
+                    if let Err(e) = cb.bind(py).call1((v as i64,)) {
+                        e.print(py);
+                    }
+                }
+                refresh_all(py, t, &texts, &values);
+            });
+        });
+        Ok(PyNode { id })
+    }
+
+    /// Добавляет вкладки как контекст; вложенные контейнеры — их содержимое.
+    #[pyo3(signature = (labels, *, pr=None, sel=0, ch=None, pd=0.0, gp=0.0, w=None, h=None))]
+    fn tab(
+        &mut self,
+        labels: Vec<String>,
+        pr: Option<PyNode>,
+        sel: usize,
+        ch: Option<PyObject>,
+        pd: f32,
+        gp: f32,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<Ctx> {
+        let labs: Vec<Vec<u16>> = labels.iter().map(|s| utf16(s)).collect();
+        let props = make_props("v", pd, gp, w, h);
+        let parent = self.parent_of(pr);
+        let texts = self.bindings.clone();
+        let values = self.value_bindings.clone();
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let id = tree.add_child(
+            parent,
+            NodeKind::Tabs {
+                labels: labs,
+                selected: sel,
+            },
+            props,
+        );
+        tree.set_on_change(id, move |t, v| {
+            Python::with_gil(|py| {
+                if let Some(cb) = &ch {
+                    if let Err(e) = cb.bind(py).call1((v as i64,)) {
+                        e.print(py);
+                    }
+                }
+                refresh_all(py, t, &texts, &values);
+            });
+        });
+        Ok(Ctx {
+            stack: self.stack.clone(),
+            node: id,
+        })
+    }
+
     /// Показывает окно и запускает цикл сообщений.
     fn go(&mut self) -> PyResult<()> {
         dpi::enable_dpi_awareness();
@@ -504,6 +588,7 @@ fn ssui(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyWindow>()?;
     m.add_class::<PyNode>()?;
     m.add_class::<Ctx>()?;
+    m.add_class::<Fx>()?;
     m.add_class::<Signal>()?;
     m.add_function(wrap_pyfunction!(sgnl, m)?)?;
     Ok(())
