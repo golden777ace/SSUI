@@ -214,6 +214,7 @@ pub struct Node {
     pub style: Style,
     on_click: Option<Box<dyn FnMut(&mut Tree)>>,
     on_change: Option<Box<dyn FnMut(&mut Tree, f32)>>,
+    on_input: Option<Box<dyn FnMut(&mut Tree, &str)>>,
 }
 
 pub struct Tree {
@@ -234,6 +235,7 @@ impl Tree {
             style: Style::default(),
             on_click: None,
             on_change: None,
+            on_input: None,
         };
         Self {
             nodes: vec![root],
@@ -316,6 +318,37 @@ impl Tree {
         }
     }
 
+    /// Назначает обработчик ввода текста (поле ввода).
+    pub fn set_on_input<F: FnMut(&mut Tree, &str) + 'static>(&mut self, id: NodeId, f: F) {
+        self.nodes[id.0].on_input = Some(Box::new(f));
+    }
+
+    fn take_on_input(&mut self, id: NodeId) -> Option<Box<dyn FnMut(&mut Tree, &str)>> {
+        self.nodes[id.0].on_input.take()
+    }
+
+    fn put_on_input(&mut self, id: NodeId, cb: Box<dyn FnMut(&mut Tree, &str)>) {
+        self.nodes[id.0].on_input = Some(cb);
+    }
+
+    /// Вызывает обработчик ввода текста, если он назначен.
+    pub fn fire_text_input(&mut self, id: NodeId) {
+        let text = match self.textbox_state(id) {
+            Some(s) => String::from_utf16_lossy(&s.text),
+            None => return,
+        };
+        if let Some(mut cb) = self.take_on_input(id) {
+            cb(self, &text);
+            self.put_on_input(id, cb);
+        }
+    }
+
+    /// Возвращает текущий текст поля ввода.
+    pub fn textbox_text(&self, id: NodeId) -> Option<String> {
+        self.textbox_state(id)
+            .map(|s| String::from_utf16_lossy(&s.text))
+    }
+
     /// Добавляет узел ребёнком к `parent` и возвращает его идентификатор.
     pub fn add_child(&mut self, parent: NodeId, kind: NodeKind, props: Props) -> NodeId {
         let id = NodeId(self.nodes.len());
@@ -328,6 +361,7 @@ impl Tree {
             style: Style::default(),
             on_click: None,
             on_change: None,
+            on_input: None,
         });
         self.nodes[parent.0].children.push(id);
         id

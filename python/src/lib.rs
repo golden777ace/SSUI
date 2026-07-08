@@ -6,7 +6,7 @@ use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
 
 use ssui_core::platform::{dpi, Window as CoreWindow};
-use ssui_core::tree::{Axis, NodeId, NodeKind, Props, Tree};
+use ssui_core::tree::{Axis, NodeId, NodeKind, Props, TextState, Tree};
 
 #[pyclass(name = "N")]
 #[derive(Clone, Copy)]
@@ -15,6 +15,32 @@ struct PyNode {
 }
 
 type Bindings = Rc<RefCell<Vec<(NodeId, Py<PyAny>)>>>;
+type Stack = Rc<RefCell<Vec<NodeId>>>;
+
+#[pyclass(unsendable, name = "Ctx")]
+struct Ctx {
+    stack: Stack,
+    node: NodeId,
+}
+
+#[pymethods]
+impl Ctx {
+    fn __enter__(&self) -> PyNode {
+        self.stack.borrow_mut().push(self.node);
+        PyNode { id: self.node }
+    }
+
+    #[pyo3(signature = (_t=None, _v=None, _tb=None))]
+    fn __exit__(
+        &self,
+        _t: Option<PyObject>,
+        _v: Option<PyObject>,
+        _tb: Option<PyObject>,
+    ) -> bool {
+        self.stack.borrow_mut().pop();
+        false
+    }
+}
 
 #[pyclass(unsendable, name = "W")]
 struct PyWindow {
@@ -22,6 +48,8 @@ struct PyWindow {
     title: String,
     width: i32,
     height: i32,
+    root: NodeId,
+    stack: Stack,
     bindings: Bindings,
     value_bindings: Bindings,
 }
@@ -33,28 +61,30 @@ impl PyWindow {
     fn new(ttl: &str, w: i32, h: i32, thm: &str) -> Self {
         let mut tree = Tree::new();
         tree.set_theme(theme_index(thm));
+        let root = tree.root();
         Self {
             tree: Some(tree),
             title: ttl.to_string(),
             width: w,
             height: h,
+            root,
+            stack: Rc::new(RefCell::new(Vec::new())),
             bindings: Rc::new(RefCell::new(Vec::new())),
             value_bindings: Rc::new(RefCell::new(Vec::new())),
         }
     }
 
     /// Возвращает корневой узел окна.
-    fn rt(&self) -> PyResult<PyNode> {
-        let tree = self.tree.as_ref().ok_or_else(consumed)?;
-        Ok(PyNode { id: tree.root() })
+    fn rt(&self) -> PyNode {
+        PyNode { id: self.root }
     }
 
-    /// Добавляет панель со скруглением; возвращает её узел.
-    #[pyo3(signature = (pr, rad=12.0, ax="v", pd=0.0, gp=0.0, w=None, h=None))]
+    /// Добавляет панель; возвращает её узел.
+    #[pyo3(signature = (rad=12.0, *, pr=None, ax="v", pd=0.0, gp=0.0, w=None, h=None))]
     fn fr(
         &mut self,
-        pr: PyNode,
         rad: f32,
+        pr: Option<PyNode>,
         ax: &str,
         pd: f32,
         gp: f32,
@@ -62,18 +92,41 @@ impl PyWindow {
         h: Option<f32>,
     ) -> PyResult<PyNode> {
         let props = make_props(ax, pd, gp, w, h);
+        let parent = self.parent_of(pr);
         let tree = self.tree.as_mut().ok_or_else(consumed)?;
-        let id = tree.add_child(pr.id, NodeKind::Frame { radius: rad }, props);
+        let id = tree.add_child(parent, NodeKind::Frame { radius: rad }, props);
         Ok(PyNode { id })
     }
 
+    /// Панель-контейнер как контекст: `with win.bx(...) as p:`.
+    #[pyo3(signature = (rad=12.0, *, pr=None, ax="v", pd=0.0, gp=0.0, w=None, h=None))]
+    fn bx(
+        &mut self,
+        rad: f32,
+        pr: Option<PyNode>,
+        ax: &str,
+        pd: f32,
+        gp: f32,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<Ctx> {
+        let props = make_props(ax, pd, gp, w, h);
+        let parent = self.parent_of(pr);
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let id = tree.add_child(parent, NodeKind::Frame { radius: rad }, props);
+        Ok(Ctx {
+            stack: self.stack.clone(),
+            node: id,
+        })
+    }
+
     /// Добавляет метку; `bind` — колбэк, возвращающий текст.
-    #[pyo3(signature = (pr, txt="", bind=None, pd=0.0, gp=0.0, w=None, h=None))]
+    #[pyo3(signature = (txt="", *, pr=None, bind=None, pd=0.0, gp=0.0, w=None, h=None))]
     fn lb(
         &mut self,
         py: Python,
-        pr: PyNode,
         txt: &str,
+        pr: Option<PyNode>,
         bind: Option<PyObject>,
         pd: f32,
         gp: f32,
@@ -85,9 +138,10 @@ impl PyWindow {
             Some(f) => f.bind(py).call0()?.extract::<String>()?,
             None => txt.to_string(),
         };
+        let parent = self.parent_of(pr);
         let tree = self.tree.as_mut().ok_or_else(consumed)?;
         let id = tree.add_child(
-            pr.id,
+            parent,
             NodeKind::Label {
                 text: utf16(&initial),
             },
@@ -100,11 +154,11 @@ impl PyWindow {
     }
 
     /// Добавляет кнопку; `clk` вызывается по нажатию.
-    #[pyo3(signature = (pr, lb, rad=10.0, pd=0.0, gp=0.0, w=None, h=None, clk=None))]
+    #[pyo3(signature = (lb="", *, pr=None, rad=10.0, pd=0.0, gp=0.0, w=None, h=None, clk=None))]
     fn bt(
         &mut self,
-        pr: PyNode,
         lb: &str,
+        pr: Option<PyNode>,
         rad: f32,
         pd: f32,
         gp: f32,
@@ -113,11 +167,12 @@ impl PyWindow {
         clk: Option<PyObject>,
     ) -> PyResult<PyNode> {
         let props = make_props("v", pd, gp, w, h);
+        let parent = self.parent_of(pr);
         let texts = self.bindings.clone();
         let values = self.value_bindings.clone();
         let tree = self.tree.as_mut().ok_or_else(consumed)?;
         let id = tree.add_child(
-            pr.id,
+            parent,
             NodeKind::Button {
                 label: utf16(lb),
                 radius: rad,
@@ -138,11 +193,11 @@ impl PyWindow {
     }
 
     /// Добавляет ползунок 0..1; `ch(value)` при перетаскивании.
-    #[pyo3(signature = (pr, vl=0.5, ch=None, pd=0.0, gp=0.0, w=None, h=None))]
+    #[pyo3(signature = (vl=0.5, *, pr=None, ch=None, pd=0.0, gp=0.0, w=None, h=None))]
     fn sl(
         &mut self,
-        pr: PyNode,
         vl: f32,
+        pr: Option<PyNode>,
         ch: Option<PyObject>,
         pd: f32,
         gp: f32,
@@ -150,10 +205,11 @@ impl PyWindow {
         h: Option<f32>,
     ) -> PyResult<PyNode> {
         let props = make_props("v", pd, gp, w, h);
+        let parent = self.parent_of(pr);
         let texts = self.bindings.clone();
         let values = self.value_bindings.clone();
         let tree = self.tree.as_mut().ok_or_else(consumed)?;
-        let id = tree.add_child(pr.id, NodeKind::Slider { value: vl }, props);
+        let id = tree.add_child(parent, NodeKind::Slider { value: vl }, props);
         tree.set_on_change(id, move |t, v| {
             Python::with_gil(|py| {
                 if let Some(cb) = &ch {
@@ -168,12 +224,12 @@ impl PyWindow {
     }
 
     /// Добавляет индикатор; `bind` — колбэк, возвращающий 0..1.
-    #[pyo3(signature = (pr, vl=0.0, bind=None, pd=0.0, gp=0.0, w=None, h=None))]
+    #[pyo3(signature = (vl=0.0, *, pr=None, bind=None, pd=0.0, gp=0.0, w=None, h=None))]
     fn pr(
         &mut self,
         py: Python,
-        pr: PyNode,
         vl: f32,
+        pr: Option<PyNode>,
         bind: Option<PyObject>,
         pd: f32,
         gp: f32,
@@ -185,8 +241,9 @@ impl PyWindow {
             Some(f) => f.bind(py).call0()?.extract::<f32>()?,
             None => vl,
         };
+        let parent = self.parent_of(pr);
         let tree = self.tree.as_mut().ok_or_else(consumed)?;
-        let id = tree.add_child(pr.id, NodeKind::Progress { value: initial }, props);
+        let id = tree.add_child(parent, NodeKind::Progress { value: initial }, props);
         if let Some(f) = bind {
             self.value_bindings.borrow_mut().push((id, f));
         }
@@ -194,11 +251,11 @@ impl PyWindow {
     }
 
     /// Добавляет флажок; `clk` вызывается после переключения.
-    #[pyo3(signature = (pr, lb, chk=false, clk=None, pd=0.0, gp=0.0, w=None, h=None))]
+    #[pyo3(signature = (lb="", *, pr=None, chk=false, clk=None, pd=0.0, gp=0.0, w=None, h=None))]
     fn ch(
         &mut self,
-        pr: PyNode,
         lb: &str,
+        pr: Option<PyNode>,
         chk: bool,
         clk: Option<PyObject>,
         pd: f32,
@@ -207,11 +264,12 @@ impl PyWindow {
         h: Option<f32>,
     ) -> PyResult<PyNode> {
         let props = make_props("v", pd, gp, w, h);
+        let parent = self.parent_of(pr);
         let texts = self.bindings.clone();
         let values = self.value_bindings.clone();
         let tree = self.tree.as_mut().ok_or_else(consumed)?;
         let id = tree.add_child(
-            pr.id,
+            parent,
             NodeKind::Checkbox {
                 label: utf16(lb),
                 checked: chk,
@@ -231,6 +289,49 @@ impl PyWindow {
         Ok(PyNode { id })
     }
 
+    /// Добавляет поле ввода; `sig` — сигнал, куда пишется текст.
+    #[pyo3(signature = (txt="", *, pr=None, sig=None, pd=0.0, gp=0.0, w=None, h=None))]
+    fn tx(
+        &mut self,
+        txt: &str,
+        pr: Option<PyNode>,
+        sig: Option<PyObject>,
+        pd: f32,
+        gp: f32,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<PyNode> {
+        let props = make_props("v", pd, gp, w, h);
+        let mut st = TextState::new();
+        if !txt.is_empty() {
+            st.text = utf16(txt);
+            st.caret = st.text.len();
+            st.anchor = st.caret;
+        }
+        let parent = self.parent_of(pr);
+        let texts = self.bindings.clone();
+        let values = self.value_bindings.clone();
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let id = tree.add_child(parent, NodeKind::TextBox { state: st }, props);
+        if let Some(sig) = sig {
+            tree.set_on_input(id, move |t, text| {
+                Python::with_gil(|py| {
+                    if let Err(e) = sig.bind(py).call_method1("st", (text,)) {
+                        e.print(py);
+                    }
+                    refresh_all(py, t, &texts, &values);
+                });
+            });
+        }
+        Ok(PyNode { id })
+    }
+
+    /// Возвращает текущий текст поля ввода.
+    fn tv(&self, n: PyNode) -> PyResult<String> {
+        let tree = self.tree.as_ref().ok_or_else(consumed)?;
+        Ok(tree.textbox_text(n.id).unwrap_or_default())
+    }
+
     /// Показывает окно и запускает цикл сообщений.
     fn go(&mut self) -> PyResult<()> {
         dpi::enable_dpi_awareness();
@@ -239,6 +340,15 @@ impl PyWindow {
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         window.run();
         Ok(())
+    }
+}
+
+impl PyWindow {
+    fn parent_of(&self, pr: Option<PyNode>) -> NodeId {
+        match pr {
+            Some(p) => p.id,
+            None => *self.stack.borrow().last().unwrap_or(&self.root),
+        }
     }
 }
 
@@ -331,6 +441,7 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
 fn ssui(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyWindow>()?;
     m.add_class::<PyNode>()?;
+    m.add_class::<Ctx>()?;
     m.add_class::<Signal>()?;
     m.add_function(wrap_pyfunction!(sgnl, m)?)?;
     Ok(())

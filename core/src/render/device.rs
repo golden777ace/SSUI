@@ -246,7 +246,7 @@ impl Renderer {
     pub fn on_mouse_down(&mut self, x: f32, y: f32) -> bool {
         self.text_selecting = false;
         let hit = self.tree.hit_test(x, y);
-        let new_focus = hit.filter(|&id| self.tree.is_focusable(id));
+        let new_focus = hit.filter(|&id| self.tree.is_textbox(id) || self.tree.is_slider(id));
         self.focused = new_focus;
 
         if let Some(id) = hit {
@@ -292,15 +292,19 @@ impl Renderer {
     pub fn on_char(&mut self, ch: u16) -> bool {
         const BACKSPACE: u16 = 0x08;
         if let Some(id) = self.focused {
+            let mut changed = false;
             if let Some(st) = self.tree.textbox_state_mut(id) {
                 if ch == BACKSPACE {
                     st.backspace();
-                    return true;
-                }
-                if ch >= 0x20 {
+                    changed = true;
+                } else if ch >= 0x20 {
                     st.insert(&[ch]);
-                    return true;
+                    changed = true;
                 }
+            }
+            if changed {
+                self.tree.fire_text_input(id);
+                return true;
             }
         }
         false
@@ -332,43 +336,48 @@ impl Renderer {
             if self.tree.is_textbox(id) {
                 let shift = key_down(0x10);
                 let ctrl = key_down(0x11);
+                let mut handled = false;
+                let mut changed = false;
                 if let Some(st) = self.tree.textbox_state_mut(id) {
                     match vk {
                         VK_LEFT => {
                             st.move_left(shift);
-                            return true;
+                            handled = true;
                         }
                         VK_RIGHT => {
                             st.move_right(shift);
-                            return true;
+                            handled = true;
                         }
                         VK_HOME => {
                             st.home(shift);
-                            return true;
+                            handled = true;
                         }
                         VK_END => {
                             st.end(shift);
-                            return true;
+                            handled = true;
                         }
                         VK_DELETE => {
                             st.delete_forward();
-                            return true;
+                            handled = true;
+                            changed = true;
                         }
                         _ => {}
                     }
-                    if ctrl {
+                    if !handled && ctrl {
                         match vk {
                             KEY_A => {
                                 st.select_all();
-                                return true;
+                                handled = true;
                             }
                             KEY_Z => {
                                 st.undo();
-                                return true;
+                                handled = true;
+                                changed = true;
                             }
                             KEY_Y => {
                                 st.redo();
-                                return true;
+                                handled = true;
+                                changed = true;
                             }
                             KEY_C => {
                                 let (a, b) = st.sel_range();
@@ -376,7 +385,7 @@ impl Renderer {
                                     let sel: Vec<u16> = st.text[a..b].to_vec();
                                     set_clipboard_text(&sel);
                                 }
-                                return true;
+                                handled = true;
                             }
                             KEY_X => {
                                 let (a, b) = st.sel_range();
@@ -384,8 +393,9 @@ impl Renderer {
                                     let sel: Vec<u16> = st.text[a..b].to_vec();
                                     set_clipboard_text(&sel);
                                     st.backspace();
+                                    changed = true;
                                 }
-                                return true;
+                                handled = true;
                             }
                             KEY_V => {
                                 let clip = get_clipboard_text();
@@ -393,14 +403,18 @@ impl Renderer {
                                     clip.into_iter().filter(|&c| c >= 0x20).collect();
                                 if !filtered.is_empty() {
                                     st.insert(&filtered);
+                                    changed = true;
                                 }
-                                return true;
+                                handled = true;
                             }
                             _ => {}
                         }
                     }
                 }
-                return false;
+                if changed {
+                    self.tree.fire_text_input(id);
+                }
+                return handled;
             }
             if self.tree.is_interactive(id) {
                 if vk == VK_RETURN || vk == VK_SPACE {
