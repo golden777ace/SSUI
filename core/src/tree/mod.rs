@@ -1,3 +1,6 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use crate::render::types::{Color, Rect};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -205,6 +208,45 @@ pub enum NodeKind {
     TextBox { state: TextState },
 }
 
+#[derive(Clone, Copy)]
+pub enum Ease {
+    Linear,
+    In,
+    Out,
+    InOut,
+}
+
+pub struct Anim {
+    from: f32,
+    to: f32,
+    elapsed: f32,
+    dur: f32,
+    ease: Ease,
+    cb: Box<dyn FnMut(&mut Tree, f32)>,
+}
+
+impl Anim {
+    /// Создаёт анимацию значения от `from` к `to` за `dur` секунд.
+    pub fn new<F: FnMut(&mut Tree, f32) + 'static>(
+        from: f32,
+        to: f32,
+        dur: f32,
+        ease: Ease,
+        cb: F,
+    ) -> Self {
+        Self {
+            from,
+            to,
+            elapsed: 0.0,
+            dur,
+            ease,
+            cb: Box::new(cb),
+        }
+    }
+}
+
+pub type AnimQueue = Rc<RefCell<Vec<Anim>>>;
+
 pub struct Node {
     pub parent: Option<NodeId>,
     pub children: Vec<NodeId>,
@@ -221,6 +263,8 @@ pub struct Tree {
     nodes: Vec<Node>,
     root: NodeId,
     theme: usize,
+    anims: Vec<Anim>,
+    pending: AnimQueue,
 }
 
 impl Tree {
@@ -241,6 +285,8 @@ impl Tree {
             nodes: vec![root],
             root: NodeId(0),
             theme: 2,
+            anims: Vec::new(),
+            pending: Rc::new(RefCell::new(Vec::new())),
         }
     }
 
@@ -252,6 +298,39 @@ impl Tree {
     /// Возвращает индекс стартовой темы.
     pub fn theme(&self) -> usize {
         self.theme
+    }
+
+    /// Возвращает очередь анимаций для внешнего добавления.
+    pub fn anim_queue(&self) -> AnimQueue {
+        self.pending.clone()
+    }
+
+    /// Есть ли активные анимации.
+    pub fn has_anims(&self) -> bool {
+        !self.anims.is_empty() || !self.pending.borrow().is_empty()
+    }
+
+    /// Продвигает анимации на `dt` секунд; true, если были активные.
+    pub fn tick(&mut self, dt: f32) -> bool {
+        {
+            let mut p = self.pending.borrow_mut();
+            if !p.is_empty() {
+                self.anims.append(&mut p);
+            }
+        }
+        if self.anims.is_empty() {
+            return false;
+        }
+        let mut anims = std::mem::take(&mut self.anims);
+        for a in anims.iter_mut() {
+            a.elapsed = (a.elapsed + dt).min(a.dur);
+            let t = if a.dur > 0.0 { a.elapsed / a.dur } else { 1.0 };
+            let v = a.from + (a.to - a.from) * ease_value(a.ease, t);
+            (a.cb)(self, v);
+        }
+        anims.retain(|a| a.elapsed < a.dur);
+        self.anims.append(&mut anims);
+        true
     }
 
     /// Идентификатор корневого узла.
@@ -572,4 +651,23 @@ impl Default for Tree {
 
 fn contains(rect: Rect, x: f32, y: f32) -> bool {
     x >= rect.x && x <= rect.x + rect.width && y >= rect.y && y <= rect.y + rect.height
+}
+
+fn ease_value(kind: Ease, t: f32) -> f32 {
+    match kind {
+        Ease::Linear => t,
+        Ease::In => t * t * t,
+        Ease::Out => {
+            let u = 1.0 - t;
+            1.0 - u * u * u
+        }
+        Ease::InOut => {
+            if t < 0.5 {
+                4.0 * t * t * t
+            } else {
+                let u = -2.0 * t + 2.0;
+                1.0 - u * u * u / 2.0
+            }
+        }
+    }
 }

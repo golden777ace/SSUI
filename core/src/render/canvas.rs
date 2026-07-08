@@ -35,6 +35,17 @@ impl<'a> Canvas<'a> {
         }
     }
 
+    /// Рисует контур прямоугольника заданной толщины.
+    pub fn stroke_rect(&self, rect: Rect, width: f32, color: Color) {
+        let c = color.to_d2d();
+        let r = rect.to_d2d();
+        unsafe {
+            if let Ok(brush) = self.rt.CreateSolidColorBrush(&c, None) {
+                self.rt.DrawRectangle(&r, &brush, width, None);
+            }
+        }
+    }
+
     /// Рисует строку текста внутри прямоугольника `rect`.
     pub fn draw_text(&self, text: &[u16], format: &IDWriteTextFormat, rect: Rect, color: Color) {
         let c = color.to_d2d();

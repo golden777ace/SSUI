@@ -62,6 +62,7 @@ impl Window {
             let state = Box::new(WindowState { renderer });
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
 
+            let _ = SetTimer(Some(hwnd), 1, 16, None);
             let _ = ShowWindow(hwnd, SW_SHOW);
             let _ = UpdateWindow(hwnd);
 
@@ -98,6 +99,15 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                     state.renderer.render();
                 }
                 let _ = ValidateRect(Some(hwnd), None);
+                LRESULT(0)
+            }
+
+            WM_TIMER => {
+                if let Some(state) = state_ptr(hwnd).as_mut() {
+                    if state.renderer.on_timer() {
+                        let _ = InvalidateRect(Some(hwnd), None, false);
+                    }
+                }
                 LRESULT(0)
             }
 

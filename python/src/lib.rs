@@ -6,7 +6,7 @@ use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
 
 use ssui_core::platform::{dpi, Window as CoreWindow};
-use ssui_core::tree::{Axis, NodeId, NodeKind, Props, TextState, Tree};
+use ssui_core::tree::{Anim, AnimQueue, Axis, Ease, NodeId, NodeKind, Props, TextState, Tree};
 
 #[pyclass(name = "N")]
 #[derive(Clone, Copy)]
@@ -42,6 +42,47 @@ impl Ctx {
     }
 }
 
+#[pyclass(unsendable, name = "Fx")]
+struct Fx {
+    queue: AnimQueue,
+    texts: Bindings,
+    values: Bindings,
+}
+
+#[pymethods]
+impl Fx {
+    /// Анимирует сигнал `sig` к значению `to` за `dur` секунд.
+    #[pyo3(signature = (sig, to, *, frm=None, dur=0.3, ease="out"))]
+    fn __call__(
+        &self,
+        py: Python,
+        sig: PyObject,
+        to: f32,
+        frm: Option<f32>,
+        dur: f32,
+        ease: &str,
+    ) -> PyResult<()> {
+        let from = match frm {
+            Some(v) => v,
+            None => sig.bind(py).call0()?.extract::<f32>()?,
+        };
+        let e = parse_ease(ease);
+        let texts = self.texts.clone();
+        let values = self.values.clone();
+        self.queue
+            .borrow_mut()
+            .push(Anim::new(from, to, dur, e, move |t, v| {
+                Python::with_gil(|py| {
+                    if let Err(err) = sig.bind(py).call_method1("st", (v,)) {
+                        err.print(py);
+                    }
+                    refresh_all(py, t, &texts, &values);
+                });
+            }));
+        Ok(())
+    }
+}
+
 #[pyclass(unsendable, name = "W")]
 struct PyWindow {
     tree: Option<Tree>,
@@ -52,6 +93,7 @@ struct PyWindow {
     stack: Stack,
     bindings: Bindings,
     value_bindings: Bindings,
+    anim_queue: AnimQueue,
 }
 
 #[pymethods]
@@ -62,6 +104,7 @@ impl PyWindow {
         let mut tree = Tree::new();
         tree.set_theme(theme_index(thm));
         let root = tree.root();
+        let anim_queue = tree.anim_queue();
         Self {
             tree: Some(tree),
             title: ttl.to_string(),
@@ -71,12 +114,22 @@ impl PyWindow {
             stack: Rc::new(RefCell::new(Vec::new())),
             bindings: Rc::new(RefCell::new(Vec::new())),
             value_bindings: Rc::new(RefCell::new(Vec::new())),
+            anim_queue,
         }
     }
 
     /// Возвращает корневой узел окна.
     fn rt(&self) -> PyNode {
         PyNode { id: self.root }
+    }
+
+    /// Возвращает контроллер анимаций.
+    fn fx(&self) -> Fx {
+        Fx {
+            queue: self.anim_queue.clone(),
+            texts: self.bindings.clone(),
+            values: self.value_bindings.clone(),
+        }
     }
 
     /// Добавляет панель; возвращает её узел.
@@ -403,6 +456,15 @@ fn parse_axis(s: &str) -> Axis {
     match s {
         "h" => Axis::Horizontal,
         _ => Axis::Vertical,
+    }
+}
+
+fn parse_ease(s: &str) -> Ease {
+    match s {
+        "lin" => Ease::Linear,
+        "in" => Ease::In,
+        "io" => Ease::InOut,
+        _ => Ease::Out,
     }
 }
 

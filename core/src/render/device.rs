@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use windows::core::*;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Direct2D::Common::*;
@@ -15,7 +17,7 @@ use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM
 use windows::Win32::System::Ole::CF_UNICODETEXT;
 
 use super::canvas::Canvas;
-use super::types::Rect;
+use super::types::{Color, Rect};
 use crate::theme::Theme;
 use crate::tree::{NodeId, NodeKind, Tree};
 
@@ -45,6 +47,8 @@ pub struct Renderer {
     text_selecting: bool,
     theme: Theme,
     theme_index: usize,
+    last_tick: Instant,
+    inspector: bool,
 }
 
 impl Renderer {
@@ -146,6 +150,8 @@ impl Renderer {
                 text_selecting: false,
                 theme,
                 theme_index,
+                last_tick: Instant::now(),
+                inspector: false,
             };
             renderer.create_target()?;
             Ok(renderer)
@@ -193,6 +199,14 @@ impl Renderer {
             }
             let _ = self.create_target();
         }
+    }
+
+    /// Продвигает анимации по таймеру; true, если нужна перерисовка.
+    pub fn on_timer(&mut self) -> bool {
+        let now = Instant::now();
+        let dt = (now - self.last_tick).as_secs_f32();
+        self.last_tick = now;
+        self.tree.tick(dt)
     }
 
     /// Тип курсора под текущим положением мыши.
@@ -326,6 +340,12 @@ impl Renderer {
         const KEY_C: u32 = 0x43;
         const KEY_V: u32 = 0x56;
         const KEY_X: u32 = 0x58;
+        const VK_F12: u32 = 0x7B;
+
+        if vk == VK_F12 {
+            self.inspector = !self.inspector;
+            return true;
+        }
 
         if vk == VK_TAB {
             self.move_focus(!key_down(0x10));
@@ -669,6 +689,33 @@ impl Renderer {
                     }
                 }
             });
+
+            if self.inspector {
+                let hot = self.hot;
+                self.tree.for_each(|id, node| {
+                    canvas.stroke_rect(node.rect, 1.0, INSPECT_LINE);
+                    if hot == Some(id) {
+                        canvas.fill_rounded_rect(node.rect, 0.0, INSPECT_FILL);
+                    }
+                });
+                if let Some(id) = hot {
+                    let node = self.tree.get(id);
+                    let r = node.rect;
+                    let info = format!(
+                        "{} {}x{}",
+                        kind_name(&node.kind),
+                        r.width as i32,
+                        r.height as i32
+                    );
+                    let text: Vec<u16> = info.encode_utf16().collect();
+                    let bh = 22.0;
+                    let label = Rect::new(r.x, (r.y - bh).max(0.0), 240.0, bh);
+                    canvas.fill_rounded_rect(label, 4.0, INSPECT_LABEL_BG);
+                    let tr =
+                        Rect::new(label.x + 6.0, label.y, label.width - 12.0, label.height);
+                    canvas.draw_text(&text, format_left, tr, INSPECT_LABEL_FG);
+                }
+            }
         }
         unsafe {
             let _ = self.rt.EndDraw(None, None);
@@ -679,6 +726,24 @@ impl Renderer {
 
 fn key_down(vk: i32) -> bool {
     unsafe { GetKeyState(vk) < 0 }
+}
+
+const INSPECT_LINE: Color = Color::rgba(1.0, 0.2, 0.6, 0.9);
+const INSPECT_FILL: Color = Color::rgba(1.0, 0.2, 0.6, 0.18);
+const INSPECT_LABEL_BG: Color = Color::rgba(0.0, 0.0, 0.0, 0.85);
+const INSPECT_LABEL_FG: Color = Color::rgba(1.0, 1.0, 1.0, 1.0);
+
+fn kind_name(kind: &NodeKind) -> &'static str {
+    match kind {
+        NodeKind::Container => "Container",
+        NodeKind::Frame { .. } => "Frame",
+        NodeKind::Label { .. } => "Label",
+        NodeKind::Button { .. } => "Button",
+        NodeKind::Slider { .. } => "Slider",
+        NodeKind::Progress { .. } => "Progress",
+        NodeKind::Checkbox { .. } => "Checkbox",
+        NodeKind::TextBox { .. } => "TextBox",
+    }
 }
 
 fn theme_from_index(index: usize) -> Theme {
