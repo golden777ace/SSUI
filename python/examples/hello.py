@@ -1,25 +1,34 @@
 import ssui
 
 CSS = """
-.hero { gradient: #3b82f6 #1e3a8a; radius: 18; shadow: 16; }
-.cta  { gradient: #22c55e #15803d; radius: 22; color: #ffffff; }
+.v  { gradient: #3b82f6 #1e3a8a v;  radius: 16; color: #ffffff; }
+.h  { gradient: #22c55e #15803d h;  radius: 16; color: #ffffff; }
+.d  { gradient: #f59e0b #7c2d12 d;  radius: 16; color: #ffffff; }
+.du { gradient: #ec4899 #831843 du; radius: 16; color: #ffffff; }
 """
 
 
+def panel(win, cls, text):
+    with win.bx(rad=16.0, pd=18.0, gp=6.0, h=120.0) as p:
+        win.cls(p, cls)
+        win.lb(txt=text, h=26.0)
+
+
 def main():
-    win = ssui.W("SSUI · градиенты", 620, 440, thm="drk")
+    win = ssui.W("SSUI · направления градиента", 660, 520, thm="drk")
 
-    with win.bx(pd=32.0, gp=20.0):
-        with win.bx(rad=18.0, pd=24.0, gp=12.0, elev=16.0) as hero:
-            win.cls(hero, "hero")
-            win.lb(txt="Панель с градиентом и тенью", h=30.0)
-            win.lb(txt="Заливка сверху вниз двумя цветами", h=26.0)
+    with win.bx(pd=24.0, gp=16.0):
+        with win.bx(ax="h", gp=16.0):
+            panel(win, "v", "Вертикаль ↓")
+            panel(win, "h", "Горизонталь →")
+        with win.bx(ax="h", gp=16.0):
+            panel(win, "d", "Диагональ ↘")
+            panel(win, "du", "Диагональ ↗")
 
-        cta = win.bt("Градиентная кнопка", h=52.0)
-        win.cls(cta, "cta")
+        cta = win.bt("Кнопка-градиент", h=52.0)
+        win.cls(cta, "h")
 
     win.css(CSS)
-
     win.go()
 
 

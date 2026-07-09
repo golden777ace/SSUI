@@ -41,6 +41,7 @@ pub struct Style {
     pub wrap: Option<bool>,
     pub elev: Option<f32>,
     pub grad: Option<(Color, Color)>,
+    pub grad_dir: u8,
 }
 
 #[derive(Clone)]
@@ -306,6 +307,7 @@ pub struct Tree {
     menu_items: Vec<Vec<u16>>,
     pending_dialog: DialogQueue,
     on_dialog: Option<Box<dyn FnMut(&mut Tree, usize)>>,
+    tint: f32,
 }
 
 impl Tree {
@@ -334,6 +336,7 @@ impl Tree {
             menu_items: Vec::new(),
             pending_dialog: Rc::new(RefCell::new(None)),
             on_dialog: None,
+            tint: 0.0,
         }
     }
 
@@ -345,6 +348,16 @@ impl Tree {
     /// Возвращает индекс стартовой темы.
     pub fn theme(&self) -> usize {
         self.theme
+    }
+
+    /// Задаёт альфа-канал фона окна (0..1).
+    pub fn set_tint(&mut self, value: f32) {
+        self.tint = value.clamp(0.0, 1.0);
+    }
+
+    /// Возвращает альфа-канал фона окна.
+    pub fn tint(&self) -> f32 {
+        self.tint
     }
 
     /// Возвращает очередь анимаций для внешнего добавления.
@@ -1075,9 +1088,15 @@ fn apply_style_decl(style: &mut Style, key: &str, value: &str) {
         }
         "gradient" => {
             let parts: Vec<&str> = value.split_whitespace().collect();
-            if parts.len() == 2 {
+            if parts.len() >= 2 {
                 if let (Some(a), Some(b)) = (parse_color(parts[0]), parse_color(parts[1])) {
                     style.grad = Some((a, b));
+                    style.grad_dir = match parts.get(2).copied() {
+                        Some("h") => 1,
+                        Some("d") => 2,
+                        Some("du") => 3,
+                        _ => 0,
+                    };
                 }
             }
         }
@@ -1111,6 +1130,7 @@ fn apply_decl(node: &mut Node, key: &str, value: &str) {
 fn parse_color(value: &str) -> Option<Color> {
     let hex = value.trim().strip_prefix('#')?;
     match hex.len() {
+        8 => u32::from_str_radix(hex, 16).ok().map(Color::hexa),
         6 => u32::from_str_radix(hex, 16).ok().map(Color::hex),
         3 => {
             let mut full = String::new();

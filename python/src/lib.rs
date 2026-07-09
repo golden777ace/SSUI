@@ -138,13 +138,15 @@ struct PyWindow {
     value_bindings: Bindings,
     anim_queue: AnimQueue,
     dialog_queue: DialogQueue,
+    glass: bool,
+    tint: f32,
 }
 
 #[pymethods]
 impl PyWindow {
     #[new]
-    #[pyo3(signature = (ttl="SSUI", w=1280, h=720, thm="drk"))]
-    fn new(ttl: &str, w: i32, h: i32, thm: &str) -> Self {
+    #[pyo3(signature = (ttl="SSUI", w=1280, h=720, thm="drk", glass=false, tint=0.0))]
+    fn new(ttl: &str, w: i32, h: i32, thm: &str, glass: bool, tint: f32) -> Self {
         let mut tree = Tree::new();
         tree.set_theme(theme_index(thm));
         let root = tree.root();
@@ -161,6 +163,8 @@ impl PyWindow {
             value_bindings: Rc::new(RefCell::new(Vec::new())),
             anim_queue,
             dialog_queue,
+            glass,
+            tint,
         }
     }
 
@@ -176,6 +180,13 @@ impl PyWindow {
             texts: self.bindings.clone(),
             values: self.value_bindings.clone(),
         }
+    }
+
+    /// Привязывает прозрачность фона окна к сигналу 0..1.
+    fn tint(&mut self, sig: PyObject) -> PyResult<()> {
+        let root = self.tree.as_ref().ok_or_else(consumed)?.root();
+        self.value_bindings.borrow_mut().push((root, sig));
+        Ok(())
     }
 
     /// Возвращает контроллер диалогов.
@@ -635,7 +646,7 @@ impl PyWindow {
     fn go(&mut self) -> PyResult<()> {
         dpi::enable_dpi_awareness();
         let tree = self.tree.take().ok_or_else(consumed)?;
-        let window = CoreWindow::new(&self.title, self.width, self.height, tree)
+        let window = CoreWindow::new(&self.title, self.width, self.height, tree, self.glass, self.tint)
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         window.run();
         Ok(())
@@ -734,11 +745,16 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
             Err(e) => e.print(py),
         }
     }
+    let root = t.root();
     for (id, f) in values.borrow().iter() {
         match f.bind(py).call0().and_then(|v| v.extract::<f32>()) {
             Ok(v) => {
-                t.set_slider_value(*id, v);
-                t.set_progress_value(*id, v);
+                if *id == root {
+                    t.set_tint(v);
+                } else {
+                    t.set_slider_value(*id, v);
+                    t.set_progress_value(*id, v);
+                }
             }
             Err(e) => e.print(py),
         }

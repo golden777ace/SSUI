@@ -26,6 +26,16 @@ impl Color {
         }
     }
 
+    /// Цвет из `0xRRGGBBAA` с альфа-каналом.
+    pub fn hexa(value: u32) -> Self {
+        Self {
+            r: ((value >> 24) & 0xFF) as f32 / 255.0,
+            g: ((value >> 16) & 0xFF) as f32 / 255.0,
+            b: ((value >> 8) & 0xFF) as f32 / 255.0,
+            a: (value & 0xFF) as f32 / 255.0,
+        }
+    }
+
     pub fn lighten(self, amount: f32) -> Self {
         Self {
             r: self.r + (1.0 - self.r) * amount,

@@ -27,7 +27,14 @@ static REGISTER_CLASS: Once = Once::new();
 
 impl Window {
     /// Создаёт окно, инициализирует рендерер деревом `tree` и показывает его.
-    pub fn new(title: &str, width: i32, height: i32, tree: Tree) -> Result<Self> {
+    pub fn new(
+        title: &str,
+        width: i32,
+        height: i32,
+        tree: Tree,
+        glass: bool,
+        tint: f32,
+    ) -> Result<Self> {
         unsafe {
             let instance = GetModuleHandleW(None)?;
             let hinstance: HINSTANCE = instance.into();
@@ -48,8 +55,13 @@ impl Window {
 
             let title_w: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
 
+            let ex_style = if glass {
+                WS_EX_NOREDIRECTIONBITMAP
+            } else {
+                WINDOW_EX_STYLE::default()
+            };
             let hwnd = CreateWindowExW(
-                WINDOW_EX_STYLE::default(),
+                ex_style,
                 class_name,
                 PCWSTR(title_w.as_ptr()),
                 WS_OVERLAPPEDWINDOW,
@@ -63,7 +75,7 @@ impl Window {
                 None,
             )?;
 
-            let renderer = Renderer::new(hwnd, tree)?;
+            let renderer = Renderer::new(hwnd, tree, glass, tint, width, height)?;
             let state = Box::new(WindowState { renderer });
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
 

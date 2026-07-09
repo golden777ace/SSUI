@@ -6,6 +6,7 @@ use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::Direct3D::*;
 use windows::Win32::Graphics::Direct3D11::*;
+use windows::Win32::Graphics::DirectComposition::*;
 use windows::Win32::Graphics::DirectWrite::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::Win32::Graphics::Dxgi::*;
@@ -64,11 +65,22 @@ pub struct Renderer {
     open_menu: Option<(f32, f32)>,
     menu_hover: Option<usize>,
     dialog: Option<DialogView>,
+    glass: bool,
+    _dcomp: Option<IDCompositionDevice>,
+    _dcomp_target: Option<IDCompositionTarget>,
+    _dcomp_visual: Option<IDCompositionVisual>,
 }
 
 impl Renderer {
     /// Создаёт рендерер Direct2D, привязанный к окну `hwnd`.
-    pub fn new(hwnd: HWND, tree: Tree) -> Result<Self> {
+    pub fn new(
+        hwnd: HWND,
+        tree: Tree,
+        glass: bool,
+        tint: f32,
+        width: i32,
+        height: i32,
+    ) -> Result<Self> {
         unsafe {
             let feature_levels = [D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0];
             let flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
@@ -92,25 +104,56 @@ impl Renderer {
             let adapter: IDXGIAdapter = dxgi_device.GetAdapter()?;
             let factory: IDXGIFactory2 = adapter.GetParent()?;
 
-            let desc = DXGI_SWAP_CHAIN_DESC1 {
-                Width: 0,
-                Height: 0,
-                Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                Stereo: FALSE,
-                SampleDesc: DXGI_SAMPLE_DESC {
-                    Count: 1,
-                    Quality: 0,
-                },
-                BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
-                BufferCount: 2,
-                Scaling: DXGI_SCALING_NONE,
-                SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
-                AlphaMode: DXGI_ALPHA_MODE_IGNORE,
-                Flags: 0,
+            let swap_chain: IDXGISwapChain1 = if glass {
+                let desc = DXGI_SWAP_CHAIN_DESC1 {
+                    Width: width.max(1) as u32,
+                    Height: height.max(1) as u32,
+                    Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                    Stereo: FALSE,
+                    SampleDesc: DXGI_SAMPLE_DESC {
+                        Count: 1,
+                        Quality: 0,
+                    },
+                    BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
+                    BufferCount: 2,
+                    Scaling: DXGI_SCALING_STRETCH,
+                    SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
+                    AlphaMode: DXGI_ALPHA_MODE_PREMULTIPLIED,
+                    Flags: 0,
+                };
+                factory.CreateSwapChainForComposition(&device, &desc, None)?
+            } else {
+                let desc = DXGI_SWAP_CHAIN_DESC1 {
+                    Width: 0,
+                    Height: 0,
+                    Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                    Stereo: FALSE,
+                    SampleDesc: DXGI_SAMPLE_DESC {
+                        Count: 1,
+                        Quality: 0,
+                    },
+                    BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
+                    BufferCount: 2,
+                    Scaling: DXGI_SCALING_NONE,
+                    SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
+                    AlphaMode: DXGI_ALPHA_MODE_IGNORE,
+                    Flags: 0,
+                };
+                factory.CreateSwapChainForHwnd(&device, hwnd, &desc, None, None)?
             };
-            let swap_chain: IDXGISwapChain1 =
-                factory.CreateSwapChainForHwnd(&device, hwnd, &desc, None, None)?;
             let _ = factory.MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
+
+            let (dcomp, dcomp_target, dcomp_visual) = if glass {
+                let dcomp: IDCompositionDevice = DCompositionCreateDevice(&dxgi_device)?;
+                let target = dcomp.CreateTargetForHwnd(hwnd, true)?;
+                let visual = dcomp.CreateVisual()?;
+                visual.SetContent(&swap_chain)?;
+                target.SetRoot(&visual)?;
+                dcomp.Commit()?;
+                (Some(dcomp), Some(target), Some(visual))
+            } else {
+                (None, None, None)
+            };
 
             let d2d_factory: ID2D1Factory1 =
                 D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
@@ -187,7 +230,12 @@ impl Renderer {
                 open_menu: None,
                 menu_hover: None,
                 dialog: None,
+                glass,
+                _dcomp: dcomp,
+                _dcomp_target: dcomp_target,
+                _dcomp_visual: dcomp_visual,
             };
+            renderer.tree.set_tint(tint);
             renderer.create_target()?;
             Ok(renderer)
         }
@@ -199,7 +247,11 @@ impl Renderer {
             let props = D2D1_BITMAP_PROPERTIES1 {
                 pixelFormat: D2D1_PIXEL_FORMAT {
                     format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                    alphaMode: D2D1_ALPHA_MODE_IGNORE,
+                    alphaMode: if self.glass {
+                        D2D1_ALPHA_MODE_PREMULTIPLIED
+                    } else {
+                        D2D1_ALPHA_MODE_IGNORE
+                    },
                 },
                 dpiX: 96.0,
                 dpiY: 96.0,
@@ -1065,7 +1117,17 @@ impl Renderer {
             let format = &self.text_format;
             let format_left = &self.text_format_left;
             let format_wrap = &self.text_format_wrap;
-            canvas.clear(theme.background);
+            let clear = if self.glass {
+                Color::rgba(
+                    theme.background.r,
+                    theme.background.g,
+                    theme.background.b,
+                    self.tree.tint(),
+                )
+            } else {
+                theme.background
+            };
+            canvas.clear(clear);
             self.tree.for_each(|id, node| {
                 let mut style = node.style;
                 if focused == Some(id) {
@@ -1086,7 +1148,7 @@ impl Renderer {
                             }
                         }
                         if let Some((a, b)) = style.grad {
-                            canvas.fill_rounded_gradient(node.rect, rad, a, b);
+                            canvas.fill_rounded_gradient(node.rect, rad, a, b, style.grad_dir);
                         } else {
                             canvas.fill_rounded_rect(node.rect, rad, fill);
                         }
@@ -1130,7 +1192,7 @@ impl Renderer {
                             canvas.fill_rounded_rect(ring, rad + 3.0, theme.content);
                         }
                         if let Some((a, b)) = style.grad {
-                            canvas.fill_rounded_gradient(node.rect, rad, a, b);
+                            canvas.fill_rounded_gradient(node.rect, rad, a, b, style.grad_dir);
                         } else {
                             canvas.fill_rounded_rect(node.rect, rad, fill);
                         }
@@ -1495,6 +1557,7 @@ fn merge_style(base: &mut Style, over: &Style) {
     }
     if over.grad.is_some() {
         base.grad = over.grad;
+        base.grad_dir = over.grad_dir;
     }
 }
 

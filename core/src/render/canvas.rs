@@ -47,8 +47,8 @@ impl<'a> Canvas<'a> {
         }
     }
 
-    /// Заливает скруглённый прямоугольник вертикальным градиентом.
-    pub fn fill_rounded_gradient(&self, rect: Rect, radius: f32, c0: Color, c1: Color) {
+    /// Заливает скруглённый прямоугольник линейным градиентом по направлению `dir`.
+    pub fn fill_rounded_gradient(&self, rect: Rect, radius: f32, c0: Color, c1: Color, dir: u8) {
         unsafe {
             let stops = [
                 D2D1_GRADIENT_STOP {
@@ -71,11 +71,17 @@ impl<'a> Canvas<'a> {
                     return;
                 }
             };
+            let (sx, sy, ex, ey) = match dir {
+                1 => (rect.x, rect.y, rect.x + rect.width, rect.y),
+                2 => (rect.x, rect.y, rect.x + rect.width, rect.y + rect.height),
+                3 => (rect.x, rect.y + rect.height, rect.x + rect.width, rect.y),
+                _ => (rect.x, rect.y, rect.x, rect.y + rect.height),
+            };
             let mut props = D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES::default();
-            props.startPoint.X = rect.x;
-            props.startPoint.Y = rect.y;
-            props.endPoint.X = rect.x;
-            props.endPoint.Y = rect.y + rect.height;
+            props.startPoint.X = sx;
+            props.startPoint.Y = sy;
+            props.endPoint.X = ex;
+            props.endPoint.Y = ey;
             match self.rt.CreateLinearGradientBrush(&props, None, &coll) {
                 Ok(brush) => {
                     let rr = D2D1_ROUNDED_RECT {
