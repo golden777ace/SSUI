@@ -37,6 +37,7 @@ impl Default for Props {
 pub struct Style {
     pub fill: Option<Color>,
     pub text: Option<Color>,
+    pub radius: Option<f32>,
 }
 
 #[derive(Clone)]
@@ -215,10 +216,20 @@ pub enum NodeKind {
         labels: Vec<Vec<u16>>,
         selected: usize,
     },
+    Table {
+        columns: Vec<Vec<u16>>,
+        rows: Vec<Vec<Vec<u16>>>,
+        selected: Option<usize>,
+        scroll: f32,
+    },
 }
 
 /// Высота полосы вкладок в пикселях.
 pub const TAB_HEADER: f32 = 40.0;
+
+/// Высота заголовка таблицы и строки в пикселях.
+pub const TABLE_HEADER: f32 = 34.0;
+pub const TABLE_ROW: f32 = 30.0;
 
 #[derive(Clone, Copy)]
 pub enum Ease {
@@ -259,6 +270,15 @@ impl Anim {
 
 pub type AnimQueue = Rc<RefCell<Vec<Anim>>>;
 
+pub struct DialogData {
+    pub title: Vec<u16>,
+    pub message: Vec<u16>,
+    pub buttons: Vec<Vec<u16>>,
+    pub cb: Box<dyn FnMut(&mut Tree, usize)>,
+}
+
+pub type DialogQueue = Rc<RefCell<Option<DialogData>>>;
+
 pub struct Node {
     pub parent: Option<NodeId>,
     pub children: Vec<NodeId>,
@@ -266,6 +286,9 @@ pub struct Node {
     pub kind: NodeKind,
     pub props: Props,
     pub style: Style,
+    pub style_focus: Style,
+    pub style_hover: Style,
+    pub class_name: Option<String>,
     on_click: Option<Box<dyn FnMut(&mut Tree)>>,
     on_change: Option<Box<dyn FnMut(&mut Tree, f32)>>,
     on_input: Option<Box<dyn FnMut(&mut Tree, &str)>>,
@@ -277,6 +300,9 @@ pub struct Tree {
     theme: usize,
     anims: Vec<Anim>,
     pending: AnimQueue,
+    menu_items: Vec<Vec<u16>>,
+    pending_dialog: DialogQueue,
+    on_dialog: Option<Box<dyn FnMut(&mut Tree, usize)>>,
 }
 
 impl Tree {
@@ -289,6 +315,9 @@ impl Tree {
             kind: NodeKind::Container,
             props: Props::default(),
             style: Style::default(),
+            style_focus: Style::default(),
+            style_hover: Style::default(),
+            class_name: None,
             on_click: None,
             on_change: None,
             on_input: None,
@@ -299,6 +328,9 @@ impl Tree {
             theme: 2,
             anims: Vec::new(),
             pending: Rc::new(RefCell::new(Vec::new())),
+            menu_items: Vec::new(),
+            pending_dialog: Rc::new(RefCell::new(None)),
+            on_dialog: None,
         }
     }
 
@@ -358,6 +390,40 @@ impl Tree {
     /// Переопределяет цвета элемента поверх темы.
     pub fn set_style(&mut self, id: NodeId, style: Style) {
         self.nodes[id.0].style = style;
+    }
+
+    /// Задаёт CSS-класс элемента.
+    pub fn set_class(&mut self, id: NodeId, name: Option<String>) {
+        self.nodes[id.0].class_name = name;
+    }
+
+    /// Разбирает подмножество CSS и применяет стили ко всем узлам.
+    pub fn apply_css(&mut self, css: &str) {
+        let rules = parse_css(css);
+        let count = self.nodes.len();
+        for i in 0..count {
+            for rule in &rules {
+                if sel_matches(&self.nodes[i], &rule.sel) {
+                    match rule.state {
+                        State::Base => {
+                            for (k, v) in &rule.decls {
+                                apply_decl(&mut self.nodes[i], k, v);
+                            }
+                        }
+                        State::Focus => {
+                            for (k, v) in &rule.decls {
+                                apply_style_decl(&mut self.nodes[i].style_focus, k, v);
+                            }
+                        }
+                        State::Hover => {
+                            for (k, v) in &rule.decls {
+                                apply_style_decl(&mut self.nodes[i].style_hover, k, v);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Меняет текст у узла-метки.
@@ -450,6 +516,9 @@ impl Tree {
             kind,
             props,
             style: Style::default(),
+            style_focus: Style::default(),
+            style_hover: Style::default(),
+            class_name: None,
             on_click: None,
             on_change: None,
             on_input: None,
@@ -554,6 +623,90 @@ impl Tree {
         }
     }
 
+    /// Является ли узел таблицей.
+    pub fn is_table(&self, id: NodeId) -> bool {
+        matches!(self.nodes[id.0].kind, NodeKind::Table { .. })
+    }
+
+    /// Число строк таблицы.
+    pub fn table_len(&self, id: NodeId) -> usize {
+        if let NodeKind::Table { rows, .. } = &self.nodes[id.0].kind {
+            rows.len()
+        } else {
+            0
+        }
+    }
+
+    /// Возвращает выбранную строку таблицы.
+    pub fn table_selected(&self, id: NodeId) -> Option<usize> {
+        if let NodeKind::Table { selected, .. } = &self.nodes[id.0].kind {
+            *selected
+        } else {
+            None
+        }
+    }
+
+    /// Задаёт выбранную строку таблицы.
+    pub fn set_table_selected(&mut self, id: NodeId, index: Option<usize>) {
+        if let NodeKind::Table { selected, .. } = &mut self.nodes[id.0].kind {
+            *selected = index;
+        }
+    }
+
+    /// Возвращает вертикальную прокрутку таблицы в пикселях.
+    pub fn table_scroll(&self, id: NodeId) -> f32 {
+        if let NodeKind::Table { scroll, .. } = &self.nodes[id.0].kind {
+            *scroll
+        } else {
+            0.0
+        }
+    }
+
+    /// Задаёт вертикальную прокрутку таблицы в пикселях.
+    pub fn set_table_scroll(&mut self, id: NodeId, value: f32) {
+        if let NodeKind::Table { scroll, .. } = &mut self.nodes[id.0].kind {
+            *scroll = value;
+        }
+    }
+
+    /// Задаёт пункты контекстного меню окна.
+    pub fn set_menu(&mut self, items: Vec<Vec<u16>>) {
+        self.menu_items = items;
+    }
+
+    /// Число пунктов контекстного меню.
+    pub fn menu_len(&self) -> usize {
+        self.menu_items.len()
+    }
+
+    /// Возвращает пункт контекстного меню по индексу.
+    pub fn menu_item(&self, index: usize) -> Option<&Vec<u16>> {
+        self.menu_items.get(index)
+    }
+
+    /// Возвращает очередь диалогов для внешнего показа.
+    pub fn dialog_queue(&self) -> DialogQueue {
+        self.pending_dialog.clone()
+    }
+
+    /// Забирает отложенный запрос диалога.
+    pub fn take_pending_dialog(&mut self) -> Option<DialogData> {
+        self.pending_dialog.borrow_mut().take()
+    }
+
+    /// Устанавливает колбэк активного диалога.
+    pub fn set_dialog_cb(&mut self, cb: Box<dyn FnMut(&mut Tree, usize)>) {
+        self.on_dialog = Some(cb);
+    }
+
+    /// Вызывает колбэк диалога с выбранной кнопкой.
+    pub fn fire_dialog(&mut self, index: usize) {
+        if let Some(mut cb) = self.on_dialog.take() {
+            cb(self, index);
+            self.on_dialog = Some(cb);
+        }
+    }
+
     /// Реагирует ли узел на клик (кнопка или чекбокс).
     pub fn is_interactive(&self, id: NodeId) -> bool {
         self.is_button(id) || self.is_checkbox(id)
@@ -572,6 +725,7 @@ impl Tree {
             || self.is_slider(id)
             || self.is_dropdown(id)
             || self.is_tabs(id)
+            || self.is_table(id)
     }
 
     /// Список фокусируемых узлов в порядке обхода дерева.
@@ -760,6 +914,191 @@ impl Default for Tree {
     fn default() -> Self {
         Self::new()
     }
+}
+
+enum Sel {
+    Any,
+    Type(String),
+    Class(String),
+}
+
+#[derive(Clone, Copy)]
+enum State {
+    Base,
+    Focus,
+    Hover,
+}
+
+struct Rule {
+    sel: Sel,
+    state: State,
+    decls: Vec<(String, String)>,
+}
+
+fn kind_tag(kind: &NodeKind) -> &'static str {
+    match kind {
+        NodeKind::Container => "container",
+        NodeKind::Frame { .. } => "frame",
+        NodeKind::Label { .. } => "label",
+        NodeKind::Button { .. } => "button",
+        NodeKind::Slider { .. } => "slider",
+        NodeKind::Progress { .. } => "progress",
+        NodeKind::Checkbox { .. } => "checkbox",
+        NodeKind::TextBox { .. } => "textbox",
+        NodeKind::Dropdown { .. } => "dropdown",
+        NodeKind::Tabs { .. } => "tabs",
+        NodeKind::Table { .. } => "table",
+    }
+}
+
+fn sel_matches(node: &Node, sel: &Sel) -> bool {
+    match sel {
+        Sel::Any => true,
+        Sel::Type(t) => kind_tag(&node.kind) == t,
+        Sel::Class(c) => node.class_name.as_deref() == Some(c.as_str()),
+    }
+}
+
+fn parse_css(css: &str) -> Vec<Rule> {
+    let mut out = Vec::new();
+    let cleaned = strip_comments(css);
+    let mut rest = cleaned.as_str();
+    while let Some(open) = rest.find('{') {
+        let selector = rest[..open].trim().to_string();
+        let after = &rest[open + 1..];
+        let close = match after.find('}') {
+            Some(c) => c,
+            None => break,
+        };
+        let body = &after[..close];
+        rest = &after[close + 1..];
+        if selector.is_empty() {
+            continue;
+        }
+        let (sel, state) = parse_head(&selector);
+        let mut decls = Vec::new();
+        for part in body.split(';') {
+            let part = part.trim();
+            if part.is_empty() {
+                continue;
+            }
+            if let Some(colon) = part.find(':') {
+                let key = part[..colon].trim().to_lowercase();
+                let value = part[colon + 1..].trim().to_string();
+                if !key.is_empty() && !value.is_empty() {
+                    decls.push((key, value));
+                }
+            }
+        }
+        out.push(Rule { sel, state, decls });
+    }
+    out
+}
+
+fn parse_selector(s: &str) -> Sel {
+    if s == "*" {
+        Sel::Any
+    } else if let Some(name) = s.strip_prefix('.') {
+        Sel::Class(name.to_string())
+    } else {
+        Sel::Type(s.to_lowercase())
+    }
+}
+
+fn parse_head(s: &str) -> (Sel, State) {
+    match s.split_once(':') {
+        Some((name, st)) => {
+            let state = match st.trim() {
+                "focus" => State::Focus,
+                "hover" => State::Hover,
+                _ => State::Base,
+            };
+            (parse_selector(name.trim()), state)
+        }
+        None => (parse_selector(s), State::Base),
+    }
+}
+
+fn strip_comments(css: &str) -> String {
+    let mut out = String::with_capacity(css.len());
+    let mut chars = css.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '/' && chars.peek() == Some(&'*') {
+            chars.next();
+            let mut prev = '\0';
+            for c2 in chars.by_ref() {
+                if prev == '*' && c2 == '/' {
+                    break;
+                }
+                prev = c2;
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn apply_style_decl(style: &mut Style, key: &str, value: &str) {
+    match key {
+        "background" | "fill" => {
+            if let Some(c) = parse_color(value) {
+                style.fill = Some(c);
+            }
+        }
+        "color" => {
+            if let Some(c) = parse_color(value) {
+                style.text = Some(c);
+            }
+        }
+        "radius" => {
+            style.radius = parse_num(value);
+        }
+        _ => {}
+    }
+}
+
+fn apply_decl(node: &mut Node, key: &str, value: &str) {
+    apply_style_decl(&mut node.style, key, value);
+    match key {
+        "padding" => {
+            if let Some(n) = parse_num(value) {
+                node.props.padding = n;
+            }
+        }
+        "gap" => {
+            if let Some(n) = parse_num(value) {
+                node.props.gap = n;
+            }
+        }
+        "width" => {
+            node.props.width = parse_num(value);
+        }
+        "height" => {
+            node.props.height = parse_num(value);
+        }
+        _ => {}
+    }
+}
+
+fn parse_color(value: &str) -> Option<Color> {
+    let hex = value.trim().strip_prefix('#')?;
+    match hex.len() {
+        6 => u32::from_str_radix(hex, 16).ok().map(Color::hex),
+        3 => {
+            let mut full = String::new();
+            for ch in hex.chars() {
+                full.push(ch);
+                full.push(ch);
+            }
+            u32::from_str_radix(&full, 16).ok().map(Color::hex)
+        }
+        _ => None,
+    }
+}
+
+fn parse_num(value: &str) -> Option<f32> {
+    value.trim().trim_end_matches("px").trim().parse::<f32>().ok()
 }
 
 fn contains(rect: Rect, x: f32, y: f32) -> bool {

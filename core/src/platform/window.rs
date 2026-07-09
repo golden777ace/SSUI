@@ -1,9 +1,14 @@
+use core::ffi::c_void;
 use std::sync::Once;
 
 use windows::core::*;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::{InvalidateRect, UpdateWindow, ValidateRect};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Input::Ime::{
+    ImmGetCompositionStringW, ImmGetContext, ImmReleaseContext, ImmSetCompositionWindow, CFS_POINT,
+    COMPOSITIONFORM, GCS_RESULTSTR,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -130,6 +135,26 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 LRESULT(0)
             }
 
+            WM_MOUSEWHEEL => {
+                if let Some(state) = state_ptr(hwnd).as_mut() {
+                    let delta = ((wparam.0 >> 16) & 0xFFFF) as i16 as i32;
+                    if state.renderer.on_wheel(delta) {
+                        let _ = InvalidateRect(Some(hwnd), None, false);
+                    }
+                }
+                LRESULT(0)
+            }
+
+            WM_RBUTTONDOWN => {
+                if let Some(state) = state_ptr(hwnd).as_mut() {
+                    let (x, y) = mouse_xy(lparam);
+                    if state.renderer.on_right_down(x, y) {
+                        let _ = InvalidateRect(Some(hwnd), None, false);
+                    }
+                }
+                LRESULT(0)
+            }
+
             WM_LBUTTONDOWN => {
                 if let Some(state) = state_ptr(hwnd).as_mut() {
                     let (x, y) = mouse_xy(lparam);
@@ -167,6 +192,41 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                     }
                 }
                 LRESULT(0)
+            }
+
+            WM_IME_STARTCOMPOSITION => {
+                if let Some(state) = state_ptr(hwnd).as_mut() {
+                    if let Some((cx, cy)) = state.renderer.ime_caret() {
+                        let himc = ImmGetContext(hwnd);
+                        if !himc.0.is_null() {
+                            let form = COMPOSITIONFORM {
+                                dwStyle: CFS_POINT,
+                                ptCurrentPos: POINT {
+                                    x: cx as i32,
+                                    y: cy as i32,
+                                },
+                                rcArea: RECT::default(),
+                            };
+                            let _ = ImmSetCompositionWindow(himc, &form);
+                            let _ = ImmReleaseContext(hwnd, himc);
+                        }
+                    }
+                }
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
+
+            WM_IME_COMPOSITION => {
+                if (lparam.0 as u32) & GCS_RESULTSTR.0 != 0 {
+                    if let Some(state) = state_ptr(hwnd).as_mut() {
+                        let text = ime_result_string(hwnd);
+                        if !text.is_empty() && state.renderer.on_ime_text(&text) {
+                            let _ = InvalidateRect(Some(hwnd), None, false);
+                        }
+                    }
+                    LRESULT(0)
+                } else {
+                    DefWindowProcW(hwnd, msg, wparam, lparam)
+                }
             }
 
             WM_SETCURSOR => {
@@ -220,6 +280,28 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
     }
+}
+
+unsafe fn ime_result_string(hwnd: HWND) -> Vec<u16> {
+    let himc = ImmGetContext(hwnd);
+    if himc.0.is_null() {
+        return Vec::new();
+    }
+    let bytes = ImmGetCompositionStringW(himc, GCS_RESULTSTR, None, 0);
+    let mut out = Vec::new();
+    if bytes > 0 {
+        let count = bytes as usize / 2;
+        let mut buf = vec![0u16; count];
+        ImmGetCompositionStringW(
+            himc,
+            GCS_RESULTSTR,
+            Some(buf.as_mut_ptr() as *mut c_void),
+            bytes as u32,
+        );
+        out = buf;
+    }
+    let _ = ImmReleaseContext(hwnd, himc);
+    out
 }
 
 fn mouse_xy(lparam: LPARAM) -> (f32, f32) {

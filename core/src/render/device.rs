@@ -19,13 +19,21 @@ use windows::Win32::System::Ole::CF_UNICODETEXT;
 use super::canvas::Canvas;
 use super::types::{Color, Rect};
 use crate::theme::Theme;
-use crate::tree::{NodeId, NodeKind, Tree, TAB_HEADER};
+use crate::tree::{NodeId, NodeKind, Style, Tree, TABLE_HEADER, TABLE_ROW, TAB_HEADER};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum CursorKind {
     Arrow,
     Hand,
     IBeam,
+}
+
+struct DialogView {
+    title: Vec<u16>,
+    message: Vec<u16>,
+    buttons: Vec<Vec<u16>>,
+    hover: Option<usize>,
+    focus: Option<usize>,
 }
 
 pub struct Renderer {
@@ -51,6 +59,10 @@ pub struct Renderer {
     inspector: bool,
     open_dropdown: Option<NodeId>,
     dropdown_hover: Option<usize>,
+    mouse: (f32, f32),
+    open_menu: Option<(f32, f32)>,
+    menu_hover: Option<usize>,
+    dialog: Option<DialogView>,
 }
 
 impl Renderer {
@@ -156,6 +168,10 @@ impl Renderer {
                 inspector: false,
                 open_dropdown: None,
                 dropdown_hover: None,
+                mouse: (0.0, 0.0),
+                open_menu: None,
+                menu_hover: None,
+                dialog: None,
             };
             renderer.create_target()?;
             Ok(renderer)
@@ -210,7 +226,127 @@ impl Renderer {
         let now = Instant::now();
         let dt = (now - self.last_tick).as_secs_f32();
         self.last_tick = now;
-        self.tree.tick(dt)
+        let mut dirty = self.tree.tick(dt);
+        if self.dialog.is_none() {
+            if let Some(data) = self.tree.take_pending_dialog() {
+                self.tree.set_dialog_cb(data.cb);
+                self.dialog = Some(DialogView {
+                    title: data.title,
+                    message: data.message,
+                    buttons: data.buttons,
+                    hover: None,
+                    focus: None,
+                });
+                dirty = true;
+            }
+        }
+        dirty
+    }
+
+    /// Прокручивает таблицу под курсором колесом мыши.
+    pub fn on_wheel(&mut self, delta: i32) -> bool {
+        if let Some(id) = self.hot {
+            if self.tree.is_table(id) {
+                let r = self.tree.get(id).rect;
+                let n = self.tree.table_len(id);
+                let content = n as f32 * TABLE_ROW;
+                let visible = (r.height - TABLE_HEADER).max(0.0);
+                let max_scroll = (content - visible).max(0.0);
+                let step = TABLE_ROW;
+                let cur = self.tree.table_scroll(id);
+                let next = (cur - (delta as f32 / 120.0) * step).clamp(0.0, max_scroll);
+                if (next - cur).abs() > 0.01 {
+                    self.tree.set_table_scroll(id, next);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    fn reveal_table_row(&mut self, id: NodeId, row: usize) {
+        let r = self.tree.get(id).rect;
+        let visible = (r.height - TABLE_HEADER).max(0.0);
+        let row_top = row as f32 * TABLE_ROW;
+        let row_bot = row_top + TABLE_ROW;
+        let mut scroll = self.tree.table_scroll(id);
+        if row_top < scroll {
+            scroll = row_top;
+        } else if row_bot > scroll + visible {
+            scroll = row_bot - visible;
+        }
+        let n = self.tree.table_len(id);
+        let content = n as f32 * TABLE_ROW;
+        let max_scroll = (content - visible).max(0.0);
+        self.tree.set_table_scroll(id, scroll.clamp(0.0, max_scroll));
+    }
+
+    /// Открывает контекстное меню по правому клику.
+    pub fn on_right_down(&mut self, x: f32, y: f32) -> bool {
+        if self.dialog.is_some() {
+            return false;
+        }
+        let n = self.tree.menu_len();
+        if n == 0 {
+            return false;
+        }
+        self.close_dropdown();
+        let mw = 220.0;
+        let mh = n as f32 * MENU_ROW;
+        let mx = x.min((self.width - mw).max(0.0));
+        let my = y.min((self.height - mh).max(0.0));
+        self.open_menu = Some((mx, my));
+        self.menu_hover = None;
+        true
+    }
+
+    fn menu_rect(&self) -> Option<Rect> {
+        let (mx, my) = self.open_menu?;
+        let n = self.tree.menu_len();
+        Some(Rect::new(mx, my, 220.0, n as f32 * MENU_ROW))
+    }
+
+    fn menu_option_at(&self, y: f32) -> Option<usize> {
+        let rect = self.menu_rect()?;
+        let n = self.tree.menu_len();
+        if y < rect.y {
+            return None;
+        }
+        let i = ((y - rect.y) / MENU_ROW).floor();
+        if i < 0.0 {
+            return None;
+        }
+        let i = i as usize;
+        if i < n {
+            Some(i)
+        } else {
+            None
+        }
+    }
+
+    fn dialog_rects(&self) -> Option<(Rect, Vec<Rect>)> {
+        let d = self.dialog.as_ref()?;
+        let pw = 440.0;
+        let ph = 220.0;
+        let px = (self.width - pw) / 2.0;
+        let py = (self.height - ph) / 2.0;
+        let panel = Rect::new(px, py, pw, ph);
+        let n = d.buttons.len().max(1);
+        let pad = 16.0;
+        let bh = 44.0;
+        let by = py + ph - pad - bh;
+        let bw = (pw - pad * (n as f32 + 1.0)) / n as f32;
+        let mut btns = Vec::new();
+        for i in 0..d.buttons.len() {
+            let bx = px + pad + (bw + pad) * i as f32;
+            btns.push(Rect::new(bx, by, bw, bh));
+        }
+        Some((panel, btns))
+    }
+
+    fn dialog_button_at(&self, x: f32, y: f32) -> Option<usize> {
+        let (_, btns) = self.dialog_rects()?;
+        btns.iter().position(|r| r.contains(x, y))
     }
 
     /// Тип курсора под текущим положением мыши.
@@ -267,11 +403,46 @@ impl Renderer {
         self.dropdown_hover = None;
     }
 
+    fn table_row_at(&self, id: NodeId, y: f32) -> Option<usize> {
+        let r = self.tree.get(id).rect;
+        let n = self.tree.table_len(id);
+        let top = r.y + TABLE_HEADER;
+        if y < top || n == 0 {
+            return None;
+        }
+        let scroll = self.tree.table_scroll(id);
+        let i = ((y - top + scroll) / TABLE_ROW).floor();
+        if i < 0.0 {
+            return None;
+        }
+        let i = i as usize;
+        if i < n {
+            Some(i)
+        } else {
+            None
+        }
+    }
+
     /// Обрабатывает движение мыши. Возвращает true, если нужна перерисовка.
     pub fn on_mouse_move(&mut self, x: f32, y: f32) -> bool {
+        self.mouse = (x, y);
+        if self.dialog.is_some() {
+            let hv = self.dialog_button_at(x, y);
+            let mut changed = false;
+            if let Some(d) = self.dialog.as_mut() {
+                if d.hover != hv {
+                    d.hover = hv;
+                    changed = true;
+                }
+            }
+            return changed;
+        }
         let mut dirty = false;
         let hit = self.tree.hit_test(x, y);
         self.hot = hit;
+        if hit.map_or(false, |h| self.tree.is_table(h)) {
+            dirty = true;
+        }
         if let Some(dd) = self.open_dropdown {
             let popup = self.dropdown_popup_rect(dd);
             let hv = if popup.contains(x, y) {
@@ -282,6 +453,19 @@ impl Renderer {
             if hv != self.dropdown_hover {
                 self.dropdown_hover = hv;
                 dirty = true;
+            }
+        }
+        if self.open_menu.is_some() {
+            if let Some(rect) = self.menu_rect() {
+                let hv = if rect.contains(x, y) {
+                    self.menu_option_at(y)
+                } else {
+                    None
+                };
+                if hv != self.menu_hover {
+                    self.menu_hover = hv;
+                    dirty = true;
+                }
             }
         }
         let hover = hit.filter(|&id| self.tree.is_interactive(id));
@@ -307,6 +491,28 @@ impl Renderer {
 
     /// Обрабатывает нажатие левой кнопки. Возвращает true, если нужна перерисовка.
     pub fn on_mouse_down(&mut self, x: f32, y: f32) -> bool {
+        if self.dialog.is_some() {
+            if let Some(i) = self.dialog_button_at(x, y) {
+                self.dialog = None;
+                self.tree.fire_dialog(i);
+            }
+            return true;
+        }
+        if self.open_menu.is_some() {
+            if let Some(rect) = self.menu_rect() {
+                if rect.contains(x, y) {
+                    if let Some(i) = self.menu_option_at(y) {
+                        let root = self.tree.root();
+                        self.tree.fire_change(root, i as f32);
+                    }
+                    self.open_menu = None;
+                    self.menu_hover = None;
+                    return true;
+                }
+            }
+            self.open_menu = None;
+            self.menu_hover = None;
+        }
         if let Some(dd) = self.open_dropdown {
             let popup = self.dropdown_popup_rect(dd);
             let header = self.tree.get(dd).rect;
@@ -348,6 +554,14 @@ impl Renderer {
                         self.tree.set_tabs_selected(id, i);
                         self.tree.fire_change(id, i as f32);
                     }
+                }
+                self.focused = Some(id);
+                return true;
+            }
+            if self.tree.is_table(id) {
+                if let Some(ri) = self.table_row_at(id, y) {
+                    self.tree.set_table_selected(id, Some(ri));
+                    self.tree.fire_change(id, ri as f32);
                 }
                 self.focused = Some(id);
                 return true;
@@ -412,8 +626,117 @@ impl Renderer {
         false
     }
 
+    /// Вставляет текст, зафиксированный IME, в поле ввода.
+    pub fn on_ime_text(&mut self, text: &[u16]) -> bool {
+        if let Some(id) = self.focused {
+            if self.tree.is_textbox(id) {
+                let filtered: Vec<u16> = text.iter().copied().filter(|&c| c >= 0x20).collect();
+                if !filtered.is_empty() {
+                    if let Some(st) = self.tree.textbox_state_mut(id) {
+                        st.insert(&filtered);
+                    }
+                    self.tree.fire_text_input(id);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Позиция каретки активного поля в клиентских координатах.
+    pub fn ime_caret(&self) -> Option<(f32, f32)> {
+        let id = self.focused?;
+        if !self.tree.is_textbox(id) {
+            return None;
+        }
+        let r = self.tree.get(id).rect;
+        let st = self.tree.textbox_state(id)?;
+        let pad = 12.0;
+        let base_x = r.x + pad - st.scroll;
+        let cx = base_x + x_at_index(&self.dwrite, &self.text_format_left, &st.text, st.caret);
+        let cy = r.y + r.height - 10.0;
+        Some((cx, cy))
+    }
+
     /// Обрабатывает нажатие клавиши. Возвращает true, если нужна перерисовка.
     pub fn on_key(&mut self, vk: u32) -> bool {
+        if self.dialog.is_some() {
+            if vk == 0x1B {
+                self.dialog = None;
+                return true;
+            }
+            if vk == 0x09 {
+                let shift = key_down(0x10);
+                if let Some(d) = self.dialog.as_mut() {
+                    let n = d.buttons.len();
+                    if n > 0 {
+                        d.focus = Some(match d.focus {
+                            Some(i) => {
+                                if shift {
+                                    (i + n - 1) % n
+                                } else {
+                                    (i + 1) % n
+                                }
+                            }
+                            None => {
+                                if shift {
+                                    n - 1
+                                } else {
+                                    0
+                                }
+                            }
+                        });
+                    }
+                }
+                return true;
+            }
+            if vk == 0x0D || vk == 0x20 {
+                let idx = self.dialog.as_ref().and_then(|d| {
+                    d.focus.or(if d.buttons.is_empty() {
+                        None
+                    } else {
+                        Some(d.buttons.len() - 1)
+                    })
+                });
+                self.dialog = None;
+                if let Some(i) = idx {
+                    self.tree.fire_dialog(i);
+                }
+                return true;
+            }
+            return true;
+        }
+        if self.open_menu.is_some() {
+            let n = self.tree.menu_len();
+            match vk {
+                0x1B => {
+                    self.open_menu = None;
+                    self.menu_hover = None;
+                    return true;
+                }
+                0x26 => {
+                    let cur = self.menu_hover.unwrap_or(0);
+                    self.menu_hover = Some(if cur == 0 { 0 } else { cur - 1 });
+                    return true;
+                }
+                0x28 => {
+                    let cur = self.menu_hover.unwrap_or(0);
+                    let next = if n == 0 { 0 } else { (cur + 1).min(n - 1) };
+                    self.menu_hover = Some(next);
+                    return true;
+                }
+                0x0D | 0x20 => {
+                    if let Some(i) = self.menu_hover {
+                        let root = self.tree.root();
+                        self.tree.fire_change(root, i as f32);
+                    }
+                    self.open_menu = None;
+                    self.menu_hover = None;
+                    return true;
+                }
+                _ => return true,
+            }
+        }
         const VK_TAB: u32 = 0x09;
         const VK_RETURN: u32 = 0x0D;
         const VK_SPACE: u32 = 0x20;
@@ -441,6 +764,14 @@ impl Renderer {
         if vk == VK_TAB {
             self.close_dropdown();
             self.move_focus(!key_down(0x10));
+            return true;
+        }
+
+        if vk == VK_ESCAPE {
+            self.close_dropdown();
+            self.open_menu = None;
+            self.menu_hover = None;
+            self.focused = None;
             return true;
         }
 
@@ -497,6 +828,22 @@ impl Renderer {
                         self.tree.set_tabs_selected(id, next);
                         self.tree.fire_change(id, next as f32);
                     }
+                    return true;
+                }
+                return false;
+            }
+            if self.tree.is_table(id) {
+                let n = self.tree.table_len(id);
+                if n > 0 && (vk == VK_UP || vk == VK_DOWN) {
+                    let cur = self.tree.table_selected(id).unwrap_or(0);
+                    let next = if vk == VK_UP {
+                        if cur == 0 { 0 } else { cur - 1 }
+                    } else {
+                        (cur + 1).min(n - 1)
+                    };
+                    self.tree.set_table_selected(id, Some(next));
+                    self.reveal_table_row(id, next);
+                    self.tree.fire_change(id, next as f32);
                     return true;
                 }
                 return false;
@@ -691,6 +1038,8 @@ impl Renderer {
         let hovered = self.hovered;
         let pressed = self.pressed;
         let focused = self.focused;
+        let hot = self.hot;
+        let mouse = self.mouse;
         let theme = self.theme;
         let dwrite = &self.dwrite;
         unsafe {
@@ -702,22 +1051,32 @@ impl Renderer {
             let format_left = &self.text_format_left;
             canvas.clear(theme.background);
             self.tree.for_each(|id, node| {
-                let style = node.style;
+                let mut style = node.style;
+                if focused == Some(id) {
+                    merge_style(&mut style, &node.style_focus);
+                }
+                let is_button = matches!(node.kind, NodeKind::Button { .. });
+                if hot == Some(id) && !is_button {
+                    merge_style(&mut style, &node.style_hover);
+                }
                 match &node.kind {
                     NodeKind::Container => {}
                     NodeKind::Frame { radius } => {
                         let fill = style.fill.unwrap_or(theme.surface);
-                        canvas.fill_rounded_rect(node.rect, *radius, fill);
+                        let rad = style.radius.unwrap_or(*radius);
+                        canvas.fill_rounded_rect(node.rect, rad, fill);
                     }
                     NodeKind::Label { text } => {
                         let color = style.text.unwrap_or(theme.content);
                         canvas.draw_text(text, format, node.rect, color);
                     }
                     NodeKind::Button { label, radius } => {
+                        let rad = style.radius.unwrap_or(*radius);
                         let (base, hov, prs) = match style.fill {
                             Some(f) => (f, f.lighten(0.1), f.darken(0.1)),
                             None => (theme.accent, theme.accent_hover, theme.accent_pressed),
                         };
+                        let hov = node.style_hover.fill.unwrap_or(hov);
                         let fill = if pressed == Some(id) {
                             prs
                         } else if hovered == Some(id) {
@@ -733,9 +1092,9 @@ impl Renderer {
                                 node.rect.width + 6.0,
                                 node.rect.height + 6.0,
                             );
-                            canvas.fill_rounded_rect(ring, *radius + 3.0, theme.content);
+                            canvas.fill_rounded_rect(ring, rad + 3.0, theme.content);
                         }
-                        canvas.fill_rounded_rect(node.rect, *radius, fill);
+                        canvas.fill_rounded_rect(node.rect, rad, fill);
                         canvas.draw_text(label, format, node.rect, text_color);
                     }
                     NodeKind::Slider { value } => {
@@ -800,10 +1159,12 @@ impl Renderer {
                         let r = node.rect;
                         let is_focused = focused == Some(id);
                         let border = if is_focused { theme.accent } else { theme.track };
-                        canvas.fill_rounded_rect(r, 8.0, border);
+                        let rad = style.radius.unwrap_or(8.0);
+                        canvas.fill_rounded_rect(r, rad, border);
                         let inner =
                             Rect::new(r.x + 2.0, r.y + 2.0, r.width - 4.0, r.height - 4.0);
-                        canvas.fill_rounded_rect(inner, 6.0, theme.surface);
+                        let inner_fill = style.fill.unwrap_or(theme.surface);
+                        canvas.fill_rounded_rect(inner, (rad - 2.0).max(0.0), inner_fill);
 
                         let pad = 12.0;
                         let base_x = r.x + pad - state.scroll;
@@ -878,6 +1239,64 @@ impl Renderer {
                             canvas.stroke_rect(header, 2.0, theme.accent);
                         }
                     }
+                    NodeKind::Table {
+                        columns,
+                        rows,
+                        selected,
+                        scroll,
+                    } => {
+                        let r = node.rect;
+                        canvas.push_clip(r);
+                        let bg = style.fill.unwrap_or(theme.surface);
+                        canvas.fill_rounded_rect(r, 8.0, bg);
+                        let ncol = columns.len().max(1);
+                        let col_w = r.width / ncol as f32;
+                        let top = r.y + TABLE_HEADER;
+                        let hover_row = if hot == Some(id) && mouse.1 >= top {
+                            let ri = ((mouse.1 - top + *scroll) / TABLE_ROW).floor();
+                            if ri >= 0.0 {
+                                Some(ri as usize)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
+                        for (ri, row) in rows.iter().enumerate() {
+                            let ry = top - *scroll + TABLE_ROW * ri as f32;
+                            if ry + TABLE_ROW <= top || ry >= r.y + r.height {
+                                continue;
+                            }
+                            let row_rect = Rect::new(r.x, ry, r.width, TABLE_ROW);
+                            if *selected == Some(ri) {
+                                canvas.fill_rounded_rect(row_rect, 0.0, theme.selection);
+                            } else if hover_row == Some(ri) {
+                                canvas.fill_rounded_rect(row_rect, 0.0, theme.track);
+                            }
+                            for (c, cell) in row.iter().enumerate() {
+                                let cx = r.x + col_w * c as f32;
+                                let cr = Rect::new(
+                                    cx + 10.0,
+                                    ry,
+                                    (col_w - 20.0).max(0.0),
+                                    TABLE_ROW,
+                                );
+                                canvas.draw_text(cell, format_left, cr, theme.content);
+                            }
+                        }
+                        let header = Rect::new(r.x, r.y, r.width, TABLE_HEADER);
+                        canvas.fill_rounded_rect(header, 8.0, theme.track);
+                        for (c, col) in columns.iter().enumerate() {
+                            let cx = r.x + col_w * c as f32;
+                            let hr =
+                                Rect::new(cx + 10.0, r.y, (col_w - 20.0).max(0.0), TABLE_HEADER);
+                            canvas.draw_text(col, format_left, hr, theme.content);
+                        }
+                        if focused == Some(id) {
+                            canvas.stroke_rect(r, 2.0, theme.accent);
+                        }
+                        canvas.pop_clip();
+                    }
                 }
             });
 
@@ -912,6 +1331,29 @@ impl Renderer {
                 }
             }
 
+            if let Some(rect) = self.menu_rect() {
+                canvas.fill_rounded_rect(rect, 8.0, theme.surface);
+                canvas.stroke_rect(rect, 1.0, theme.track);
+                let n = self.tree.menu_len();
+                for i in 0..n {
+                    let ry = rect.y + MENU_ROW * i as f32;
+                    if self.menu_hover == Some(i) {
+                        let hl = Rect::new(
+                            rect.x + 3.0,
+                            ry + 2.0,
+                            rect.width - 6.0,
+                            MENU_ROW - 4.0,
+                        );
+                        canvas.fill_rounded_rect(hl, 5.0, theme.selection);
+                    }
+                    if let Some(item) = self.tree.menu_item(i) {
+                        let tr =
+                            Rect::new(rect.x + 12.0, ry, (rect.width - 24.0).max(0.0), MENU_ROW);
+                        canvas.draw_text(item, format_left, tr, theme.content);
+                    }
+                }
+            }
+
             if self.inspector {
                 let hot = self.hot;
                 self.tree.for_each(|id, node| {
@@ -938,6 +1380,52 @@ impl Renderer {
                     canvas.draw_text(&text, format_left, tr, INSPECT_LABEL_FG);
                 }
             }
+        if let Some((panel, btns)) = self.dialog_rects() {
+                let backdrop = Rect::new(0.0, 0.0, self.width, self.height);
+                canvas.fill_rounded_rect(backdrop, 0.0, DIALOG_SCRIM);
+                canvas.fill_rounded_rect(panel, 14.0, theme.surface);
+                canvas.stroke_rect(panel, 1.0, theme.track);
+                if let Some(d) = self.dialog.as_ref() {
+                    let tr = Rect::new(panel.x + 24.0, panel.y + 20.0, panel.width - 48.0, 34.0);
+                    canvas.draw_text(&d.title, format_left, tr, theme.content);
+                    let mr = Rect::new(panel.x + 24.0, panel.y + 64.0, panel.width - 48.0, 64.0);
+                    canvas.draw_text(&d.message, format_left, mr, theme.content);
+                    for (i, br) in btns.iter().enumerate() {
+                        let is_primary = i + 1 == btns.len();
+                        let hovered_btn = d.hover == Some(i);
+                        let fill = if is_primary {
+                            if hovered_btn {
+                                theme.accent_hover
+                            } else {
+                                theme.accent
+                            }
+                        } else if hovered_btn {
+                            theme.track
+                        } else {
+                            theme.surface
+                        };
+                        if d.focus == Some(i) {
+                            let ring = Rect::new(
+                                br.x - 3.0,
+                                br.y - 3.0,
+                                br.width + 6.0,
+                                br.height + 6.0,
+                            );
+                            canvas.fill_rounded_rect(ring, 13.0, theme.content);
+                        }
+                        canvas.fill_rounded_rect(*br, 10.0, fill);
+                        if !is_primary {
+                            canvas.stroke_rect(*br, 1.0, theme.track);
+                        }
+                        let color = if is_primary {
+                            theme.on_accent
+                        } else {
+                            theme.content
+                        };
+                        canvas.draw_text(&d.buttons[i], format, *br, color);
+                    }
+                }
+            }
         }
         unsafe {
             let _ = self.rt.EndDraw(None, None);
@@ -950,6 +1438,20 @@ fn key_down(vk: i32) -> bool {
     unsafe { GetKeyState(vk) < 0 }
 }
 
+fn merge_style(base: &mut Style, over: &Style) {
+    if over.fill.is_some() {
+        base.fill = over.fill;
+    }
+    if over.text.is_some() {
+        base.text = over.text;
+    }
+    if over.radius.is_some() {
+        base.radius = over.radius;
+    }
+}
+
+const MENU_ROW: f32 = 30.0;
+const DIALOG_SCRIM: Color = Color::rgba(0.0, 0.0, 0.0, 0.5);
 const INSPECT_LINE: Color = Color::rgba(1.0, 0.2, 0.6, 0.9);
 const INSPECT_FILL: Color = Color::rgba(1.0, 0.2, 0.6, 0.18);
 const INSPECT_LABEL_BG: Color = Color::rgba(0.0, 0.0, 0.0, 0.85);
@@ -967,6 +1469,7 @@ fn kind_name(kind: &NodeKind) -> &'static str {
         NodeKind::TextBox { .. } => "TextBox",
         NodeKind::Dropdown { .. } => "Dropdown",
         NodeKind::Tabs { .. } => "Tabs",
+        NodeKind::Table { .. } => "Table",
     }
 }
 

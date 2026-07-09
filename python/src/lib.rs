@@ -6,7 +6,9 @@ use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
 
 use ssui_core::platform::{dpi, Window as CoreWindow};
-use ssui_core::tree::{Anim, AnimQueue, Axis, Ease, NodeId, NodeKind, Props, TextState, Tree};
+use ssui_core::tree::{
+    Anim, AnimQueue, Axis, DialogData, DialogQueue, Ease, NodeId, NodeKind, Props, TextState, Tree,
+};
 
 #[pyclass(name = "N")]
 #[derive(Clone, Copy)]
@@ -83,6 +85,47 @@ impl Fx {
     }
 }
 
+#[pyclass(unsendable, name = "Dlg")]
+struct Dlg {
+    queue: DialogQueue,
+    texts: Bindings,
+    values: Bindings,
+}
+
+#[pymethods]
+impl Dlg {
+    /// Показывает модальный диалог; `on(index)` по нажатию кнопки.
+    #[pyo3(signature = (title, message, buttons, *, on=None))]
+    fn __call__(
+        &self,
+        title: &str,
+        message: &str,
+        buttons: Vec<String>,
+        on: Option<PyObject>,
+    ) -> PyResult<()> {
+        let btns: Vec<Vec<u16>> = buttons.iter().map(|s| utf16(s)).collect();
+        let texts = self.texts.clone();
+        let values = self.values.clone();
+        let data = DialogData {
+            title: utf16(title),
+            message: utf16(message),
+            buttons: btns,
+            cb: Box::new(move |t, i| {
+                Python::with_gil(|py| {
+                    if let Some(cb) = &on {
+                        if let Err(e) = cb.bind(py).call1((i as i64,)) {
+                            e.print(py);
+                        }
+                    }
+                    refresh_all(py, t, &texts, &values);
+                });
+            }),
+        };
+        *self.queue.borrow_mut() = Some(data);
+        Ok(())
+    }
+}
+
 #[pyclass(unsendable, name = "W")]
 struct PyWindow {
     tree: Option<Tree>,
@@ -94,6 +137,7 @@ struct PyWindow {
     bindings: Bindings,
     value_bindings: Bindings,
     anim_queue: AnimQueue,
+    dialog_queue: DialogQueue,
 }
 
 #[pymethods]
@@ -105,6 +149,7 @@ impl PyWindow {
         tree.set_theme(theme_index(thm));
         let root = tree.root();
         let anim_queue = tree.anim_queue();
+        let dialog_queue = tree.dialog_queue();
         Self {
             tree: Some(tree),
             title: ttl.to_string(),
@@ -115,6 +160,7 @@ impl PyWindow {
             bindings: Rc::new(RefCell::new(Vec::new())),
             value_bindings: Rc::new(RefCell::new(Vec::new())),
             anim_queue,
+            dialog_queue,
         }
     }
 
@@ -127,6 +173,15 @@ impl PyWindow {
     fn fx(&self) -> Fx {
         Fx {
             queue: self.anim_queue.clone(),
+            texts: self.bindings.clone(),
+            values: self.value_bindings.clone(),
+        }
+    }
+
+    /// Возвращает контроллер диалогов.
+    fn dlg(&self) -> Dlg {
+        Dlg {
+            queue: self.dialog_queue.clone(),
             texts: self.bindings.clone(),
             values: self.value_bindings.clone(),
         }
@@ -469,6 +524,97 @@ impl PyWindow {
         })
     }
 
+    /// Задаёт CSS-класс узла.
+    fn cls(&mut self, n: PyNode, name: &str) -> PyResult<()> {
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        tree.set_class(n.id, Some(name.to_string()));
+        Ok(())
+    }
+
+    /// Применяет CSS-подмножество из строки.
+    fn css(&mut self, text: &str) -> PyResult<()> {
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        tree.apply_css(text);
+        Ok(())
+    }
+
+    /// Применяет CSS из файла по пути.
+    fn css_file(&mut self, path: &str) -> PyResult<()> {
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        tree.apply_css(&text);
+        Ok(())
+    }
+
+    /// Добавляет таблицу; `ch(index)` при выборе строки.
+    #[pyo3(signature = (columns, rows, *, pr=None, ch=None, pd=0.0, gp=0.0, w=None, h=None))]
+    fn tbl(
+        &mut self,
+        columns: Vec<String>,
+        rows: Vec<Vec<String>>,
+        pr: Option<PyNode>,
+        ch: Option<PyObject>,
+        pd: f32,
+        gp: f32,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<PyNode> {
+        let cols: Vec<Vec<u16>> = columns.iter().map(|s| utf16(s)).collect();
+        let rws: Vec<Vec<Vec<u16>>> = rows
+            .iter()
+            .map(|row| row.iter().map(|c| utf16(c)).collect())
+            .collect();
+        let props = make_props("v", pd, gp, w, h);
+        let parent = self.parent_of(pr);
+        let texts = self.bindings.clone();
+        let values = self.value_bindings.clone();
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let id = tree.add_child(
+            parent,
+            NodeKind::Table {
+                columns: cols,
+                rows: rws,
+                selected: None,
+                scroll: 0.0,
+            },
+            props,
+        );
+        tree.set_on_change(id, move |t, v| {
+            Python::with_gil(|py| {
+                if let Some(cb) = &ch {
+                    if let Err(e) = cb.bind(py).call1((v as i64,)) {
+                        e.print(py);
+                    }
+                }
+                refresh_all(py, t, &texts, &values);
+            });
+        });
+        Ok(PyNode { id })
+    }
+
+    /// Задаёт контекстное меню окна; `on_select(index)` по ПКМ.
+    #[pyo3(signature = (items, *, on_select=None))]
+    fn menu(&mut self, items: Vec<String>, on_select: Option<PyObject>) -> PyResult<()> {
+        let its: Vec<Vec<u16>> = items.iter().map(|s| utf16(s)).collect();
+        let texts = self.bindings.clone();
+        let values = self.value_bindings.clone();
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        tree.set_menu(its);
+        let root = tree.root();
+        tree.set_on_change(root, move |t, v| {
+            Python::with_gil(|py| {
+                if let Some(cb) = &on_select {
+                    if let Err(e) = cb.bind(py).call1((v as i64,)) {
+                        e.print(py);
+                    }
+                }
+                refresh_all(py, t, &texts, &values);
+            });
+        });
+        Ok(())
+    }
+
     /// Показывает окно и запускает цикл сообщений.
     fn go(&mut self) -> PyResult<()> {
         dpi::enable_dpi_awareness();
@@ -589,6 +735,7 @@ fn ssui(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyNode>()?;
     m.add_class::<Ctx>()?;
     m.add_class::<Fx>()?;
+    m.add_class::<Dlg>()?;
     m.add_class::<Signal>()?;
     m.add_function(wrap_pyfunction!(sgnl, m)?)?;
     Ok(())
