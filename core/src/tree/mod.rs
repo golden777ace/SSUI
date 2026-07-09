@@ -38,6 +38,9 @@ pub struct Style {
     pub fill: Option<Color>,
     pub text: Option<Color>,
     pub radius: Option<f32>,
+    pub wrap: Option<bool>,
+    pub elev: Option<f32>,
+    pub grad: Option<(Color, Color)>,
 }
 
 #[derive(Clone)]
@@ -395,6 +398,16 @@ impl Tree {
     /// Задаёт CSS-класс элемента.
     pub fn set_class(&mut self, id: NodeId, name: Option<String>) {
         self.nodes[id.0].class_name = name;
+    }
+
+    /// Включает перенос строк для метки.
+    pub fn set_wrap(&mut self, id: NodeId, on: bool) {
+        self.nodes[id.0].style.wrap = Some(on);
+    }
+
+    /// Задаёт высоту тени (elevation) элемента.
+    pub fn set_elev(&mut self, id: NodeId, elev: f32) {
+        self.nodes[id.0].style.elev = Some(elev);
     }
 
     /// Разбирает подмножество CSS и применяет стили ко всем узлам.
@@ -1053,6 +1066,20 @@ fn apply_style_decl(style: &mut Style, key: &str, value: &str) {
         }
         "radius" => {
             style.radius = parse_num(value);
+        }
+        "wrap" => {
+            style.wrap = Some(value == "true" || value == "1" || value == "wrap");
+        }
+        "shadow" | "elevation" => {
+            style.elev = parse_num(value);
+        }
+        "gradient" => {
+            let parts: Vec<&str> = value.split_whitespace().collect();
+            if parts.len() == 2 {
+                if let (Some(a), Some(b)) = (parse_color(parts[0]), parse_color(parts[1])) {
+                    style.grad = Some((a, b));
+                }
+            }
         }
         _ => {}
     }

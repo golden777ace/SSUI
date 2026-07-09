@@ -188,7 +188,7 @@ impl PyWindow {
     }
 
     /// Добавляет панель; возвращает её узел.
-    #[pyo3(signature = (rad=12.0, *, pr=None, ax="v", pd=0.0, gp=0.0, w=None, h=None))]
+    #[pyo3(signature = (rad=12.0, *, pr=None, ax="v", pd=0.0, gp=0.0, w=None, h=None, elev=0.0))]
     fn fr(
         &mut self,
         rad: f32,
@@ -198,16 +198,20 @@ impl PyWindow {
         gp: f32,
         w: Option<f32>,
         h: Option<f32>,
+        elev: f32,
     ) -> PyResult<PyNode> {
         let props = make_props(ax, pd, gp, w, h);
         let parent = self.parent_of(pr);
         let tree = self.tree.as_mut().ok_or_else(consumed)?;
         let id = tree.add_child(parent, NodeKind::Frame { radius: rad }, props);
+        if elev > 0.0 {
+            tree.set_elev(id, elev);
+        }
         Ok(PyNode { id })
     }
 
     /// Панель-контейнер как контекст: `with win.bx(...) as p:`.
-    #[pyo3(signature = (rad=12.0, *, pr=None, ax="v", pd=0.0, gp=0.0, w=None, h=None))]
+    #[pyo3(signature = (rad=12.0, *, pr=None, ax="v", pd=0.0, gp=0.0, w=None, h=None, elev=0.0))]
     fn bx(
         &mut self,
         rad: f32,
@@ -217,11 +221,15 @@ impl PyWindow {
         gp: f32,
         w: Option<f32>,
         h: Option<f32>,
+        elev: f32,
     ) -> PyResult<Ctx> {
         let props = make_props(ax, pd, gp, w, h);
         let parent = self.parent_of(pr);
         let tree = self.tree.as_mut().ok_or_else(consumed)?;
         let id = tree.add_child(parent, NodeKind::Frame { radius: rad }, props);
+        if elev > 0.0 {
+            tree.set_elev(id, elev);
+        }
         Ok(Ctx {
             stack: self.stack.clone(),
             node: id,
@@ -229,7 +237,7 @@ impl PyWindow {
     }
 
     /// Добавляет метку; `bind` — колбэк, возвращающий текст.
-    #[pyo3(signature = (txt="", *, pr=None, bind=None, pd=0.0, gp=0.0, w=None, h=None))]
+    #[pyo3(signature = (txt="", *, pr=None, bind=None, pd=0.0, gp=0.0, w=None, h=None, wrap=false))]
     fn lb(
         &mut self,
         py: Python,
@@ -240,6 +248,7 @@ impl PyWindow {
         gp: f32,
         w: Option<f32>,
         h: Option<f32>,
+        wrap: bool,
     ) -> PyResult<PyNode> {
         let props = make_props("v", pd, gp, w, h);
         let initial = match &bind {
@@ -255,6 +264,9 @@ impl PyWindow {
             },
             props,
         );
+        if wrap {
+            tree.set_wrap(id, true);
+        }
         if let Some(f) = bind {
             self.bindings.borrow_mut().push((id, f));
         }
@@ -262,7 +274,7 @@ impl PyWindow {
     }
 
     /// Добавляет кнопку; `clk` вызывается по нажатию.
-    #[pyo3(signature = (lb="", *, pr=None, rad=10.0, pd=0.0, gp=0.0, w=None, h=None, clk=None))]
+    #[pyo3(signature = (lb="", *, pr=None, rad=10.0, pd=0.0, gp=0.0, w=None, h=None, clk=None, elev=0.0))]
     fn bt(
         &mut self,
         lb: &str,
@@ -273,6 +285,7 @@ impl PyWindow {
         w: Option<f32>,
         h: Option<f32>,
         clk: Option<PyObject>,
+        elev: f32,
     ) -> PyResult<PyNode> {
         let props = make_props("v", pd, gp, w, h);
         let parent = self.parent_of(pr);
@@ -287,6 +300,9 @@ impl PyWindow {
             },
             props,
         );
+        if elev > 0.0 {
+            tree.set_elev(id, elev);
+        }
         tree.set_on_click(id, move |t| {
             Python::with_gil(|py| {
                 if let Some(cb) = &clk {

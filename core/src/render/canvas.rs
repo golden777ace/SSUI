@@ -1,3 +1,4 @@
+use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::DirectWrite::*;
 
@@ -42,6 +43,49 @@ impl<'a> Canvas<'a> {
         unsafe {
             if let Ok(brush) = self.rt.CreateSolidColorBrush(&c, None) {
                 self.rt.DrawRectangle(&r, &brush, width, None);
+            }
+        }
+    }
+
+    /// Заливает скруглённый прямоугольник вертикальным градиентом.
+    pub fn fill_rounded_gradient(&self, rect: Rect, radius: f32, c0: Color, c1: Color) {
+        unsafe {
+            let stops = [
+                D2D1_GRADIENT_STOP {
+                    position: 0.0,
+                    color: c0.to_d2d(),
+                },
+                D2D1_GRADIENT_STOP {
+                    position: 1.0,
+                    color: c1.to_d2d(),
+                },
+            ];
+            let coll = match self.rt.CreateGradientStopCollection(
+                &stops,
+                D2D1_GAMMA_2_2,
+                D2D1_EXTEND_MODE_CLAMP,
+            ) {
+                Ok(c) => c,
+                Err(_) => {
+                    self.fill_rounded_rect(rect, radius, c0);
+                    return;
+                }
+            };
+            let mut props = D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES::default();
+            props.startPoint.X = rect.x;
+            props.startPoint.Y = rect.y;
+            props.endPoint.X = rect.x;
+            props.endPoint.Y = rect.y + rect.height;
+            match self.rt.CreateLinearGradientBrush(&props, None, &coll) {
+                Ok(brush) => {
+                    let rr = D2D1_ROUNDED_RECT {
+                        rect: rect.to_d2d(),
+                        radiusX: radius,
+                        radiusY: radius,
+                    };
+                    self.rt.FillRoundedRectangle(&rr, &brush);
+                }
+                Err(_) => self.fill_rounded_rect(rect, radius, c0),
             }
         }
     }

@@ -44,6 +44,7 @@ pub struct Renderer {
     dwrite: IDWriteFactory,
     text_format: IDWriteTextFormat,
     text_format_left: IDWriteTextFormat,
+    text_format_wrap: IDWriteTextFormat,
     tree: Tree,
     width: f32,
     height: f32,
@@ -143,6 +144,19 @@ impl Renderer {
             let _ = text_format_left.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
             let _ = text_format_left.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 
+            let text_format_wrap = dwrite.CreateTextFormat(
+                w!("Segoe UI"),
+                None,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                20.0,
+                w!("en-us"),
+            )?;
+            let _ = text_format_wrap.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            let _ = text_format_wrap.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+            let _ = text_format_wrap.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+
             let theme_index = tree.theme();
             let theme = theme_from_index(theme_index);
             let mut renderer = Renderer {
@@ -153,6 +167,7 @@ impl Renderer {
                 dwrite,
                 text_format,
                 text_format_left,
+                text_format_wrap,
                 tree,
                 width: 1280.0,
                 height: 720.0,
@@ -1049,6 +1064,7 @@ impl Renderer {
             let canvas = Canvas::new(&self.rt);
             let format = &self.text_format;
             let format_left = &self.text_format_left;
+            let format_wrap = &self.text_format_wrap;
             canvas.clear(theme.background);
             self.tree.for_each(|id, node| {
                 let mut style = node.style;
@@ -1064,14 +1080,33 @@ impl Renderer {
                     NodeKind::Frame { radius } => {
                         let fill = style.fill.unwrap_or(theme.surface);
                         let rad = style.radius.unwrap_or(*radius);
-                        canvas.fill_rounded_rect(node.rect, rad, fill);
+                        if let Some(e) = style.elev {
+                            if e > 0.0 {
+                                draw_soft_shadow(&canvas, node.rect, rad, e);
+                            }
+                        }
+                        if let Some((a, b)) = style.grad {
+                            canvas.fill_rounded_gradient(node.rect, rad, a, b);
+                        } else {
+                            canvas.fill_rounded_rect(node.rect, rad, fill);
+                        }
                     }
                     NodeKind::Label { text } => {
                         let color = style.text.unwrap_or(theme.content);
-                        canvas.draw_text(text, format, node.rect, color);
+                        let fmt = if style.wrap == Some(true) {
+                            format_wrap
+                        } else {
+                            format
+                        };
+                        canvas.draw_text(text, fmt, node.rect, color);
                     }
                     NodeKind::Button { label, radius } => {
                         let rad = style.radius.unwrap_or(*radius);
+                        if let Some(e) = style.elev {
+                            if e > 0.0 {
+                                draw_soft_shadow(&canvas, node.rect, rad, e);
+                            }
+                        }
                         let (base, hov, prs) = match style.fill {
                             Some(f) => (f, f.lighten(0.1), f.darken(0.1)),
                             None => (theme.accent, theme.accent_hover, theme.accent_pressed),
@@ -1094,7 +1129,11 @@ impl Renderer {
                             );
                             canvas.fill_rounded_rect(ring, rad + 3.0, theme.content);
                         }
-                        canvas.fill_rounded_rect(node.rect, rad, fill);
+                        if let Some((a, b)) = style.grad {
+                            canvas.fill_rounded_gradient(node.rect, rad, a, b);
+                        } else {
+                            canvas.fill_rounded_rect(node.rect, rad, fill);
+                        }
                         canvas.draw_text(label, format, node.rect, text_color);
                     }
                     NodeKind::Slider { value } => {
@@ -1388,8 +1427,8 @@ impl Renderer {
                 if let Some(d) = self.dialog.as_ref() {
                     let tr = Rect::new(panel.x + 24.0, panel.y + 20.0, panel.width - 48.0, 34.0);
                     canvas.draw_text(&d.title, format_left, tr, theme.content);
-                    let mr = Rect::new(panel.x + 24.0, panel.y + 64.0, panel.width - 48.0, 64.0);
-                    canvas.draw_text(&d.message, format_left, mr, theme.content);
+                    let mr = Rect::new(panel.x + 24.0, panel.y + 60.0, panel.width - 48.0, 96.0);
+                    canvas.draw_text(&d.message, format_wrap, mr, theme.content);
                     for (i, br) in btns.iter().enumerate() {
                         let is_primary = i + 1 == btns.len();
                         let hovered_btn = d.hover == Some(i);
@@ -1447,6 +1486,32 @@ fn merge_style(base: &mut Style, over: &Style) {
     }
     if over.radius.is_some() {
         base.radius = over.radius;
+    }
+    if over.wrap.is_some() {
+        base.wrap = over.wrap;
+    }
+    if over.elev.is_some() {
+        base.elev = over.elev;
+    }
+    if over.grad.is_some() {
+        base.grad = over.grad;
+    }
+}
+
+fn draw_soft_shadow(canvas: &Canvas, rect: Rect, radius: f32, elev: f32) {
+    let layers = 6;
+    let dy = elev * 0.4;
+    for i in 0..layers {
+        let t = i as f32;
+        let spread = elev * (1.0 - t / layers as f32);
+        let a = 0.10 * (t + 1.0) / layers as f32;
+        let r = Rect::new(
+            rect.x - spread,
+            rect.y - spread + dy,
+            rect.width + spread * 2.0,
+            rect.height + spread * 2.0,
+        );
+        canvas.fill_rounded_rect(r, radius + spread, Color::rgba(0.0, 0.0, 0.0, a));
     }
 }
 
