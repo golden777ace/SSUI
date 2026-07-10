@@ -19,6 +19,10 @@ struct PyNode {
 type Bindings = Rc<RefCell<Vec<(NodeId, Py<PyAny>)>>>;
 type Stack = Rc<RefCell<Vec<NodeId>>>;
 
+thread_local! {
+    static WIN_SETTINGS: RefCell<Vec<(u8, Py<PyAny>)>> = RefCell::new(Vec::new());
+}
+
 #[pyclass(unsendable, name = "Ctx")]
 struct Ctx {
     stack: Stack,
@@ -140,13 +144,14 @@ struct PyWindow {
     dialog_queue: DialogQueue,
     glass: bool,
     tint: f32,
+    blur: bool,
 }
 
 #[pymethods]
 impl PyWindow {
     #[new]
-    #[pyo3(signature = (ttl="SSUI", w=1280, h=720, thm="drk", glass=false, tint=0.0))]
-    fn new(ttl: &str, w: i32, h: i32, thm: &str, glass: bool, tint: f32) -> Self {
+    #[pyo3(signature = (ttl="SSUI", w=1280, h=720, thm="drk", glass=false, tint=0.0, blur=false))]
+    fn new(ttl: &str, w: i32, h: i32, thm: &str, glass: bool, tint: f32, blur: bool) -> Self {
         let mut tree = Tree::new();
         tree.set_theme(theme_index(thm));
         let root = tree.root();
@@ -165,6 +170,7 @@ impl PyWindow {
             dialog_queue,
             glass,
             tint,
+            blur,
         }
     }
 
@@ -184,8 +190,25 @@ impl PyWindow {
 
     /// Привязывает прозрачность фона окна к сигналу 0..1.
     fn tint(&mut self, sig: PyObject) -> PyResult<()> {
-        let root = self.tree.as_ref().ok_or_else(consumed)?.root();
-        self.value_bindings.borrow_mut().push((root, sig));
+        WIN_SETTINGS.with(|s| s.borrow_mut().push((0, sig)));
+        Ok(())
+    }
+
+    /// Привязывает силу размытия к сигналу 0..1 (0 — выключено).
+    fn blur(&mut self, sig: PyObject) -> PyResult<()> {
+        WIN_SETTINGS.with(|s| s.borrow_mut().push((1, sig)));
+        Ok(())
+    }
+
+    /// Привязывает режим фона к сигналу: 0 — нет, иначе — размытие.
+    fn blur_mode(&mut self, sig: PyObject) -> PyResult<()> {
+        WIN_SETTINGS.with(|s| s.borrow_mut().push((2, sig)));
+        Ok(())
+    }
+
+    /// Привязывает гашение размытия при перемещении к сигналу (0/1).
+    fn drag_smooth(&mut self, sig: PyObject) -> PyResult<()> {
+        WIN_SETTINGS.with(|s| s.borrow_mut().push((3, sig)));
         Ok(())
     }
 
@@ -646,7 +669,7 @@ impl PyWindow {
     fn go(&mut self) -> PyResult<()> {
         dpi::enable_dpi_awareness();
         let tree = self.tree.take().ok_or_else(consumed)?;
-        let window = CoreWindow::new(&self.title, self.width, self.height, tree, self.glass, self.tint)
+        let window = CoreWindow::new(&self.title, self.width, self.height, tree, self.glass, self.tint, self.blur)
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         window.run();
         Ok(())
@@ -745,20 +768,43 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
             Err(e) => e.print(py),
         }
     }
-    let root = t.root();
     for (id, f) in values.borrow().iter() {
         match f.bind(py).call0().and_then(|v| v.extract::<f32>()) {
             Ok(v) => {
-                if *id == root {
-                    t.set_tint(v);
-                } else {
-                    t.set_slider_value(*id, v);
-                    t.set_progress_value(*id, v);
-                }
+                t.set_slider_value(*id, v);
+                t.set_progress_value(*id, v);
             }
             Err(e) => e.print(py),
         }
     }
+    WIN_SETTINGS.with(|s| {
+        for (tag, f) in s.borrow().iter() {
+            let v = match f.bind(py).call0().and_then(|x| x.extract::<f32>()) {
+                Ok(v) => v,
+                Err(e) => {
+                    e.print(py);
+                    continue;
+                }
+            };
+            match tag {
+                0 => t.set_tint(v),
+                1 => {
+                    if v <= 0.001 {
+                        t.set_blur_mode(0);
+                    } else {
+                        let a = (v.clamp(0.0, 1.0) * 255.0) as u32;
+                        t.set_blur_mode(3);
+                        t.set_blur_tint((a << 24) | 0x101418);
+                    }
+                }
+                2 => {
+                    let m = if v as i32 <= 0 { 0u32 } else { 3u32 };
+                    t.set_blur_mode(m);
+                }
+                _ => t.set_drag_smooth(v >= 0.5),
+            }
+        }
+    });
 }
 
 #[pymodule]

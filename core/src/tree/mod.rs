@@ -308,6 +308,9 @@ pub struct Tree {
     pending_dialog: DialogQueue,
     on_dialog: Option<Box<dyn FnMut(&mut Tree, usize)>>,
     tint: f32,
+    blur_mode: u32,
+    blur_tint: u32,
+    drag_smooth: bool,
 }
 
 impl Tree {
@@ -337,6 +340,9 @@ impl Tree {
             pending_dialog: Rc::new(RefCell::new(None)),
             on_dialog: None,
             tint: 0.0,
+            blur_mode: 0,
+            blur_tint: 0x40101418,
+            drag_smooth: true,
         }
     }
 
@@ -358,6 +364,36 @@ impl Tree {
     /// Возвращает альфа-канал фона окна.
     pub fn tint(&self) -> f32 {
         self.tint
+    }
+
+    /// Задаёт режим фонового размытия: 0 — нет, 3 — размытие, 4 — акрил.
+    pub fn set_blur_mode(&mut self, mode: u32) {
+        self.blur_mode = mode;
+    }
+
+    /// Возвращает режим фонового размытия.
+    pub fn blur_mode(&self) -> u32 {
+        self.blur_mode
+    }
+
+    /// Задаёт тон фонового размытия (0xAABBGGRR).
+    pub fn set_blur_tint(&mut self, tint: u32) {
+        self.blur_tint = tint;
+    }
+
+    /// Задаёт режим фонового размытия: 0 — нет, 3 — размытие.
+    pub fn set_blur_mode(&mut self, mode: u32) {
+        self.blur_mode = mode;
+    }
+
+    /// Гасить ли размытие при перемещении/ресайзе окна.
+    pub fn set_drag_smooth(&mut self, value: bool) {
+        self.drag_smooth = value;
+    }
+
+    /// Возвращает флаг гашения размытия при перемещении.
+    pub fn drag_smooth(&self) -> bool {
+        self.drag_smooth
     }
 
     /// Возвращает очередь анимаций для внешнего добавления.

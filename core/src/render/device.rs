@@ -293,21 +293,28 @@ impl Renderer {
         let now = Instant::now();
         let dt = (now - self.last_tick).as_secs_f32();
         self.last_tick = now;
-        let mut dirty = self.tree.tick(dt);
-        if self.dialog.is_none() {
-            if let Some(data) = self.tree.take_pending_dialog() {
-                self.tree.set_dialog_cb(data.cb);
-                self.dialog = Some(DialogView {
-                    title: data.title,
-                    message: data.message,
-                    buttons: data.buttons,
-                    hover: None,
-                    focus: None,
-                });
-                dirty = true;
-            }
-        }
-        dirty
+        self.tree.tick(dt)
+    }
+
+    /// Задаёт режим и тон фонового размытия.
+    pub fn set_blur(&mut self, mode: u32, tint: u32) {
+        self.tree.set_blur_mode(mode);
+        self.tree.set_blur_tint(tint);
+    }
+
+    /// Текущий режим фонового размытия.
+    pub fn blur_mode(&self) -> u32 {
+        self.tree.blur_mode()
+    }
+
+    /// Текущий тон фонового размытия.
+    pub fn blur_tint(&self) -> u32 {
+        self.tree.blur_tint()
+    }
+
+    /// Гасить ли размытие при перемещении окна.
+    pub fn drag_smooth(&self) -> bool {
+        self.tree.drag_smooth()
     }
 
     /// Прокручивает таблицу под курсором колесом мыши.

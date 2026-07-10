@@ -4,7 +4,7 @@ use std::sync::Once;
 use windows::core::*;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::{InvalidateRect, UpdateWindow, ValidateRect};
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryW};
 use windows::Win32::UI::Input::Ime::{
     ImmGetCompositionStringW, ImmGetContext, ImmReleaseContext, ImmSetCompositionWindow, CFS_POINT,
     COMPOSITIONFORM, GCS_RESULTSTR,
@@ -17,6 +17,10 @@ use crate::tree::Tree;
 
 struct WindowState {
     renderer: Renderer,
+    blur_on: bool,
+    moving: bool,
+    applied_mode: u32,
+    applied_tint: u32,
 }
 
 pub struct Window {
@@ -34,6 +38,7 @@ impl Window {
         tree: Tree,
         glass: bool,
         tint: f32,
+        blur: bool,
     ) -> Result<Self> {
         unsafe {
             let instance = GetModuleHandleW(None)?;
@@ -75,8 +80,20 @@ impl Window {
                 None,
             )?;
 
-            let renderer = Renderer::new(hwnd, tree, glass, tint, width, height)?;
-            let state = Box::new(WindowState { renderer });
+            let init_mode: u32 = if blur { 3 } else { 0 };
+            let init_tint: u32 = 0x40101418;
+            if blur {
+                set_accent(hwnd, init_mode, init_tint);
+            }
+            let mut renderer = Renderer::new(hwnd, tree, glass, tint, width, height)?;
+            renderer.set_blur(init_mode, init_tint);
+            let state = Box::new(WindowState {
+                renderer,
+                blur_on: blur,
+                moving: false,
+                applied_mode: init_mode,
+                applied_tint: init_tint,
+            });
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
 
             let _ = SetTimer(Some(hwnd), 1, 16, None);
@@ -123,6 +140,39 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 if let Some(state) = state_ptr(hwnd).as_mut() {
                     if state.renderer.on_timer() {
                         let _ = InvalidateRect(Some(hwnd), None, false);
+                    }
+                    if state.blur_on && !state.moving {
+                        let mode = state.renderer.blur_mode();
+                        let tint = state.renderer.blur_tint();
+                        if mode != state.applied_mode || tint != state.applied_tint {
+                            set_accent(hwnd, mode, tint);
+                            state.applied_mode = mode;
+                            state.applied_tint = tint;
+                        }
+                    }
+                }
+                LRESULT(0)
+            }
+
+            WM_ENTERSIZEMOVE => {
+                if let Some(state) = state_ptr(hwnd).as_mut() {
+                    if state.blur_on && state.renderer.drag_smooth() {
+                        set_accent(hwnd, 0, state.applied_tint);
+                        state.moving = true;
+                    }
+                }
+                LRESULT(0)
+            }
+
+            WM_EXITSIZEMOVE => {
+                if let Some(state) = state_ptr(hwnd).as_mut() {
+                    if state.blur_on {
+                        let mode = state.renderer.blur_mode();
+                        let tint = state.renderer.blur_tint();
+                        set_accent(hwnd, mode, tint);
+                        state.applied_mode = mode;
+                        state.applied_tint = tint;
+                        state.moving = false;
                     }
                 }
                 LRESULT(0)
@@ -330,4 +380,46 @@ fn loword(v: u32) -> u32 {
 #[inline]
 fn hiword(v: u32) -> u32 {
     (v >> 16) & 0xFFFF
+}
+
+#[repr(C)]
+struct AccentPolicy {
+    state: u32,
+    flags: u32,
+    gradient_color: u32,
+    animation_id: u32,
+}
+
+#[repr(C)]
+struct WindowCompositionAttribData {
+    attrib: u32,
+    data: *mut core::ffi::c_void,
+    size: usize,
+}
+
+type SetWca = unsafe extern "system" fn(HWND, *mut WindowCompositionAttribData) -> BOOL;
+
+/// Применяет политику фона: 0 — выкл, 3 — размытие, 4 — акрил (Windows 10/11).
+unsafe fn set_accent(hwnd: HWND, state: u32, gradient_color: u32) {
+    let lib = match LoadLibraryW(w!("user32.dll")) {
+        Ok(h) => h,
+        Err(_) => return,
+    };
+    let proc = match GetProcAddress(lib, s!("SetWindowCompositionAttribute")) {
+        Some(p) => p,
+        None => return,
+    };
+    let set_wca: SetWca = core::mem::transmute(proc);
+    let mut accent = AccentPolicy {
+        state,
+        flags: 2,
+        gradient_color,
+        animation_id: 0,
+    };
+    let mut data = WindowCompositionAttribData {
+        attrib: 19,
+        data: &mut accent as *mut _ as *mut core::ffi::c_void,
+        size: core::mem::size_of::<AccentPolicy>(),
+    };
+    let _ = set_wca(hwnd, &mut data);
 }
