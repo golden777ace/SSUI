@@ -19,6 +19,14 @@ pub struct Props {
     pub gap: f32,
     pub width: Option<f32>,
     pub height: Option<f32>,
+    pub grow: f32,
+    pub justify: u8,
+    pub cross: u8,
+    pub abs: bool,
+    pub l: Option<f32>,
+    pub t: Option<f32>,
+    pub r: Option<f32>,
+    pub b: Option<f32>,
 }
 
 impl Default for Props {
@@ -29,6 +37,14 @@ impl Default for Props {
             gap: 0.0,
             width: None,
             height: None,
+            grow: 0.0,
+            justify: 0,
+            cross: 0,
+            abs: false,
+            l: None,
+            t: None,
+            r: None,
+            b: None,
         }
     }
 }
@@ -316,6 +332,8 @@ pub struct Tree {
     blur_mode: u32,
     blur_tint: u32,
     drag_smooth: bool,
+    dirty: bool,
+    last_root: Option<Rect>,
 }
 
 impl Tree {
@@ -349,6 +367,8 @@ impl Tree {
             blur_mode: 0,
             blur_tint: 0x40101418,
             drag_smooth: true,
+            dirty: true,
+            last_root: None,
         }
     }
 
@@ -608,6 +628,34 @@ impl Tree {
         self.nodes[id.0].icon = Some(path.to_string());
     }
 
+    /// Задаёт flex-вес узла вдоль главной оси.
+    pub fn set_grow(&mut self, id: NodeId, g: f32) {
+        self.nodes[id.0].props.grow = g;
+    }
+
+    /// Задаёт выравнивание детей: `justify` вдоль оси, `cross` поперёк.
+    pub fn set_align(&mut self, id: NodeId, justify: u8, cross: u8) {
+        self.nodes[id.0].props.justify = justify;
+        self.nodes[id.0].props.cross = cross;
+    }
+
+    /// Пинит узел к краям родителя абсолютными отступами.
+    pub fn set_pin(
+        &mut self,
+        id: NodeId,
+        l: Option<f32>,
+        t: Option<f32>,
+        r: Option<f32>,
+        b: Option<f32>,
+    ) {
+        let p = &mut self.nodes[id.0].props;
+        p.abs = true;
+        p.l = l;
+        p.t = t;
+        p.r = r;
+        p.b = b;
+    }
+
     /// Возвращает узел по идентификатору.
     pub fn get(&self, id: NodeId) -> &Node {
         &self.nodes[id.0]
@@ -702,6 +750,7 @@ impl Tree {
         if let NodeKind::Tabs { selected, .. } = &mut self.nodes[id.0].kind {
             *selected = index;
         }
+        self.dirty = true;
     }
 
     /// Является ли узел таблицей.
@@ -884,9 +933,19 @@ impl Tree {
         }
     }
 
-    /// Вычисляет прямоугольники всех узлов линейной раскладкой.
+    /// Помечает раскладку устаревшей — следующий кадр пересчитает геометрию.
+    pub fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+
+    /// Вычисляет прямоугольники узлов; пропускает расчёт, если ничего не менялось.
     pub fn layout(&mut self, root_rect: Rect) {
+        if !self.dirty && self.last_root == Some(root_rect) {
+            return;
+        }
         self.layout_node(self.root, root_rect);
+        self.last_root = Some(root_rect);
+        self.dirty = false;
     }
 
     fn layout_node(&mut self, id: NodeId, rect: Rect) {
@@ -924,54 +983,79 @@ impl Tree {
             (rect.width - 2.0 * pad).max(0.0),
             (rect.height - 2.0 * pad).max(0.0),
         );
-        let n = children.len();
-        let total_gap = props.gap * n.saturating_sub(1) as f32;
-
-        let main_available = match props.axis {
-            Axis::Vertical => inner.height - total_gap,
-            Axis::Horizontal => inner.width - total_gap,
-        };
-        let mut fixed_sum = 0.0;
-        let mut flex_count = 0usize;
         for &c in &children {
             let cp = self.nodes[c.0].props;
-            let main = match props.axis {
-                Axis::Vertical => cp.height,
-                Axis::Horizontal => cp.width,
-            };
+            if !cp.abs {
+                continue;
+            }
+            let (ax, aw) = anchor_axis(inner.x, inner.width, cp.l, cp.r, cp.width);
+            let (ay, ah) = anchor_axis(inner.y, inner.height, cp.t, cp.b, cp.height);
+            self.layout_node(c, Rect::new(ax, ay, aw, ah));
+        }
+        let flow: Vec<NodeId> = children
+            .iter()
+            .copied()
+            .filter(|c| !self.nodes[c.0].props.abs)
+            .collect();
+        let n = flow.len();
+        let total_gap = props.gap * n.saturating_sub(1) as f32;
+        let vertical = matches!(props.axis, Axis::Vertical);
+        let inner_main = if vertical { inner.height } else { inner.width };
+        let inner_cross = if vertical { inner.width } else { inner.height };
+
+        let mut fixed_sum = 0.0;
+        let mut weight_sum = 0.0;
+        for &c in &flow {
+            let cp = self.nodes[c.0].props;
+            let main = if vertical { cp.height } else { cp.width };
             match main {
                 Some(v) => fixed_sum += v,
-                None => flex_count += 1,
+                None => weight_sum += if cp.grow > 0.0 { cp.grow } else { 1.0 },
             }
         }
-        let flex_size = if flex_count > 0 {
-            (main_available - fixed_sum).max(0.0) / flex_count as f32
+        let flex_space = (inner_main - total_gap - fixed_sum).max(0.0);
+        let unit = if weight_sum > 0.0 {
+            flex_space / weight_sum
         } else {
             0.0
         };
 
-        let mut cursor = match props.axis {
-            Axis::Vertical => inner.y,
-            Axis::Horizontal => inner.x,
+        let used = fixed_sum + total_gap + if weight_sum > 0.0 { flex_space } else { 0.0 };
+        let leftover = (inner_main - used).max(0.0);
+        let (start_off, gap_extra) = match props.justify {
+            1 => (leftover / 2.0, 0.0),
+            2 => (leftover, 0.0),
+            3 if n > 1 => (0.0, leftover / (n - 1) as f32),
+            _ => (0.0, 0.0),
         };
-        for &c in &children {
+
+        let mut cursor = (if vertical { inner.y } else { inner.x }) + start_off;
+        for &c in &flow {
             let cp = self.nodes[c.0].props;
-            let child_rect = match props.axis {
-                Axis::Vertical => {
-                    let h = cp.height.unwrap_or(flex_size);
-                    let w = cp.width.unwrap_or(inner.width);
-                    let r = Rect::new(inner.x, cursor, w, h);
-                    cursor += h + props.gap;
-                    r
-                }
-                Axis::Horizontal => {
-                    let w = cp.width.unwrap_or(flex_size);
-                    let h = cp.height.unwrap_or(inner.height);
-                    let r = Rect::new(cursor, inner.y, w, h);
-                    cursor += w + props.gap;
-                    r
+            let main_fixed = if vertical { cp.height } else { cp.width };
+            let main_size = match main_fixed {
+                Some(v) => v,
+                None => unit * if cp.grow > 0.0 { cp.grow } else { 1.0 },
+            };
+            let cross_fixed = if vertical { cp.width } else { cp.height };
+            let (cx_off, cx_size) = match cross_fixed {
+                None => (0.0, inner_cross),
+                Some(s) => {
+                    let s = s.min(inner_cross);
+                    let off = match props.cross {
+                        2 => (inner_cross - s) / 2.0,
+                        3 => inner_cross - s,
+                        _ => 0.0,
+                    };
+                    (off, s)
                 }
             };
+            let child_rect = if vertical {
+                Rect::new(inner.x + cx_off, cursor, cx_size, main_size)
+            } else {
+                Rect::new(cursor, inner.y + cx_off, main_size, cx_size)
+            };
+            cursor += main_size + props.gap + gap_extra;
             self.layout_node(c, child_rect);
         }
     }
@@ -994,6 +1078,24 @@ impl Tree {
 impl Default for Tree {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn anchor_axis(
+    start: f32,
+    size: f32,
+    near: Option<f32>,
+    far: Option<f32>,
+    fixed: Option<f32>,
+) -> (f32, f32) {
+    match (near, far, fixed) {
+        (Some(a), Some(z), _) => (start + a, (size - a - z).max(0.0)),
+        (Some(a), None, Some(w)) => (start + a, w),
+        (None, Some(z), Some(w)) => (start + size - z - w, w),
+        (Some(a), None, None) => (start + a, (size - a).max(0.0)),
+        (None, Some(z), None) => (start, (size - z).max(0.0)),
+        (None, None, Some(w)) => (start + (size - w) / 2.0, w),
+        (None, None, None) => (start, size),
     }
 }
 

@@ -179,6 +179,36 @@ impl PyWindow {
         PyNode { id: self.root }
     }
 
+    /// Задаёт flex-вес узла вдоль главной оси.
+    fn grow(&mut self, n: PyNode, g: f32) -> PyResult<()> {
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        tree.set_grow(n.id, g);
+        Ok(())
+    }
+
+    /// Выравнивает детей узла: `justify` (st/cnt/end/btw), `cross` (str/st/cnt/end).
+    #[pyo3(signature = (n, *, justify="st", cross="str"))]
+    fn align(&mut self, n: PyNode, justify: &str, cross: &str) -> PyResult<()> {
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        tree.set_align(n.id, justify_code(justify), cross_code(cross));
+        Ok(())
+    }
+
+    /// Пинит узел к краям родителя; `l/t/r/b` — отступы, `None` — не привязан.
+    #[pyo3(signature = (n, *, l=None, t=None, r=None, b=None))]
+    fn pin(
+        &mut self,
+        n: PyNode,
+        l: Option<f32>,
+        t: Option<f32>,
+        r: Option<f32>,
+        b: Option<f32>,
+    ) -> PyResult<()> {
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        tree.set_pin(n.id, l, t, r, b);
+        Ok(())
+    }
+
     /// Возвращает контроллер анимаций.
     fn fx(&self) -> Fx {
         Fx {
@@ -772,6 +802,25 @@ fn make_props(ax: &str, pd: f32, gp: f32, w: Option<f32>, h: Option<f32>) -> Pro
         gap: gp,
         width: w,
         height: h,
+        ..Default::default()
+    }
+}
+
+fn justify_code(s: &str) -> u8 {
+    match s {
+        "cnt" => 1,
+        "end" => 2,
+        "btw" => 3,
+        _ => 0,
+    }
+}
+
+fn cross_code(s: &str) -> u8 {
+    match s {
+        "st" => 1,
+        "cnt" => 2,
+        "end" => 3,
+        _ => 0,
     }
 }
 

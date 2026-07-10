@@ -36,8 +36,7 @@ def main():
 
         win.lb("Слайдер тоже меняет режим:", h=22.0)
         win.sl(0.0, ch=lambda v: fit.st(float(round(v * 3.0))), h=36.0)
-        win.bt("Сохранить", icon="save.png", h=44.0, clk=print("save"))
-        win.lb("Профиль", icon="user.png", h=28.0)
+        win.bt("Тест", icon=r"C:\Users\sergism\Desktop\SSUI\test.png", h=44.0)
 
     win.go()
 

@@ -171,3 +171,51 @@ CSS-подмножество; виртуализация списков — по
 Проект под MIT, автор — единственный правообладатель, поэтому будущие версии можно
 выпускать под другой лицензией. Уже опубликованные под MIT версии отозвать нельзя.
 При появлении сторонних контрибуций вводится CLA. Это не юридическая консультация.
+
+# *Каталог виджетов*
+
+Полный список планируемых виджетов. Легенда: ✅ есть · 🔄 частично · ⏳ план.
+
+### Окна и диалоги
+- ✅ Window — главное/независимое окно (`W`).
+- ✅ Dialog — модальный диалог (`dlg`).
+- ⏳ Message Box, Alert, Notification, Toast, Snackbar, Tooltip.
+
+### Контейнеры
+- ✅ Panel / Frame — группировка (`fr`, `bx`).
+- 🔄 Canvas — область рисования (примитивы есть, публичного API нет).
+- ✅ Tab Widget — вкладки (`tab`).
+- ⏳ GroupBox, Scroll Area, Splitter, Accordion, Stack Widget, Dock Widget, Drop Area.
+
+### Отображение
+- ✅ Label — текст (`lb`).
+- ✅ Image — изображение (`img`).
+- ✅ Icon — пиктограмма (`icon=`).
+- ✅ Progress Bar — прогресс (`pr`).
+- ⏳ Separator, Spinner, Chart, Gauge, Meter, Status Bar.
+
+### Кнопки и действия
+- ✅ Button — действие (`bt`).
+- ✅ Drop-down Button — список (`dd`).
+- ⏳ Toggle Button, Split Button, Link.
+
+### Ввод
+- ✅ Text Entry — однострочный ввод (`tx`).
+- ✅ CheckBox — флажок (`ch`).
+- ✅ Slider — ползунок (`sl`).
+- ✅ ComboBox — выбор из списка (`dd`).
+- ⏳ Text Area, SpinBox, Radio Button, Switch, Range Slider, Dial/Knob.
+
+### Списки и данные
+- ✅ Table / Data Grid — таблица (`tbl`).
+- ⏳ ListBox, Tree View, Property Grid.
+
+### Меню и навигация
+- ✅ Menu / Context Menu — меню (`menu`).
+- ⏳ Menu Bar, Scroll Bar.
+
+### Выбор значений
+- ⏳ Calendar, Date Picker, Time Picker, DateTime Picker, Color Picker.
+
+### Мультимедиа и встраивание
+- ⏳ WebView, Video Player, Audio Player, Terminal, Map View.
