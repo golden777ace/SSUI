@@ -246,6 +246,15 @@ pub enum NodeKind {
         path: String,
         fit: u8,
     },
+    Switch {
+        label: Vec<u16>,
+        on: bool,
+    },
+    Radio {
+        label: Vec<u16>,
+        on: bool,
+        group: u32,
+    },
 }
 
 /// Высота полосы вкладок в пикселях.
@@ -837,9 +846,54 @@ impl Tree {
         }
     }
 
-    /// Реагирует ли узел на клик (кнопка или чекбокс).
+    /// Реагирует ли узел на клик.
     pub fn is_interactive(&self, id: NodeId) -> bool {
-        self.is_button(id) || self.is_checkbox(id)
+        self.is_button(id) || self.is_checkbox(id) || self.is_switch(id) || self.is_radio(id)
+    }
+
+    /// Является ли узел переключателем.
+    pub fn is_switch(&self, id: NodeId) -> bool {
+        matches!(self.nodes[id.0].kind, NodeKind::Switch { .. })
+    }
+
+    /// Является ли узел радиокнопкой.
+    pub fn is_radio(&self, id: NodeId) -> bool {
+        matches!(self.nodes[id.0].kind, NodeKind::Radio { .. })
+    }
+
+    /// Инвертирует состояние переключателя.
+    pub fn toggle_switch(&mut self, id: NodeId) {
+        if let NodeKind::Switch { on, .. } = &mut self.nodes[id.0].kind {
+            *on = !*on;
+        }
+    }
+
+    /// Возвращает состояние переключателя.
+    pub fn switch_on(&self, id: NodeId) -> bool {
+        matches!(&self.nodes[id.0].kind, NodeKind::Switch { on, .. } if *on)
+    }
+
+    /// Выбирает радиокнопку, снимая выбор с её группы.
+    pub fn select_radio(&mut self, id: NodeId) {
+        let group = match &self.nodes[id.0].kind {
+            NodeKind::Radio { group, .. } => *group,
+            _ => return,
+        };
+        for n in self.nodes.iter_mut() {
+            if let NodeKind::Radio { on, group: g, .. } = &mut n.kind {
+                if *g == group {
+                    *on = false;
+                }
+            }
+        }
+        if let NodeKind::Radio { on, .. } = &mut self.nodes[id.0].kind {
+            *on = true;
+        }
+    }
+
+    /// Возвращает состояние радиокнопки.
+    pub fn radio_on(&self, id: NodeId) -> bool {
+        matches!(&self.nodes[id.0].kind, NodeKind::Radio { on, .. } if *on)
     }
 
     /// Является ли узел ползунком.
@@ -851,6 +905,8 @@ impl Tree {
     pub fn is_focusable(&self, id: NodeId) -> bool {
         self.is_button(id)
             || self.is_checkbox(id)
+            || self.is_switch(id)
+            || self.is_radio(id)
             || self.is_textbox(id)
             || self.is_slider(id)
             || self.is_dropdown(id)
@@ -1132,6 +1188,8 @@ fn kind_tag(kind: &NodeKind) -> &'static str {
         NodeKind::Tabs { .. } => "tabs",
         NodeKind::Table { .. } => "table",
         NodeKind::Image { .. } => "image",
+        NodeKind::Switch { .. } => "switch",
+        NodeKind::Radio { .. } => "radio",
     }
 }
 

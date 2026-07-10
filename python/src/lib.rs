@@ -520,6 +520,87 @@ impl PyWindow {
         Ok(PyNode { id })
     }
 
+    /// Добавляет переключатель; `clk(on)` при смене состояния.
+    #[pyo3(signature = (lb="", *, pr=None, on=false, clk=None, pd=0.0, gp=0.0, w=None, h=None))]
+    fn sw(
+        &mut self,
+        lb: &str,
+        pr: Option<PyNode>,
+        on: bool,
+        clk: Option<PyObject>,
+        pd: f32,
+        gp: f32,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<PyNode> {
+        let props = make_props("v", pd, gp, w, h);
+        let parent = self.parent_of(pr);
+        let texts = self.bindings.clone();
+        let values = self.value_bindings.clone();
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let id = tree.add_child(parent, NodeKind::Switch { label: utf16(lb), on }, props);
+        tree.set_on_change(id, move |t, v| {
+            Python::with_gil(|py| {
+                if let Some(cb) = &clk {
+                    if let Err(e) = cb.bind(py).call1((v >= 0.5,)) {
+                        e.print(py);
+                    }
+                }
+                refresh_all(py, t, &texts, &values);
+            });
+        });
+        Ok(PyNode { id })
+    }
+
+    /// Возвращает состояние переключателя.
+    fn swv(&self, n: PyNode) -> PyResult<bool> {
+        let tree = self.tree.as_ref().ok_or_else(consumed)?;
+        Ok(tree.switch_on(n.id))
+    }
+
+    /// Добавляет радиокнопку группы `grp`; `clk()` при выборе.
+    #[pyo3(signature = (lb="", *, pr=None, grp=0, on=false, clk=None, pd=0.0, gp=0.0, w=None, h=None))]
+    fn rd(
+        &mut self,
+        lb: &str,
+        pr: Option<PyNode>,
+        grp: u32,
+        on: bool,
+        clk: Option<PyObject>,
+        pd: f32,
+        gp: f32,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<PyNode> {
+        let props = make_props("v", pd, gp, w, h);
+        let parent = self.parent_of(pr);
+        let texts = self.bindings.clone();
+        let values = self.value_bindings.clone();
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let id = tree.add_child(
+            parent,
+            NodeKind::Radio { label: utf16(lb), on, group: grp },
+            props,
+        );
+        tree.set_on_change(id, move |t, _v| {
+            Python::with_gil(|py| {
+                if let Some(cb) = &clk {
+                    if let Err(e) = cb.bind(py).call0() {
+                        e.print(py);
+                    }
+                }
+                refresh_all(py, t, &texts, &values);
+            });
+        });
+        Ok(PyNode { id })
+    }
+
+    /// Возвращает состояние радиокнопки.
+    fn rdv(&self, n: PyNode) -> PyResult<bool> {
+        let tree = self.tree.as_ref().ok_or_else(consumed)?;
+        Ok(tree.radio_on(n.id))
+    }
+
     /// Добавляет поле ввода; `sig` — сигнал, куда пишется текст.
     #[pyo3(signature = (txt="", *, pr=None, sig=None, pd=0.0, gp=0.0, w=None, h=None))]
     fn tx(

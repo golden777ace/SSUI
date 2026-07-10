@@ -1077,6 +1077,17 @@ impl Renderer {
     }
 
     fn dispatch(&mut self, id: NodeId) {
+        if self.tree.is_switch(id) {
+            self.tree.toggle_switch(id);
+            let on = self.tree.switch_on(id);
+            self.tree.fire_change(id, if on { 1.0 } else { 0.0 });
+            return;
+        }
+        if self.tree.is_radio(id) {
+            self.tree.select_radio(id);
+            self.tree.fire_change(id, 1.0);
+            return;
+        }
         if self.tree.is_checkbox(id) {
             self.tree.toggle_checkbox(id);
         }
@@ -1146,7 +1157,24 @@ impl Renderer {
         }
     }
 
+    fn poll_dialog(&mut self) {
+        if self.dialog.is_some() {
+            return;
+        }
+        if let Some(data) = self.tree.take_pending_dialog() {
+            self.tree.set_dialog_cb(data.cb);
+            self.dialog = Some(DialogView {
+                title: data.title,
+                message: data.message,
+                buttons: data.buttons,
+                hover: None,
+                focus: None,
+            });
+        }
+    }
+
     pub fn render(&mut self) {
+        self.poll_dialog();
         self.tree.layout(Rect::new(0.0, 0.0, self.width, self.height));
         self.update_scroll();
         self.preload_images();
@@ -1178,6 +1206,9 @@ impl Renderer {
             };
             canvas.clear(clear);
             self.tree.for_each(|id, node| {
+                if node.rect.x <= -100000.0 || node.rect.y <= -100000.0 {
+                    return;
+                }
                 let mut style = node.style;
                 if focused == Some(id) {
                     merge_style(&mut style, &node.style_focus);
@@ -1298,8 +1329,8 @@ impl Renderer {
                         let filled = Rect::new(r.x, cy - track_h / 2.0, filled_w, track_h);
                         canvas.fill_rounded_rect(filled, track_h / 2.0, fill);
                         let knob_d = 16.0;
-                        let knob_x =
-                            (r.x + filled_w - knob_d / 2.0).clamp(r.x, r.x + r.width - knob_d);
+                        let hi = (r.x + r.width - knob_d).max(r.x);
+                        let knob_x = (r.x + filled_w - knob_d / 2.0).clamp(r.x, hi);
                         let knob = Rect::new(knob_x, cy - knob_d / 2.0, knob_d, knob_d);
                         let knob_color = if focused == Some(id) { theme.accent } else { theme.content };
                         canvas.fill_rounded_rect(knob, knob_d / 2.0, knob_color);
@@ -1339,6 +1370,77 @@ impl Renderer {
                             bx + box_d + 10.0,
                             r.y,
                             (r.width - box_d - 10.0).max(0.0),
+                            r.height,
+                        );
+                        let color = style.text.unwrap_or(theme.content);
+                        canvas.draw_text(label, format_left, label_rect, color);
+                    }
+                    NodeKind::Switch { label, on } => {
+                        let r = node.rect;
+                        let tw = 44.0;
+                        let th = 24.0;
+                        let tx = r.x;
+                        let ty = r.y + (r.height - th) / 2.0;
+                        let track = Rect::new(tx, ty, tw, th);
+                        if focused == Some(id) {
+                            let ring = Rect::new(tx - 3.0, ty - 3.0, tw + 6.0, th + 6.0);
+                            canvas.fill_rounded_rect(ring, th / 2.0 + 3.0, theme.content);
+                        }
+                        let track_col = if *on {
+                            style.fill.unwrap_or(theme.accent)
+                        } else {
+                            theme.track
+                        };
+                        canvas.fill_rounded_rect(track, th / 2.0, track_col);
+                        let kd = th - 6.0;
+                        let kx = if *on { tx + tw - kd - 3.0 } else { tx + 3.0 };
+                        let ky = ty + 3.0;
+                        canvas.fill_rounded_rect(
+                            Rect::new(kx, ky, kd, kd),
+                            kd / 2.0,
+                            theme.on_accent,
+                        );
+                        let label_rect = Rect::new(
+                            tx + tw + 10.0,
+                            r.y,
+                            (r.width - tw - 10.0).max(0.0),
+                            r.height,
+                        );
+                        let color = style.text.unwrap_or(theme.content);
+                        canvas.draw_text(label, format_left, label_rect, color);
+                    }
+                    NodeKind::Radio { label, on, .. } => {
+                        let r = node.rect;
+                        let d = 22.0;
+                        let bx = r.x;
+                        let by = r.y + (r.height - d) / 2.0;
+                        let outer = Rect::new(bx, by, d, d);
+                        if focused == Some(id) {
+                            let ring = Rect::new(bx - 3.0, by - 3.0, d + 6.0, d + 6.0);
+                            canvas.fill_rounded_rect(ring, d / 2.0 + 3.0, theme.content);
+                        }
+                        let border = if *on {
+                            style.fill.unwrap_or(theme.accent)
+                        } else {
+                            theme.track
+                        };
+                        canvas.fill_rounded_rect(outer, d / 2.0, border);
+                        let inner = Rect::new(bx + 2.0, by + 2.0, d - 4.0, d - 4.0);
+                        canvas.fill_rounded_rect(inner, (d - 4.0) / 2.0, theme.surface);
+                        if *on {
+                            let dot = 10.0;
+                            let dx = bx + (d - dot) / 2.0;
+                            let dy = by + (d - dot) / 2.0;
+                            canvas.fill_rounded_rect(
+                                Rect::new(dx, dy, dot, dot),
+                                dot / 2.0,
+                                style.fill.unwrap_or(theme.accent),
+                            );
+                        }
+                        let label_rect = Rect::new(
+                            bx + d + 10.0,
+                            r.y,
+                            (r.width - d - 10.0).max(0.0),
                             r.height,
                         );
                         let color = style.text.unwrap_or(theme.content);
@@ -1406,7 +1508,8 @@ impl Renderer {
                     NodeKind::Tabs { labels, selected } => {
                         let r = node.rect;
                         let header = Rect::new(r.x, r.y, r.width, TAB_HEADER);
-                        canvas.fill_rounded_rect(header, 8.0, theme.surface);
+                        let header_fill = style.fill.unwrap_or(theme.surface);
+                        canvas.fill_rounded_rect(header, 8.0, header_fill);
                         let n = labels.len().max(1);
                         let tab_w = r.width / n as f32;
                         for (i, lab) in labels.iter().enumerate() {
@@ -1687,6 +1790,8 @@ fn kind_name(kind: &NodeKind) -> &'static str {
         NodeKind::Tabs { .. } => "Tabs",
         NodeKind::Table { .. } => "Table",
         NodeKind::Image { .. } => "Image",
+        NodeKind::Switch { .. } => "Switch",
+        NodeKind::Radio { .. } => "Radio",
     }
 }
 
