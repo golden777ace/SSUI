@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::Instant;
 
 use windows::core::*;
@@ -16,6 +17,10 @@ use windows::Win32::System::DataExchange::{
 };
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 use windows::Win32::System::Ole::CF_UNICODETEXT;
+use windows::Win32::Graphics::Imaging::*;
+use windows::Win32::System::Com::{
+    CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+};
 
 use super::canvas::Canvas;
 use super::types::{Color, Rect};
@@ -66,6 +71,8 @@ pub struct Renderer {
     menu_hover: Option<usize>,
     dialog: Option<DialogView>,
     glass: bool,
+    wic: Option<IWICImagingFactory>,
+    img_cache: HashMap<String, Option<ID2D1Bitmap>>,
     _dcomp: Option<IDCompositionDevice>,
     _dcomp_target: Option<IDCompositionTarget>,
     _dcomp_visual: Option<IDCompositionVisual>,
@@ -200,6 +207,10 @@ impl Renderer {
             let _ = text_format_wrap.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
             let _ = text_format_wrap.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
 
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            let wic: Option<IWICImagingFactory> =
+                CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).ok();
+
             let theme_index = tree.theme();
             let theme = theme_from_index(theme_index);
             let mut renderer = Renderer {
@@ -231,6 +242,8 @@ impl Renderer {
                 menu_hover: None,
                 dialog: None,
                 glass,
+                wic,
+                img_cache: HashMap::new(),
                 _dcomp: dcomp,
                 _dcomp_target: dcomp_target,
                 _dcomp_visual: dcomp_visual,
@@ -1106,9 +1119,37 @@ impl Renderer {
     }
 
     /// Пересчитывает раскладку и перерисовывает окно из дерева элементов.
+    fn preload_images(&mut self) {
+        let wic = match &self.wic {
+            Some(w) => w.clone(),
+            None => return,
+        };
+        let mut paths: Vec<String> = Vec::new();
+        self.tree.for_each(|_, node| {
+            if let NodeKind::Image { path, .. } = &node.kind {
+                if !path.is_empty() {
+                    paths.push(path.clone());
+                }
+            }
+            if let Some(icon) = &node.icon {
+                if !icon.is_empty() {
+                    paths.push(icon.clone());
+                }
+            }
+        });
+        for p in paths {
+            if self.img_cache.contains_key(&p) {
+                continue;
+            }
+            let bmp = load_bitmap(&wic, &self.rt, &p);
+            self.img_cache.insert(p, bmp);
+        }
+    }
+
     pub fn render(&mut self) {
         self.tree.layout(Rect::new(0.0, 0.0, self.width, self.height));
         self.update_scroll();
+        self.preload_images();
         let hovered = self.hovered;
         let pressed = self.pressed;
         let focused = self.focused;
@@ -1124,6 +1165,7 @@ impl Renderer {
             let format = &self.text_format;
             let format_left = &self.text_format_left;
             let format_wrap = &self.text_format_wrap;
+            let img_cache = &self.img_cache;
             let clear = if self.glass {
                 Color::rgba(
                     theme.background.r,
@@ -1146,6 +1188,11 @@ impl Renderer {
                 }
                 match &node.kind {
                     NodeKind::Container => {}
+                    NodeKind::Image { path, fit } => {
+                        if let Some(Some(bmp)) = img_cache.get(path) {
+                            canvas.draw_bitmap(bmp, node.rect, *fit);
+                        }
+                    }
                     NodeKind::Frame { radius } => {
                         let fill = style.fill.unwrap_or(theme.surface);
                         let rad = style.radius.unwrap_or(*radius);
@@ -1162,12 +1209,30 @@ impl Renderer {
                     }
                     NodeKind::Label { text } => {
                         let color = style.text.unwrap_or(theme.content);
-                        let fmt = if style.wrap == Some(true) {
+                        let mut tr = node.rect;
+                        let mut fmt = if style.wrap == Some(true) {
                             format_wrap
                         } else {
                             format
                         };
-                        canvas.draw_text(text, fmt, node.rect, color);
+                        if let Some(icon) = &node.icon {
+                            if let Some(Some(bmp)) = img_cache.get(icon) {
+                                let sz = (node.rect.height - 6.0).clamp(12.0, 28.0);
+                                let iy = node.rect.y + (node.rect.height - sz) / 2.0;
+                                canvas.draw_bitmap(bmp, Rect::new(node.rect.x, iy, sz, sz), 0);
+                                let off = sz + 8.0;
+                                tr = Rect::new(
+                                    node.rect.x + off,
+                                    node.rect.y,
+                                    (node.rect.width - off).max(0.0),
+                                    node.rect.height,
+                                );
+                                if style.wrap != Some(true) {
+                                    fmt = format_left;
+                                }
+                            }
+                        }
+                        canvas.draw_text(text, fmt, tr, color);
                     }
                     NodeKind::Button { label, radius } => {
                         let rad = style.radius.unwrap_or(*radius);
@@ -1203,7 +1268,23 @@ impl Renderer {
                         } else {
                             canvas.fill_rounded_rect(node.rect, rad, fill);
                         }
-                        canvas.draw_text(label, format, node.rect, text_color);
+                        let mut tr = node.rect;
+                        if let Some(icon) = &node.icon {
+                            if let Some(Some(bmp)) = img_cache.get(icon) {
+                                let sz = (node.rect.height - 10.0).clamp(12.0, 26.0);
+                                let iy = node.rect.y + (node.rect.height - sz) / 2.0;
+                                let ix = node.rect.x + 12.0;
+                                canvas.draw_bitmap(bmp, Rect::new(ix, iy, sz, sz), 0);
+                                let off = sz + 20.0;
+                                tr = Rect::new(
+                                    node.rect.x + off,
+                                    node.rect.y,
+                                    (node.rect.width - off).max(0.0),
+                                    node.rect.height,
+                                );
+                            }
+                        }
+                        canvas.draw_text(label, format, tr, text_color);
                     }
                     NodeKind::Slider { value } => {
                         let v = value.clamp(0.0, 1.0);
@@ -1605,6 +1686,7 @@ fn kind_name(kind: &NodeKind) -> &'static str {
         NodeKind::Dropdown { .. } => "Dropdown",
         NodeKind::Tabs { .. } => "Tabs",
         NodeKind::Table { .. } => "Table",
+        NodeKind::Image { .. } => "Image",
     }
 }
 
@@ -1614,6 +1696,36 @@ fn theme_from_index(index: usize) -> Theme {
         1 => Theme::light(),
         2 => Theme::dark(),
         _ => Theme::black(),
+    }
+}
+
+fn load_bitmap(
+    wic: &IWICImagingFactory,
+    rt: &ID2D1RenderTarget,
+    path: &str,
+) -> Option<ID2D1Bitmap> {
+    unsafe {
+        let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+        let decoder = wic
+            .CreateDecoderFromFilename(
+                PCWSTR(wide.as_ptr()),
+                None,
+                GENERIC_READ,
+                WICDecodeMetadataCacheOnLoad,
+            )
+            .ok()?;
+        let frame = decoder.GetFrame(0).ok()?;
+        let conv = wic.CreateFormatConverter().ok()?;
+        conv.Initialize(
+            &frame,
+            &GUID_WICPixelFormat32bppPBGRA,
+            WICBitmapDitherTypeNone,
+            None,
+            0.0,
+            WICBitmapPaletteTypeMedianCut,
+        )
+        .ok()?;
+        rt.CreateBitmapFromWicBitmap(&conv, None).ok()
     }
 }
 

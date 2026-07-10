@@ -271,13 +271,14 @@ impl PyWindow {
     }
 
     /// Добавляет метку; `bind` — колбэк, возвращающий текст.
-    #[pyo3(signature = (txt="", *, pr=None, bind=None, pd=0.0, gp=0.0, w=None, h=None, wrap=false))]
+    #[pyo3(signature = (txt="", *, pr=None, bind=None, icon=None, pd=0.0, gp=0.0, w=None, h=None, wrap=false))]
     fn lb(
         &mut self,
         py: Python,
         txt: &str,
         pr: Option<PyNode>,
         bind: Option<PyObject>,
+        icon: Option<String>,
         pd: f32,
         gp: f32,
         w: Option<f32>,
@@ -301,19 +302,58 @@ impl PyWindow {
         if wrap {
             tree.set_wrap(id, true);
         }
+        if let Some(ic) = &icon {
+            tree.set_icon(id, ic);
+        }
         if let Some(f) = bind {
             self.bindings.borrow_mut().push((id, f));
         }
         Ok(PyNode { id })
     }
 
+    /// Добавляет изображение; `fit`/`fit_bind` — режим вписывания.
+    #[pyo3(signature = (src, *, pr=None, fit="contain", fit_bind=None, pd=0.0, gp=0.0, w=None, h=None))]
+    fn img(
+        &mut self,
+        py: Python,
+        src: &str,
+        pr: Option<PyNode>,
+        fit: &str,
+        fit_bind: Option<PyObject>,
+        pd: f32,
+        gp: f32,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<PyNode> {
+        let props = make_props("v", pd, gp, w, h);
+        let code = match &fit_bind {
+            Some(f) => f.bind(py).call0()?.extract::<f32>()? as u8,
+            None => fit_code(fit),
+        };
+        let parent = self.parent_of(pr);
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let id = tree.add_child(
+            parent,
+            NodeKind::Image {
+                path: src.to_string(),
+                fit: code,
+            },
+            props,
+        );
+        if let Some(f) = fit_bind {
+            self.value_bindings.borrow_mut().push((id, f));
+        }
+        Ok(PyNode { id })
+    }
+
     /// Добавляет кнопку; `clk` вызывается по нажатию.
-    #[pyo3(signature = (lb="", *, pr=None, rad=10.0, pd=0.0, gp=0.0, w=None, h=None, clk=None, elev=0.0))]
+    #[pyo3(signature = (lb="", *, pr=None, rad=10.0, icon=None, pd=0.0, gp=0.0, w=None, h=None, clk=None, elev=0.0))]
     fn bt(
         &mut self,
         lb: &str,
         pr: Option<PyNode>,
         rad: f32,
+        icon: Option<String>,
         pd: f32,
         gp: f32,
         w: Option<f32>,
@@ -336,6 +376,9 @@ impl PyWindow {
         );
         if elev > 0.0 {
             tree.set_elev(id, elev);
+        }
+        if let Some(ic) = &icon {
+            tree.set_icon(id, ic);
         }
         tree.set_on_click(id, move |t| {
             Python::with_gil(|py| {
@@ -739,6 +782,15 @@ fn parse_axis(s: &str) -> Axis {
     }
 }
 
+fn fit_code(s: &str) -> u8 {
+    match s {
+        "cover" => 1,
+        "fill" | "stretch" => 2,
+        "center" | "none" => 3,
+        _ => 0,
+    }
+}
+
 fn parse_ease(s: &str) -> Ease {
     match s {
         "lin" => Ease::Linear,
@@ -773,6 +825,7 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
             Ok(v) => {
                 t.set_slider_value(*id, v);
                 t.set_progress_value(*id, v);
+                t.set_image_fit(*id, v as u8);
             }
             Err(e) => e.print(py),
         }

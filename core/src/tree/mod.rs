@@ -226,6 +226,10 @@ pub enum NodeKind {
         selected: Option<usize>,
         scroll: f32,
     },
+    Image {
+        path: String,
+        fit: u8,
+    },
 }
 
 /// Высота полосы вкладок в пикселях.
@@ -293,6 +297,7 @@ pub struct Node {
     pub style_focus: Style,
     pub style_hover: Style,
     pub class_name: Option<String>,
+    pub icon: Option<String>,
     on_click: Option<Box<dyn FnMut(&mut Tree)>>,
     on_change: Option<Box<dyn FnMut(&mut Tree, f32)>>,
     on_input: Option<Box<dyn FnMut(&mut Tree, &str)>>,
@@ -326,6 +331,7 @@ impl Tree {
             style_focus: Style::default(),
             style_hover: Style::default(),
             class_name: None,
+            icon: None,
             on_click: None,
             on_change: None,
             on_input: None,
@@ -366,11 +372,6 @@ impl Tree {
         self.tint
     }
 
-    /// Задаёт режим фонового размытия: 0 — нет, 3 — размытие, 4 — акрил.
-    pub fn set_blur_mode(&mut self, mode: u32) {
-        self.blur_mode = mode;
-    }
-
     /// Возвращает режим фонового размытия.
     pub fn blur_mode(&self) -> u32 {
         self.blur_mode
@@ -379,6 +380,11 @@ impl Tree {
     /// Задаёт тон фонового размытия (0xAABBGGRR).
     pub fn set_blur_tint(&mut self, tint: u32) {
         self.blur_tint = tint;
+    }
+
+    /// Возвращает тонировку размытия `0xAARRGGBB`.
+    pub fn blur_tint(&self) -> u32 {
+        self.blur_tint
     }
 
     /// Задаёт режим фонового размытия: 0 — нет, 3 — размытие.
@@ -581,12 +587,25 @@ impl Tree {
             style_focus: Style::default(),
             style_hover: Style::default(),
             class_name: None,
+            icon: None,
             on_click: None,
             on_change: None,
             on_input: None,
         });
         self.nodes[parent.0].children.push(id);
         id
+    }
+
+    /// Задаёт режим вписывания изображения (0..3).
+    pub fn set_image_fit(&mut self, id: NodeId, fit: u8) {
+        if let NodeKind::Image { fit: f, .. } = &mut self.nodes[id.0].kind {
+            *f = fit;
+        }
+    }
+
+    /// Задаёт иконку узла из файла.
+    pub fn set_icon(&mut self, id: NodeId, path: &str) {
+        self.nodes[id.0].icon = Some(path.to_string());
     }
 
     /// Возвращает узел по идентификатору.
@@ -1010,6 +1029,7 @@ fn kind_tag(kind: &NodeKind) -> &'static str {
         NodeKind::Dropdown { .. } => "dropdown",
         NodeKind::Tabs { .. } => "tabs",
         NodeKind::Table { .. } => "table",
+        NodeKind::Image { .. } => "image",
     }
 }
 
