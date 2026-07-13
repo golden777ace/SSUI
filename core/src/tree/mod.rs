@@ -320,6 +320,33 @@ pub enum NodeKind {
         titles: Vec<Vec<u16>>,
         items: Vec<Vec<Vec<u16>>>,
     },
+    Dial {
+        value: f32,
+        label: Vec<u16>,
+    },
+    TreeView {
+        items: Vec<TreeItem>,
+        selected: Option<usize>,
+        scroll: f32,
+    },
+    Calendar {
+        year: i32,
+        month: u32,
+        day: u32,
+    },
+    Color {
+        hue: f32,
+        sat: f32,
+        val: f32,
+    },
+}
+
+#[derive(Clone)]
+pub struct TreeItem {
+    pub depth: usize,
+    pub label: Vec<u16>,
+    pub open: bool,
+    pub leaf: bool,
 }
 
 /// Толщина разделителя в пикселях.
@@ -333,6 +360,10 @@ pub const POPUP_ROW: f32 = 34.0;
 
 /// Ширина раздела строки меню.
 pub const BAR_ITEM: f32 = 120.0;
+
+/// Высота заголовка календаря и строки дней недели.
+pub const CAL_HEADER: f32 = 40.0;
+pub const CAL_WEEK: f32 = 24.0;
 
 /// Высота заголовка группы в пикселях.
 pub const GROUP_HEADER: f32 = 30.0;
@@ -1233,6 +1264,167 @@ impl Tree {
         matches!(self.nodes[id.0].kind, NodeKind::MenuBar { .. })
     }
 
+    /// Является ли узел круговым регулятором.
+    pub fn is_dial(&self, id: NodeId) -> bool {
+        matches!(self.nodes[id.0].kind, NodeKind::Dial { .. })
+    }
+
+    /// Возвращает значение регулятора (0..1).
+    pub fn dial_value(&self, id: NodeId) -> f32 {
+        if let NodeKind::Dial { value, .. } = &self.nodes[id.0].kind {
+            *value
+        } else {
+            0.0
+        }
+    }
+
+    /// Задаёт значение регулятора (0..1).
+    pub fn set_dial_value(&mut self, id: NodeId, v: f32) {
+        if let NodeKind::Dial { value, .. } = &mut self.nodes[id.0].kind {
+            *value = v.clamp(0.0, 1.0);
+        }
+    }
+
+    /// Является ли узел деревом.
+    pub fn is_tree(&self, id: NodeId) -> bool {
+        matches!(self.nodes[id.0].kind, NodeKind::TreeView { .. })
+    }
+
+    /// Индексы видимых строк дерева.
+    pub fn tree_visible(&self, id: NodeId) -> Vec<usize> {
+        let items = match &self.nodes[id.0].kind {
+            NodeKind::TreeView { items, .. } => items,
+            _ => return Vec::new(),
+        };
+        let mut out = Vec::new();
+        let mut skip: Option<usize> = None;
+        for (i, it) in items.iter().enumerate() {
+            if let Some(d) = skip {
+                if it.depth > d {
+                    continue;
+                }
+                skip = None;
+            }
+            out.push(i);
+            if !it.leaf && !it.open {
+                skip = Some(it.depth);
+            }
+        }
+        out
+    }
+
+    /// Данные строки дерева: глубина, метка, раскрыт, лист.
+    pub fn tree_item(&self, id: NodeId, index: usize) -> Option<(usize, Vec<u16>, bool, bool)> {
+        if let NodeKind::TreeView { items, .. } = &self.nodes[id.0].kind {
+            items
+                .get(index)
+                .map(|it| (it.depth, it.label.clone(), it.open, it.leaf))
+        } else {
+            None
+        }
+    }
+
+    /// Переключает раскрытие строки дерева.
+    pub fn toggle_tree(&mut self, id: NodeId, index: usize) {
+        if let NodeKind::TreeView { items, .. } = &mut self.nodes[id.0].kind {
+            if let Some(it) = items.get_mut(index) {
+                it.open = !it.open;
+            }
+        }
+    }
+
+    /// Возвращает выбранную строку дерева.
+    pub fn tree_selected(&self, id: NodeId) -> Option<usize> {
+        if let NodeKind::TreeView { selected, .. } = &self.nodes[id.0].kind {
+            *selected
+        } else {
+            None
+        }
+    }
+
+    /// Задаёт выбранную строку дерева.
+    pub fn set_tree_selected(&mut self, id: NodeId, index: Option<usize>) {
+        if let NodeKind::TreeView { selected, .. } = &mut self.nodes[id.0].kind {
+            *selected = index;
+        }
+    }
+
+    /// Возвращает прокрутку дерева в пикселях.
+    pub fn tree_scroll(&self, id: NodeId) -> f32 {
+        if let NodeKind::TreeView { scroll, .. } = &self.nodes[id.0].kind {
+            *scroll
+        } else {
+            0.0
+        }
+    }
+
+    /// Задаёт прокрутку дерева в пикселях.
+    pub fn set_tree_scroll(&mut self, id: NodeId, value: f32) {
+        if let NodeKind::TreeView { scroll, .. } = &mut self.nodes[id.0].kind {
+            *scroll = value;
+        }
+    }
+
+    /// Является ли узел календарём.
+    pub fn is_calendar(&self, id: NodeId) -> bool {
+        matches!(self.nodes[id.0].kind, NodeKind::Calendar { .. })
+    }
+
+    /// Возвращает дату календаря `(год, месяц, день)`.
+    pub fn cal_ymd(&self, id: NodeId) -> (i32, u32, u32) {
+        if let NodeKind::Calendar { year, month, day } = &self.nodes[id.0].kind {
+            (*year, *month, *day)
+        } else {
+            (2000, 1, 1)
+        }
+    }
+
+    /// Задаёт день календаря.
+    pub fn set_cal_day(&mut self, id: NodeId, d: u32) {
+        if let NodeKind::Calendar { day, .. } = &mut self.nodes[id.0].kind {
+            *day = d;
+        }
+    }
+
+    /// Сдвигает месяц календаря на `delta`.
+    pub fn cal_shift(&mut self, id: NodeId, delta: i32) {
+        if let NodeKind::Calendar { year, month, day } = &mut self.nodes[id.0].kind {
+            let m = *month as i32 - 1 + delta;
+            *year += m.div_euclid(12);
+            *month = m.rem_euclid(12) as u32 + 1;
+            *day = 1;
+        }
+    }
+
+    /// Код даты для колбэка: `(год-2000)*10000 + месяц*100 + день`.
+    pub fn cal_code(&self, id: NodeId) -> f32 {
+        let (y, m, d) = self.cal_ymd(id);
+        ((y - 2000) * 10000 + m as i32 * 100 + d as i32) as f32
+    }
+
+    /// Является ли узел палитрой цвета.
+    pub fn is_color(&self, id: NodeId) -> bool {
+        matches!(self.nodes[id.0].kind, NodeKind::Color { .. })
+    }
+
+    /// Возвращает цвет палитры в HSV.
+    pub fn color_hsv(&self, id: NodeId) -> (f32, f32, f32) {
+        if let NodeKind::Color { hue, sat, val } = &self.nodes[id.0].kind {
+            (*hue, *sat, *val)
+        } else {
+            (0.0, 0.0, 0.0)
+        }
+    }
+
+    /// Задаёт цвет палитры в HSV (0..1).
+    pub fn set_color_hsv(&mut self, id: NodeId, h: f32, s: f32, v: f32) {
+        if let NodeKind::Color { hue, sat, val } = &mut self.nodes[id.0].kind {
+            *hue = h.clamp(0.0, 1.0);
+            *sat = s.clamp(0.0, 1.0);
+            *val = v.clamp(0.0, 1.0);
+        }
+    }
+
     /// Число разделов строки меню.
     pub fn bar_len(&self, id: NodeId) -> usize {
         if let NodeKind::MenuBar { titles, .. } = &self.nodes[id.0].kind {
@@ -1700,6 +1892,10 @@ fn kind_tag(kind: &NodeKind) -> &'static str {
         NodeKind::Status { .. } => "status",
         NodeKind::Split { .. } => "split",
         NodeKind::MenuBar { .. } => "menubar",
+        NodeKind::Dial { .. } => "dial",
+        NodeKind::TreeView { .. } => "treeview",
+        NodeKind::Calendar { .. } => "calendar",
+        NodeKind::Color { .. } => "color",
     }
 }
 

@@ -8,6 +8,7 @@ use pyo3::wrap_pyfunction;
 use ssui_core::platform::{dpi, Window as CoreWindow};
 use ssui_core::tree::{
     Anim, AnimQueue, Axis, DialogData, DialogQueue, Ease, NodeId, NodeKind, Props, TextState, Tree,
+    TreeItem,
 };
 
 #[pyclass(name = "N")]
@@ -630,6 +631,195 @@ impl PyWindow {
             Python::with_gil(|py| {
                 if let Some(cb) = &ch {
                     if let Err(e) = cb.bind(py).call1((v,)) {
+                        e.print(py);
+                    }
+                }
+                refresh_all(py, t, &texts, &values);
+            });
+        });
+        Ok(PyNode { id })
+    }
+
+    /// Календарь; `ch(год, месяц, день)` при выборе даты.
+    #[pyo3(signature = (year=2026, month=7, day=1, *, pr=None, ch=None, pd=0.0, gp=0.0, w=None, h=None))]
+    fn cal(
+        &mut self,
+        year: i32,
+        month: u32,
+        day: u32,
+        pr: Option<PyNode>,
+        ch: Option<PyObject>,
+        pd: f32,
+        gp: f32,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<PyNode> {
+        let h = h.or(Some(300.0));
+        let props = make_props("v", pd, gp, w, h);
+        let parent = self.parent_of(pr);
+        let texts = self.bindings.clone();
+        let values = self.value_bindings.clone();
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let id = tree.add_child(
+            parent,
+            NodeKind::Calendar {
+                year,
+                month: month.clamp(1, 12),
+                day: day.max(1),
+            },
+            props,
+        );
+        tree.set_on_change(id, move |t, v| {
+            let code = v.max(0.0) as i64;
+            let y = 2000 + code / 10000;
+            let m = (code / 100) % 100;
+            let d = code % 100;
+            Python::with_gil(|py| {
+                if let Some(cb) = &ch {
+                    if let Err(e) = cb.bind(py).call1((y, m, d)) {
+                        e.print(py);
+                    }
+                }
+                refresh_all(py, t, &texts, &values);
+            });
+        });
+        Ok(PyNode { id })
+    }
+
+    /// Палитра цвета (HSV); `ch("#RRGGBB")` при выборе.
+    #[pyo3(signature = (hue=0.58, sat=0.75, val=0.96, *, pr=None, ch=None, pd=0.0, gp=0.0, w=None, h=None))]
+    fn clr(
+        &mut self,
+        hue: f32,
+        sat: f32,
+        val: f32,
+        pr: Option<PyNode>,
+        ch: Option<PyObject>,
+        pd: f32,
+        gp: f32,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<PyNode> {
+        let h = h.or(Some(220.0));
+        let props = make_props("v", pd, gp, w, h);
+        let parent = self.parent_of(pr);
+        let texts = self.bindings.clone();
+        let values = self.value_bindings.clone();
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let id = tree.add_child(
+            parent,
+            NodeKind::Color {
+                hue: hue.clamp(0.0, 1.0),
+                sat: sat.clamp(0.0, 1.0),
+                val: val.clamp(0.0, 1.0),
+            },
+            props,
+        );
+        tree.set_on_change(id, move |t, v| {
+            let code = v.max(0.0) as u32;
+            let hex = format!("#{:06X}", code);
+            Python::with_gil(|py| {
+                if let Some(cb) = &ch {
+                    if let Err(e) = cb.bind(py).call1((hex.as_str(),)) {
+                        e.print(py);
+                    }
+                }
+                refresh_all(py, t, &texts, &values);
+            });
+        });
+        Ok(PyNode { id })
+    }
+
+    /// Круговой регулятор 0..1; тянуть вверх/вниз, `ch(value)`.
+    #[pyo3(signature = (vl=0.5, *, pr=None, lb="", ch=None, bind=None, pd=0.0, gp=0.0, w=None, h=None))]
+    fn dl(
+        &mut self,
+        py: Python,
+        vl: f32,
+        pr: Option<PyNode>,
+        lb: &str,
+        ch: Option<PyObject>,
+        bind: Option<PyObject>,
+        pd: f32,
+        gp: f32,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<PyNode> {
+        let h = h.or(Some(140.0));
+        let props = make_props("v", pd, gp, w, h);
+        let initial = match &bind {
+            Some(f) => f.bind(py).call0()?.extract::<f32>()?,
+            None => vl,
+        };
+        let parent = self.parent_of(pr);
+        let texts = self.bindings.clone();
+        let values = self.value_bindings.clone();
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let id = tree.add_child(
+            parent,
+            NodeKind::Dial {
+                value: initial.clamp(0.0, 1.0),
+                label: utf16(lb),
+            },
+            props,
+        );
+        tree.set_on_change(id, move |t, v| {
+            Python::with_gil(|py| {
+                if let Some(cb) = &ch {
+                    if let Err(e) = cb.bind(py).call1((v,)) {
+                        e.print(py);
+                    }
+                }
+                refresh_all(py, t, &texts, &values);
+            });
+        });
+        if let Some(f) = bind {
+            self.value_bindings.borrow_mut().push((id, f));
+        }
+        Ok(PyNode { id })
+    }
+
+    /// Дерево; `items` — список `(глубина, текст, лист)`, `ch(i)` при выборе.
+    #[pyo3(signature = (items, *, pr=None, ch=None, pd=0.0, gp=0.0, w=None, h=None))]
+    fn tre(
+        &mut self,
+        items: Vec<(usize, String, bool)>,
+        pr: Option<PyNode>,
+        ch: Option<PyObject>,
+        pd: f32,
+        gp: f32,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<PyNode> {
+        let h = h.or(Some(300.0));
+        let props = make_props("v", pd, gp, w, h);
+        let nodes: Vec<TreeItem> = items
+            .iter()
+            .map(|(d, s, leaf)| TreeItem {
+                depth: *d,
+                label: utf16(s),
+                open: true,
+                leaf: *leaf,
+            })
+            .collect();
+        let parent = self.parent_of(pr);
+        let texts = self.bindings.clone();
+        let values = self.value_bindings.clone();
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let id = tree.add_child(
+            parent,
+            NodeKind::TreeView {
+                items: nodes,
+                selected: None,
+                scroll: 0.0,
+            },
+            props,
+        );
+        tree.set_on_change(id, move |t, v| {
+            let i = v.max(0.0) as i64;
+            Python::with_gil(|py| {
+                if let Some(cb) = &ch {
+                    if let Err(e) = cb.bind(py).call1((i,)) {
                         e.print(py);
                     }
                 }
@@ -1677,6 +1867,7 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
                 t.set_progress_value(*id, v);
                 t.set_gauge_value(*id, v);
                 t.set_meter_value(*id, v);
+                t.set_dial_value(*id, v);
                 t.set_image_fit(*id, v as u8);
                 if t.is_stack(*id) {
                     t.set_stack_page(*id, v.max(0.0) as usize);

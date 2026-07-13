@@ -255,12 +255,13 @@ Spinner, Gauge, Tooltip, Toast.
 - ✅ SpinBox — числовое поле с −/+ (`spin`).
 - ✅ ComboBox — выбор из списка (`dd`).
 - ✅ Range Slider — диапазон двумя ползунками (`rsl`).
-- ⏳ Dial/Knob.
+- ✅ Dial/Knob — круговой регулятор (`dl`).
 
 ### Списки и данные
 - ✅ ListBox — список с выбором (`lst`).
 - ✅ Table / Data Grid — таблица (`tbl`).
-- ⏳ Tree View, Property Grid.
+- ✅ Tree View — дерево (`tre`).
+- ⏳ Property Grid.
 
 ### Меню и навигация
 - ✅ Menu / Context Menu — меню (`menu`).
@@ -268,7 +269,9 @@ Spinner, Gauge, Tooltip, Toast.
 - ✅ Menu Bar — строка меню (`mb`).
 
 ### Выбор значений
-- ⏳ Calendar, Date Picker, Time Picker, DateTime Picker, Color Picker.
+- ✅ Calendar — выбор даты (`cal`).
+- ✅ Color Picker — палитра HSV (`clr`).
+- ⏳ Date Picker, Time Picker, DateTime Picker.
 
 ### Мультимедиа и встраивание
 - ⏳ WebView, Video Player, Audio Player, Terminal, Map View.

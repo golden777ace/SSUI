@@ -15,6 +15,17 @@ label  { color: #eef3ff; }
 
 DATA = [0.4, 0.9, 0.6, 1.0, 0.7, 0.3, 0.85]
 
+TREE = [
+    (0, "Проект", False),
+    (1, "core", False),
+    (2, "device.rs", True),
+    (2, "canvas.rs", True),
+    (1, "python", False),
+    (2, "lib.rs", True),
+    (2, "showcase.py", True),
+    (1, "README.md", True),
+]
+
 
 def main():
     win = ssui.W("SSUI Showcase", 1060, 760, thm="drk",
@@ -40,6 +51,10 @@ def main():
     rlo = ssui.sgnl(0.25)
     rhi = ssui.sgnl(0.75)
     act = ssui.sgnl("—")
+    knob = ssui.sgnl(0.4)
+    leaf = ssui.sgnl(-1)
+    day = ssui.sgnl("—")
+    hexc = ssui.sgnl("#3B82F6")
 
     win.tint(op)
     win.blur(blurv)
@@ -74,7 +89,7 @@ def main():
                    toast="Настройки сохранены ✓")
 
         with win.tab(["Виджеты", "Ввод", "Раскладка", "Данные",
-                      "Секции", "Панели", "Окно"], h=600.0) as tabs:
+                      "Выбор", "Секции", "Панели", "Окно"], h=600.0) as tabs:
 
             # --- Виджеты ---
             with win.bx(pr=tabs, ax="h", gp=16.0, pd=8.0) as p1:
@@ -190,22 +205,49 @@ def main():
                         ch=lambda i: row.st(i),
                         h=400.0,
                     )
-                    with win.bx(pd=12.0, gp=8.0, w=320.0):
-                        win.lb("Диаграмма", h=26.0)
-                        win.cht(DATA, bind=lambda: [v * lvl() for v in DATA],
-                                h=200.0)
-                        win.lb(bind=lambda: f"Масштаб: {int(lvl() * 100)}%", h=24.0)
-                        win.sl(lvl(), ch=lambda v: lvl.st(v), h=36.0)
-                        with win.bx(ax="h", gp=8.0, h=48.0) as crow:
-                            win.cls(crow, "clear")
-                            win.bt("30%", h=40.0, clk=lambda: fx(lvl, 0.3, dur=0.4))
-                            win.bt("100%", h=40.0, clk=lambda: fx(lvl, 1.0, dur=0.4))
-                        win.sep()
-                        win.lb("Шкала-метр", h=26.0)
-                        win.mt(load(), bind=lambda: load(), seg=10, h=28.0)
-                        win.mt(load(), bind=lambda: load(), seg=20, h=22.0)
-                        win.lb(bind=lambda: f"Нагрузка: {int(load() * 100)}%", h=24.0)
-                        win.sl(load(), ch=lambda v: load.st(v), h=36.0)
+                with win.bx(pd=12.0, gp=8.0, w=280.0):
+                    win.lb(bind=lambda: (
+                        "Узел не выбран" if leaf() < 0
+                        else f"Узел #{leaf()}"
+                    ), h=26.0)
+                    win.tre(TREE, ch=lambda i: leaf.st(i), h=260.0)
+                    win.sep()
+                    win.lb("Регулятор (тянуть вверх)", h=26.0)
+                    win.dl(knob(), lb="MIX", ch=lambda v: knob.st(v), h=140.0)
+                    win.lb(bind=lambda: f"Микс: {int(knob() * 100)}%", h=24.0)
+                    win.sl(knob(), ch=lambda v: knob.st(v), h=36.0)
+                with win.bx(pd=12.0, gp=8.0, w=320.0):
+                    win.lb("Диаграмма", h=26.0)
+                    win.cht(DATA, bind=lambda: [v * lvl() for v in DATA],
+                            h=200.0)
+                    win.lb(bind=lambda: f"Масштаб: {int(lvl() * 100)}%", h=24.0)
+                    win.sl(lvl(), ch=lambda v: lvl.st(v), h=36.0)
+                    with win.bx(ax="h", gp=8.0, h=48.0) as crow:
+                        win.cls(crow, "clear")
+                        win.bt("30%", h=40.0, clk=lambda: fx(lvl, 0.3, dur=0.4))
+                        win.bt("100%", h=40.0, clk=lambda: fx(lvl, 1.0, dur=0.4))
+                    win.sep()
+                    win.lb("Шкала-метр", h=26.0)
+                    win.mt(load(), bind=lambda: load(), seg=10, h=28.0)
+                    win.mt(load(), bind=lambda: load(), seg=20, h=22.0)
+                    win.lb(bind=lambda: f"Нагрузка: {int(load() * 100)}%", h=24.0)
+                    win.sl(load(), ch=lambda v: load.st(v), h=36.0)
+
+            # --- Выбор ---
+            with win.bx(pr=tabs, ax="h", pd=8.0, gp=12.0) as p6:
+                win.cls(p6, "clear")
+                with win.bx(pd=12.0, gp=8.0, w=380.0):
+                    win.lb("Календарь", h=26.0)
+                    win.cal(2026, 7, 13,
+                            ch=lambda y, m, d: day.st(f"{d:02d}.{m:02d}.{y}"),
+                            h=320.0)
+                    win.lb(bind=lambda: f"Дата: {day()}", h=26.0)
+                with win.bx(pd=12.0, gp=8.0):
+                    win.lb("Палитра", h=26.0)
+                    win.clr(ch=lambda c: hexc.st(c), h=240.0)
+                    win.lb(bind=lambda: f"Цвет: {hexc()}", h=26.0)
+                    win.sep()
+                    win.lb("Тяни по квадрату и полосе оттенка", h=24.0)
 
             # --- Секции ---
             with win.bx(pr=tabs, ax="h", pd=8.0, gp=16.0) as pacc:

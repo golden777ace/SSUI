@@ -24,9 +24,72 @@ use super::canvas::Canvas;
 use super::types::{Color, Rect};
 use crate::theme::Theme;
 use crate::tree::{
-    NodeId, NodeKind, Style, Tree, ACC_HEADER, BAR_ITEM, GROUP_HEADER, LIST_ROW, POPUP_ROW,
-    SCROLLBAR_W, SPLIT_ARROW, SPLIT_W, TABLE_HEADER, TABLE_ROW, TAB_HEADER,
+    NodeId, NodeKind, Style, Tree, ACC_HEADER, BAR_ITEM, CAL_HEADER, CAL_WEEK, GROUP_HEADER,
+    LIST_ROW, POPUP_ROW, SCROLLBAR_W, SPLIT_ARROW, SPLIT_W, TABLE_HEADER, TABLE_ROW, TAB_HEADER,
 };
+
+const MONTHS: [&str; 12] = [
+    "Январь",
+    "Февраль",
+    "Март",
+    "Апрель",
+    "Май",
+    "Июнь",
+    "Июль",
+    "Август",
+    "Сентябрь",
+    "Октябрь",
+    "Ноябрь",
+    "Декабрь",
+];
+
+const WEEKDAYS: [&str; 7] = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
+
+fn days_in_month(y: i32, m: u32) -> u32 {
+    match m {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        _ => {
+            if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 {
+                29
+            } else {
+                28
+            }
+        }
+    }
+}
+
+fn first_weekday(y: i32, m: u32) -> u32 {
+    let (yy, mm) = if m < 3 { (y - 1, m + 12) } else { (y, m) };
+    let k = yy.rem_euclid(100);
+    let j = yy.div_euclid(100);
+    let h = (1 + (13 * (mm as i32 + 1)) / 5 + k + k / 4 + j / 4 + 5 * j).rem_euclid(7);
+    (h + 5).rem_euclid(7) as u32
+}
+
+fn hsv_rgb(h: f32, s: f32, v: f32) -> (f32, f32, f32) {
+    let h = h.clamp(0.0, 1.0) * 6.0;
+    let c = v * s;
+    let x = c * (1.0 - ((h % 2.0) - 1.0).abs());
+    let m = v - c;
+    let (r, g, b) = match h as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    (r + m, g + m, b + m)
+}
+
+fn color_code(h: f32, s: f32, v: f32) -> f32 {
+    let (r, g, b) = hsv_rgb(h, s, v);
+    let ri = (r * 255.0).round() as u32;
+    let gi = (g * 255.0).round() as u32;
+    let bi = (b * 255.0).round() as u32;
+    ((ri << 16) | (gi << 8) | bi) as f32
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum CursorKind {
@@ -72,6 +135,8 @@ pub struct Renderer {
     scroll_drag: Option<NodeId>,
     split_drag: Option<NodeId>,
     range_drag: Option<(NodeId, bool)>,
+    knob_drag: Option<(NodeId, f32, f32)>,
+    color_drag: Option<(NodeId, u8)>,
     popup: Option<Popup>,
     hover_since: Option<(NodeId, Instant)>,
     toast: Option<(Vec<u16>, Instant, f32)>,
@@ -249,6 +314,8 @@ impl Renderer {
                 scroll_drag: None,
                 split_drag: None,
                 range_drag: None,
+                knob_drag: None,
+                color_drag: None,
                 popup: None,
                 hover_since: None,
                 toast: None,
@@ -372,6 +439,7 @@ impl Renderer {
             while !self.tree.is_scroll(id)
                 && !self.tree.is_list(id)
                 && !self.tree.is_table(id)
+                && !self.tree.is_tree(id)
                 && guard < 32
             {
                 match self.tree.parent(id) {
@@ -398,6 +466,18 @@ impl Renderer {
                 let next = (cur - (delta as f32 / 120.0) * LIST_ROW).clamp(0.0, max_scroll);
                 if (next - cur).abs() > 0.01 {
                     self.tree.set_list_scroll(id, next);
+                    return true;
+                }
+                return false;
+            }
+            if self.tree.is_tree(id) {
+                let r = self.tree.get(id).rect;
+                let content = self.tree.tree_visible(id).len() as f32 * LIST_ROW;
+                let max_scroll = (content - r.height).max(0.0);
+                let cur = self.tree.tree_scroll(id);
+                let next = (cur - (delta as f32 / 120.0) * LIST_ROW).clamp(0.0, max_scroll);
+                if (next - cur).abs() > 0.01 {
+                    self.tree.set_tree_scroll(id, next);
                     return true;
                 }
                 return false;
@@ -769,6 +849,16 @@ impl Renderer {
             self.set_range_from_x(id, upper, x);
             dirty = true;
         }
+        if let Some((id, y0, v0)) = self.knob_drag {
+            let v = (v0 + (y0 - y) / 160.0).clamp(0.0, 1.0);
+            self.tree.set_dial_value(id, v);
+            self.tree.fire_change(id, v);
+            dirty = true;
+        }
+        if let Some((id, mode)) = self.color_drag {
+            self.set_color_from(id, mode, x, y);
+            dirty = true;
+        }
         if let Some(p) = self.popup.as_mut() {
             let hv = if p.rect.contains(x, y) {
                 let i = ((y - p.rect.y) / POPUP_ROW).floor();
@@ -989,6 +1079,72 @@ impl Renderer {
                 self.set_slider_from_x(id, x);
                 return true;
             }
+            if self.tree.is_dial(id) {
+                self.knob_drag = Some((id, y, self.tree.dial_value(id)));
+                self.focused = Some(id);
+                return true;
+            }
+            if self.tree.is_color(id) {
+                let (area, strip) = self.color_zones(id);
+                if strip.contains(x, y) {
+                    self.color_drag = Some((id, 1));
+                    self.set_color_from(id, 1, x, y);
+                } else if area.contains(x, y) {
+                    self.color_drag = Some((id, 0));
+                    self.set_color_from(id, 0, x, y);
+                }
+                self.focused = Some(id);
+                return true;
+            }
+            if self.tree.is_calendar(id) {
+                let r = self.tree.get(id).rect;
+                if y <= r.y + CAL_HEADER {
+                    if x <= r.x + 40.0 {
+                        self.tree.cal_shift(id, -1);
+                    } else if x >= r.x + r.width - 40.0 {
+                        self.tree.cal_shift(id, 1);
+                    }
+                    let code = self.tree.cal_code(id);
+                    self.tree.fire_change(id, code);
+                } else {
+                    let (yr, mo, _) = self.tree.cal_ymd(id);
+                    let cw = r.width / 7.0;
+                    let rh = ((r.height - CAL_HEADER - CAL_WEEK) / 6.0).max(1.0);
+                    let col = ((x - r.x) / cw).floor();
+                    let row = ((y - r.y - CAL_HEADER - CAL_WEEK) / rh).floor();
+                    if col >= 0.0 && col < 7.0 && row >= 0.0 && row < 6.0 {
+                        let idx = row as i32 * 7 + col as i32;
+                        let d = idx - first_weekday(yr, mo) as i32 + 1;
+                        if d >= 1 && d <= days_in_month(yr, mo) as i32 {
+                            self.tree.set_cal_day(id, d as u32);
+                            let code = self.tree.cal_code(id);
+                            self.tree.fire_change(id, code);
+                        }
+                    }
+                }
+                self.focused = Some(id);
+                return true;
+            }
+            if self.tree.is_tree(id) {
+                let r = self.tree.get(id).rect;
+                let vis = self.tree.tree_visible(id);
+                let scroll = self.tree.tree_scroll(id);
+                let i = ((y - r.y + scroll) / LIST_ROW).floor();
+                if i >= 0.0 && (i as usize) < vis.len() {
+                    let item = vis[i as usize];
+                    if let Some((depth, _, _, leaf)) = self.tree.tree_item(id, item) {
+                        let ax = r.x + 8.0 + depth as f32 * 18.0;
+                        if !leaf && x >= ax && x <= ax + 20.0 {
+                            self.tree.toggle_tree(id, item);
+                        } else {
+                            self.tree.set_tree_selected(id, Some(item));
+                            self.tree.fire_change(id, item as f32);
+                        }
+                    }
+                }
+                self.focused = Some(id);
+                return true;
+            }
             if self.tree.is_range(id) {
                 let r = self.tree.get(id).rect;
                 let (lo, hi) = self.tree.range_values(id);
@@ -1018,6 +1174,8 @@ impl Renderer {
         let was_scroll = self.scroll_drag.take().is_some();
         let was_split = self.split_drag.take().is_some();
         let was_range = self.range_drag.take().is_some();
+        let was_knob = self.knob_drag.take().is_some();
+        let was_color = self.color_drag.take().is_some();
         let was_selecting = self.text_selecting;
         self.text_selecting = false;
         if let Some(id) = click_id {
@@ -1028,6 +1186,8 @@ impl Renderer {
             || was_scroll
             || was_split
             || was_range
+            || was_knob
+            || was_color
             || was_selecting
             || click_id.is_some()
     }
@@ -1483,6 +1643,36 @@ impl Renderer {
         let value = ((x - rect.x) / rect.width).clamp(0.0, 1.0);
         self.tree.set_slider_value(id, value);
         self.tree.fire_change(id, value);
+    }
+
+    fn color_zones(&self, id: NodeId) -> (Rect, Rect) {
+        let r = self.tree.get(id).rect;
+        let pad = 8.0;
+        let strip_h = 18.0;
+        let sw = 46.0;
+        let area = Rect::new(
+            r.x + pad,
+            r.y + pad,
+            (r.width - 3.0 * pad - sw).max(1.0),
+            (r.height - 3.0 * pad - strip_h).max(1.0),
+        );
+        let strip = Rect::new(area.x, area.y + area.height + pad, area.width, strip_h);
+        (area, strip)
+    }
+
+    fn set_color_from(&mut self, id: NodeId, mode: u8, x: f32, y: f32) {
+        let (area, strip) = self.color_zones(id);
+        let (h, s, v) = self.tree.color_hsv(id);
+        let (nh, ns, nv) = if mode == 1 {
+            let t = ((x - strip.x) / strip.width).clamp(0.0, 1.0);
+            (t, s, v)
+        } else {
+            let ns = ((x - area.x) / area.width).clamp(0.0, 1.0);
+            let nv = 1.0 - ((y - area.y) / area.height).clamp(0.0, 1.0);
+            (h, ns, nv)
+        };
+        self.tree.set_color_hsv(id, nh, ns, nv);
+        self.tree.fire_change(id, color_code(nh, ns, nv));
     }
 
     fn set_range_from_x(&mut self, id: NodeId, upper: bool, x: f32) {
@@ -1985,6 +2175,255 @@ impl Renderer {
                                 col,
                             );
                         }
+                    }
+                    NodeKind::Dial { value, label } => {
+                        let r = node.rect;
+                        let d = r.width.min(r.height);
+                        let cx = r.x + r.width / 2.0;
+                        let cy = r.y + r.height / 2.0;
+                        let radius = d / 2.0 - 8.0;
+                        let dot = (d / 12.0).max(3.0);
+                        let steps = 40;
+                        let start = 0.75 * std::f32::consts::TAU;
+                        let sweep = 0.75 * std::f32::consts::TAU;
+                        let v = value.clamp(0.0, 1.0);
+                        let filled = (steps as f32 * v) as usize;
+                        let fill_col = style.fill.unwrap_or(theme.accent);
+                        for i in 0..steps {
+                            let t = i as f32 / (steps - 1) as f32;
+                            let a = start + sweep * t;
+                            let px = cx + a.cos() * radius - dot / 2.0;
+                            let py = cy + a.sin() * radius - dot / 2.0;
+                            let col = if i < filled { fill_col } else { theme.track };
+                            canvas.fill_rounded_rect(
+                                Rect::new(px, py, dot, dot),
+                                dot / 2.0,
+                                col,
+                            );
+                        }
+                        let body = (radius - dot * 1.6).max(6.0);
+                        canvas.fill_rounded_rect(
+                            Rect::new(cx - body, cy - body, body * 2.0, body * 2.0),
+                            body,
+                            theme.surface,
+                        );
+                        let a = start + sweep * v;
+                        let hx = cx + a.cos() * (body - 8.0) - 4.0;
+                        let hy = cy + a.sin() * (body - 8.0) - 4.0;
+                        canvas.fill_rounded_rect(Rect::new(hx, hy, 8.0, 8.0), 4.0, fill_col);
+                        let tc = style.text.unwrap_or(theme.content);
+                        canvas.draw_text(label, format, r, tc);
+                    }
+                    NodeKind::TreeView {
+                        items,
+                        selected,
+                        scroll,
+                    } => {
+                        let r = node.rect;
+                        let rad = style.radius.unwrap_or(8.0);
+                        canvas.fill_rounded_rect(r, rad, style.fill.unwrap_or(theme.surface));
+                        canvas.push_clip(r);
+                        let mut vis: Vec<usize> = Vec::new();
+                        let mut skip: Option<usize> = None;
+                        for (i, it) in items.iter().enumerate() {
+                            if let Some(d) = skip {
+                                if it.depth > d {
+                                    continue;
+                                }
+                                skip = None;
+                            }
+                            vis.push(i);
+                            if !it.leaf && !it.open {
+                                skip = Some(it.depth);
+                            }
+                        }
+                        let color = style.text.unwrap_or(theme.content);
+                        for (row, &i) in vis.iter().enumerate() {
+                            let it = &items[i];
+                            let ry = r.y + row as f32 * LIST_ROW - scroll;
+                            if ry + LIST_ROW < r.y || ry > r.y + r.height {
+                                continue;
+                            }
+                            if *selected == Some(i) {
+                                let hl = Rect::new(
+                                    r.x + 3.0,
+                                    ry + 2.0,
+                                    (r.width - 6.0).max(0.0),
+                                    LIST_ROW - 4.0,
+                                );
+                                canvas.fill_rounded_rect(hl, 5.0, theme.selection);
+                            }
+                            let ax = r.x + 8.0 + it.depth as f32 * 18.0;
+                            if !it.leaf {
+                                let arrow: Vec<u16> = if it.open {
+                                    "\u{25BC}".encode_utf16().collect()
+                                } else {
+                                    "\u{25B6}".encode_utf16().collect()
+                                };
+                                canvas.draw_text(
+                                    &arrow,
+                                    format_left,
+                                    Rect::new(ax, ry, 20.0, LIST_ROW),
+                                    color,
+                                );
+                            }
+                            let tr = Rect::new(
+                                ax + 22.0,
+                                ry,
+                                (r.x + r.width - ax - 30.0).max(0.0),
+                                LIST_ROW,
+                            );
+                            canvas.draw_text(&it.label, format_left, tr, color);
+                        }
+                        let content = vis.len() as f32 * LIST_ROW;
+                        draw_scrollbar(
+                            &canvas,
+                            r,
+                            content,
+                            r.height,
+                            *scroll,
+                            theme.track,
+                            theme.content,
+                        );
+                        canvas.pop_clip();
+                    }
+                    NodeKind::Calendar { year, month, day } => {
+                        let r = node.rect;
+                        let rad = style.radius.unwrap_or(8.0);
+                        canvas.fill_rounded_rect(r, rad, style.fill.unwrap_or(theme.surface));
+                        let color = style.text.unwrap_or(theme.content);
+                        let title: Vec<u16> =
+                            format!("{} {}", MONTHS[(*month as usize - 1).min(11)], year)
+                                .encode_utf16()
+                                .collect();
+                        canvas.draw_text(
+                            &title,
+                            format,
+                            Rect::new(r.x, r.y, r.width, CAL_HEADER),
+                            color,
+                        );
+                        let prev: Vec<u16> = "\u{25C0}".encode_utf16().collect();
+                        let next: Vec<u16> = "\u{25B6}".encode_utf16().collect();
+                        canvas.draw_text(
+                            &prev,
+                            format,
+                            Rect::new(r.x, r.y, 40.0, CAL_HEADER),
+                            color,
+                        );
+                        canvas.draw_text(
+                            &next,
+                            format,
+                            Rect::new(r.x + r.width - 40.0, r.y, 40.0, CAL_HEADER),
+                            color,
+                        );
+                        let cw = r.width / 7.0;
+                        let rh = ((r.height - CAL_HEADER - CAL_WEEK) / 6.0).max(1.0);
+                        for i in 0..7 {
+                            let wd: Vec<u16> = WEEKDAYS[i].encode_utf16().collect();
+                            canvas.draw_text(
+                                &wd,
+                                format,
+                                Rect::new(
+                                    r.x + i as f32 * cw,
+                                    r.y + CAL_HEADER,
+                                    cw,
+                                    CAL_WEEK,
+                                ),
+                                theme.track,
+                            );
+                        }
+                        let first = first_weekday(*year, *month);
+                        let n = days_in_month(*year, *month);
+                        for d in 1..=n {
+                            let idx = first + d - 1;
+                            let cx = r.x + (idx % 7) as f32 * cw;
+                            let cy = r.y + CAL_HEADER + CAL_WEEK + (idx / 7) as f32 * rh;
+                            let cell = Rect::new(cx + 2.0, cy + 2.0, cw - 4.0, rh - 4.0);
+                            let sel = d == *day;
+                            if sel {
+                                canvas.fill_rounded_rect(
+                                    cell,
+                                    6.0,
+                                    style.fill.unwrap_or(theme.accent),
+                                );
+                            }
+                            let t: Vec<u16> = d.to_string().encode_utf16().collect();
+                            let tc = if sel { theme.on_accent } else { color };
+                            canvas.draw_text(&t, format, cell, tc);
+                        }
+                    }
+                    NodeKind::Color { hue, sat, val } => {
+                        let r = node.rect;
+                        let rad = style.radius.unwrap_or(8.0);
+                        canvas.fill_rounded_rect(r, rad, style.fill.unwrap_or(theme.surface));
+                        let pad = 8.0;
+                        let strip_h = 18.0;
+                        let sw = 46.0;
+                        let area = Rect::new(
+                            r.x + pad,
+                            r.y + pad,
+                            (r.width - 3.0 * pad - sw).max(1.0),
+                            (r.height - 3.0 * pad - strip_h).max(1.0),
+                        );
+                        let cells = 16;
+                        let cw = area.width / cells as f32;
+                        let ch = area.height / cells as f32;
+                        for i in 0..cells {
+                            for j in 0..cells {
+                                let s = i as f32 / (cells - 1) as f32;
+                                let v = 1.0 - j as f32 / (cells - 1) as f32;
+                                let (cr, cg, cb) = hsv_rgb(*hue, s, v);
+                                canvas.fill_rounded_rect(
+                                    Rect::new(
+                                        area.x + i as f32 * cw,
+                                        area.y + j as f32 * ch,
+                                        cw + 1.0,
+                                        ch + 1.0,
+                                    ),
+                                    0.0,
+                                    Color::rgb(cr, cg, cb),
+                                );
+                            }
+                        }
+                        let px = area.x + area.width * sat.clamp(0.0, 1.0);
+                        let py = area.y + area.height * (1.0 - val.clamp(0.0, 1.0));
+                        canvas.stroke_rect(
+                            Rect::new(px - 5.0, py - 5.0, 10.0, 10.0),
+                            2.0,
+                            theme.on_accent,
+                        );
+                        let strip =
+                            Rect::new(area.x, area.y + area.height + pad, area.width, strip_h);
+                        let steps = 48;
+                        let ws = strip.width / steps as f32;
+                        for i in 0..steps {
+                            let h = i as f32 / (steps - 1) as f32;
+                            let (cr, cg, cb) = hsv_rgb(h, 1.0, 1.0);
+                            canvas.fill_rounded_rect(
+                                Rect::new(
+                                    strip.x + i as f32 * ws,
+                                    strip.y,
+                                    ws + 1.0,
+                                    strip.height,
+                                ),
+                                0.0,
+                                Color::rgb(cr, cg, cb),
+                            );
+                        }
+                        let hx = strip.x + strip.width * hue.clamp(0.0, 1.0);
+                        canvas.fill_rounded_rect(
+                            Rect::new(hx - 2.0, strip.y - 2.0, 4.0, strip.height + 4.0),
+                            2.0,
+                            theme.content,
+                        );
+                        let (cr, cg, cb) = hsv_rgb(*hue, *sat, *val);
+                        let swatch = Rect::new(
+                            r.x + r.width - pad - sw,
+                            r.y + pad,
+                            sw,
+                            (r.height - 2.0 * pad).max(0.0),
+                        );
+                        canvas.fill_rounded_rect(swatch, 6.0, Color::rgb(cr, cg, cb));
                     }
                     NodeKind::Spinner { phase } => {
                         let r = node.rect;
@@ -2680,6 +3119,10 @@ fn kind_name(kind: &NodeKind) -> &'static str {
         NodeKind::Status { .. } => "Status",
         NodeKind::Split { .. } => "Split",
         NodeKind::MenuBar { .. } => "MenuBar",
+        NodeKind::Dial { .. } => "Dial",
+        NodeKind::TreeView { .. } => "TreeView",
+        NodeKind::Calendar { .. } => "Calendar",
+        NodeKind::Color { .. } => "Color",
     }
 }
 
