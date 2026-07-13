@@ -639,6 +639,101 @@ impl PyWindow {
         Ok(PyNode { id })
     }
 
+    /// Кнопка с меню; `clk` — основное действие, `ch(i)` — пункт меню.
+    #[pyo3(signature = (lb, opts, *, pr=None, clk=None, ch=None, rad=10.0, pd=0.0, gp=0.0, w=None, h=None))]
+    fn sbt(
+        &mut self,
+        lb: &str,
+        opts: Vec<String>,
+        pr: Option<PyNode>,
+        clk: Option<PyObject>,
+        ch: Option<PyObject>,
+        rad: f32,
+        pd: f32,
+        gp: f32,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<PyNode> {
+        let h = h.or(Some(44.0));
+        let props = make_props("v", pd, gp, w, h);
+        let parent = self.parent_of(pr);
+        let texts = self.bindings.clone();
+        let values = self.value_bindings.clone();
+        let texts2 = self.bindings.clone();
+        let values2 = self.value_bindings.clone();
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let id = tree.add_child(
+            parent,
+            NodeKind::Split {
+                label: utf16(lb),
+                options: opts.iter().map(|s| utf16(s)).collect(),
+                radius: rad,
+            },
+            props,
+        );
+        tree.set_on_click(id, move |t| {
+            Python::with_gil(|py| {
+                if let Some(cb) = &clk {
+                    if let Err(e) = cb.bind(py).call0() {
+                        e.print(py);
+                    }
+                }
+                refresh_all(py, t, &texts, &values);
+            });
+        });
+        tree.set_on_change(id, move |t, v| {
+            let i = v.max(0.0) as usize % 1000;
+            Python::with_gil(|py| {
+                if let Some(cb) = &ch {
+                    if let Err(e) = cb.bind(py).call1((i as i64,)) {
+                        e.print(py);
+                    }
+                }
+                refresh_all(py, t, &texts2, &values2);
+            });
+        });
+        Ok(PyNode { id })
+    }
+
+    /// Строка меню; `on_select(menu, item)` при выборе пункта.
+    #[pyo3(signature = (menus, *, pr=None, on_select=None, pd=0.0, gp=0.0, w=None, h=None))]
+    fn mb(
+        &mut self,
+        menus: Vec<(String, Vec<String>)>,
+        pr: Option<PyNode>,
+        on_select: Option<PyObject>,
+        pd: f32,
+        gp: f32,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<PyNode> {
+        let h = h.or(Some(40.0));
+        let props = make_props("h", pd, gp, w, h);
+        let titles: Vec<Vec<u16>> = menus.iter().map(|(t, _)| utf16(t)).collect();
+        let items: Vec<Vec<Vec<u16>>> = menus
+            .iter()
+            .map(|(_, its)| its.iter().map(|s| utf16(s)).collect())
+            .collect();
+        let parent = self.parent_of(pr);
+        let texts = self.bindings.clone();
+        let values = self.value_bindings.clone();
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let id = tree.add_child(parent, NodeKind::MenuBar { titles, items }, props);
+        tree.set_on_change(id, move |t, v| {
+            let idx = v.max(0.0) as usize;
+            let (m, i) = (idx / 1000, idx % 1000);
+            Python::with_gil(|py| {
+                if let Some(cb) = &on_select {
+                    if let Err(e) = cb.bind(py).call1((m as i64, i as i64)) {
+                        e.print(py);
+                    }
+                }
+                refresh_all(py, t, &texts, &values);
+            });
+        });
+        Ok(PyNode { id })
+    }
+
     /// Диапазонный ползунок 0..1; `ch(lo, hi)` при перетаскивании.
     #[pyo3(signature = (lo=0.25, hi=0.75, *, pr=None, ch=None, pd=0.0, gp=0.0, w=None, h=None))]
     fn rsl(

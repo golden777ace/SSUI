@@ -24,8 +24,8 @@ use super::canvas::Canvas;
 use super::types::{Color, Rect};
 use crate::theme::Theme;
 use crate::tree::{
-    NodeId, NodeKind, Style, Tree, ACC_HEADER, GROUP_HEADER, LIST_ROW, SCROLLBAR_W, SPLIT_W,
-    TABLE_HEADER, TABLE_ROW, TAB_HEADER,
+    NodeId, NodeKind, Style, Tree, ACC_HEADER, BAR_ITEM, GROUP_HEADER, LIST_ROW, POPUP_ROW,
+    SCROLLBAR_W, SPLIT_ARROW, SPLIT_W, TABLE_HEADER, TABLE_ROW, TAB_HEADER,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -41,6 +41,14 @@ struct DialogView {
     buttons: Vec<Vec<u16>>,
     hover: Option<usize>,
     focus: Option<usize>,
+}
+
+struct Popup {
+    id: NodeId,
+    rect: Rect,
+    items: Vec<Vec<u16>>,
+    hover: Option<usize>,
+    base: usize,
 }
 
 pub struct Renderer {
@@ -64,6 +72,7 @@ pub struct Renderer {
     scroll_drag: Option<NodeId>,
     split_drag: Option<NodeId>,
     range_drag: Option<(NodeId, bool)>,
+    popup: Option<Popup>,
     hover_since: Option<(NodeId, Instant)>,
     toast: Option<(Vec<u16>, Instant, f32)>,
     theme: Theme,
@@ -240,6 +249,7 @@ impl Renderer {
                 scroll_drag: None,
                 split_drag: None,
                 range_drag: None,
+                popup: None,
                 hover_since: None,
                 toast: None,
                 theme,
@@ -607,6 +617,8 @@ impl Renderer {
         match self.hot {
             Some(id) if self.tree.is_interactive(id) => CursorKind::Hand,
             Some(id) if self.tree.is_dropdown(id) => CursorKind::Hand,
+            Some(id) if self.tree.is_split(id) => CursorKind::Hand,
+            Some(id) if self.tree.is_menubar(id) => CursorKind::Hand,
             Some(id) if self.tree.is_tabs(id) => CursorKind::Hand,
             Some(id) if self.tree.is_accordion(id) => CursorKind::Hand,
             Some(id) if self.tree.is_textbox(id) => CursorKind::IBeam,
@@ -757,6 +769,22 @@ impl Renderer {
             self.set_range_from_x(id, upper, x);
             dirty = true;
         }
+        if let Some(p) = self.popup.as_mut() {
+            let hv = if p.rect.contains(x, y) {
+                let i = ((y - p.rect.y) / POPUP_ROW).floor();
+                if i >= 0.0 && (i as usize) < p.items.len() {
+                    Some(i as usize)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            if hv != p.hover {
+                p.hover = hv;
+                dirty = true;
+            }
+        }
         if hit.map_or(false, |h| self.tree.is_list(h)) {
             dirty = true;
         }
@@ -784,6 +812,16 @@ impl Renderer {
                 self.tree.fire_dialog(i);
             }
             return true;
+        }
+        if let Some(p) = self.popup.take() {
+            if p.rect.contains(x, y) {
+                let i = ((y - p.rect.y) / POPUP_ROW).floor();
+                if i >= 0.0 && (i as usize) < p.items.len() {
+                    let idx = p.base * 1000 + i as usize;
+                    self.tree.fire_change(p.id, idx as f32);
+                }
+                return true;
+            }
         }
         if self.open_menu.is_some() {
             if let Some(rect) = self.menu_rect() {
@@ -895,6 +933,51 @@ impl Renderer {
                     st.set_caret(idx, false);
                 }
                 self.text_selecting = true;
+                return true;
+            }
+            if self.tree.is_split(id) {
+                let r = self.tree.get(id).rect;
+                if x >= r.x + r.width - SPLIT_ARROW {
+                    let items = self.tree.split_options(id);
+                    let rect = Rect::new(
+                        r.x,
+                        r.y + r.height,
+                        r.width,
+                        POPUP_ROW * items.len() as f32,
+                    );
+                    self.popup = Some(Popup {
+                        id,
+                        rect,
+                        items,
+                        hover: None,
+                        base: 0,
+                    });
+                } else {
+                    self.tree.fire_click(id);
+                }
+                return true;
+            }
+            if self.tree.is_menubar(id) {
+                let r = self.tree.get(id).rect;
+                let n = self.tree.bar_len(id);
+                let i = ((x - r.x) / BAR_ITEM).floor();
+                if i >= 0.0 && (i as usize) < n {
+                    let i = i as usize;
+                    let items = self.tree.bar_items(id, i);
+                    let rect = Rect::new(
+                        r.x + i as f32 * BAR_ITEM,
+                        r.y + r.height,
+                        220.0,
+                        POPUP_ROW * items.len() as f32,
+                    );
+                    self.popup = Some(Popup {
+                        id,
+                        rect,
+                        items,
+                        hover: None,
+                        base: i,
+                    });
+                }
                 return true;
             }
             if self.tree.is_interactive(id) {
@@ -1116,6 +1199,7 @@ impl Renderer {
             self.close_dropdown();
             self.open_menu = None;
             self.menu_hover = None;
+            self.popup = None;
             self.focused = None;
             return true;
         }
@@ -1866,6 +1950,42 @@ impl Renderer {
                         let col = style.text.unwrap_or(theme.content);
                         canvas.draw_text(text, format_left, tr, col);
                     }
+                    NodeKind::Split { label, radius, .. } => {
+                        let r = node.rect;
+                        let rad = style.radius.unwrap_or(*radius);
+                        let fill = style.fill.unwrap_or(theme.accent);
+                        canvas.fill_rounded_rect(r, rad, fill);
+                        let text_color = style.text.unwrap_or(theme.on_accent);
+                        let main =
+                            Rect::new(r.x, r.y, (r.width - SPLIT_ARROW).max(0.0), r.height);
+                        canvas.draw_text(label, format, main, text_color);
+                        let line = Rect::new(
+                            r.x + r.width - SPLIT_ARROW,
+                            r.y + 6.0,
+                            1.0,
+                            (r.height - 12.0).max(0.0),
+                        );
+                        canvas.fill_rounded_rect(line, 0.5, text_color);
+                        let arrow: Vec<u16> = "\u{25BC}".encode_utf16().collect();
+                        let ar =
+                            Rect::new(r.x + r.width - SPLIT_ARROW, r.y, SPLIT_ARROW, r.height);
+                        canvas.draw_text(&arrow, format, ar, text_color);
+                    }
+                    NodeKind::MenuBar { titles, .. } => {
+                        let r = node.rect;
+                        let fill = style.fill.unwrap_or(theme.surface);
+                        canvas.fill_rounded_rect(r, style.radius.unwrap_or(6.0), fill);
+                        let col = style.text.unwrap_or(theme.content);
+                        for (i, t) in titles.iter().enumerate() {
+                            let tx = r.x + i as f32 * BAR_ITEM;
+                            canvas.draw_text(
+                                t,
+                                format,
+                                Rect::new(tx, r.y, BAR_ITEM, r.height),
+                                col,
+                            );
+                        }
+                    }
                     NodeKind::Spinner { phase } => {
                         let r = node.rect;
                         let d = r.width.min(r.height).min(48.0);
@@ -2313,6 +2433,30 @@ impl Renderer {
                 }
             }
 
+            if let Some(p) = self.popup.as_ref() {
+                canvas.fill_rounded_rect(p.rect, 8.0, theme.surface);
+                canvas.stroke_rect(p.rect, 1.0, theme.track);
+                for (i, item) in p.items.iter().enumerate() {
+                    let ry = p.rect.y + POPUP_ROW * i as f32;
+                    if p.hover == Some(i) {
+                        let hl = Rect::new(
+                            p.rect.x + 3.0,
+                            ry + 2.0,
+                            p.rect.width - 6.0,
+                            POPUP_ROW - 4.0,
+                        );
+                        canvas.fill_rounded_rect(hl, 5.0, theme.selection);
+                    }
+                    let tr = Rect::new(
+                        p.rect.x + 12.0,
+                        ry,
+                        (p.rect.width - 24.0).max(0.0),
+                        POPUP_ROW,
+                    );
+                    canvas.draw_text(item, format_left, tr, theme.content);
+                }
+            }
+
             if let Some(rect) = self.menu_rect() {
                 canvas.fill_rounded_rect(rect, 8.0, theme.surface);
                 canvas.stroke_rect(rect, 1.0, theme.track);
@@ -2534,6 +2678,8 @@ fn kind_name(kind: &NodeKind) -> &'static str {
         NodeKind::Chart { .. } => "Chart",
         NodeKind::Range { .. } => "Range",
         NodeKind::Status { .. } => "Status",
+        NodeKind::Split { .. } => "Split",
+        NodeKind::MenuBar { .. } => "MenuBar",
     }
 }
 

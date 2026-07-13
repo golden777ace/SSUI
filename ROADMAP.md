@@ -243,7 +243,7 @@ Spinner, Gauge, Tooltip, Toast.
 - ✅ Toggle Button — кнопка с двумя состояниями (`tgl`).
 - ✅ Drop-down Button — список (`dd`).
 - ✅ Link — кликабельная ссылка (`lnk`).
-- ⏳ Split Button.
+- ✅ Split Button — действие + меню (`sbt`).
 
 ### Ввод
 - ✅ Text Entry — однострочный ввод (`tx`).
@@ -265,7 +265,7 @@ Spinner, Gauge, Tooltip, Toast.
 ### Меню и навигация
 - ✅ Menu / Context Menu — меню (`menu`).
 - ✅ Scroll Bar — полоса прокрутки (в списках, таблицах, областях).
-- ⏳ Menu Bar.
+- ✅ Menu Bar — строка меню (`mb`).
 
 ### Выбор значений
 - ⏳ Calendar, Date Picker, Time Picker, DateTime Picker, Color Picker.

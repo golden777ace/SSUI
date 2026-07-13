@@ -311,10 +311,28 @@ pub enum NodeKind {
     Status {
         text: Vec<u16>,
     },
+    Split {
+        label: Vec<u16>,
+        options: Vec<Vec<u16>>,
+        radius: f32,
+    },
+    MenuBar {
+        titles: Vec<Vec<u16>>,
+        items: Vec<Vec<Vec<u16>>>,
+    },
 }
 
 /// Толщина разделителя в пикселях.
 pub const SPLIT_W: f32 = 8.0;
+
+/// Ширина зоны стрелки у кнопки с меню.
+pub const SPLIT_ARROW: f32 = 34.0;
+
+/// Высота строки всплывающего списка.
+pub const POPUP_ROW: f32 = 34.0;
+
+/// Ширина раздела строки меню.
+pub const BAR_ITEM: f32 = 120.0;
 
 /// Высота заголовка группы в пикселях.
 pub const GROUP_HEADER: f32 = 30.0;
@@ -1196,6 +1214,43 @@ impl Tree {
         }
     }
 
+    /// Является ли узел кнопкой с меню.
+    pub fn is_split(&self, id: NodeId) -> bool {
+        matches!(self.nodes[id.0].kind, NodeKind::Split { .. })
+    }
+
+    /// Пункты меню кнопки с меню.
+    pub fn split_options(&self, id: NodeId) -> Vec<Vec<u16>> {
+        if let NodeKind::Split { options, .. } = &self.nodes[id.0].kind {
+            options.clone()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Является ли узел строкой меню.
+    pub fn is_menubar(&self, id: NodeId) -> bool {
+        matches!(self.nodes[id.0].kind, NodeKind::MenuBar { .. })
+    }
+
+    /// Число разделов строки меню.
+    pub fn bar_len(&self, id: NodeId) -> usize {
+        if let NodeKind::MenuBar { titles, .. } = &self.nodes[id.0].kind {
+            titles.len()
+        } else {
+            0
+        }
+    }
+
+    /// Пункты раздела строки меню.
+    pub fn bar_items(&self, id: NodeId, index: usize) -> Vec<Vec<u16>> {
+        if let NodeKind::MenuBar { items, .. } = &self.nodes[id.0].kind {
+            items.get(index).cloned().unwrap_or_default()
+        } else {
+            Vec::new()
+        }
+    }
+
     /// Может ли узел получать фокус клавиатуры.
     pub fn is_focusable(&self, id: NodeId) -> bool {
         self.is_button(id)
@@ -1643,6 +1698,8 @@ fn kind_tag(kind: &NodeKind) -> &'static str {
         NodeKind::Chart { .. } => "chart",
         NodeKind::Range { .. } => "range",
         NodeKind::Status { .. } => "status",
+        NodeKind::Split { .. } => "split",
+        NodeKind::MenuBar { .. } => "menubar",
     }
 }
 

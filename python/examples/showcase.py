@@ -39,6 +39,7 @@ def main():
     load = ssui.sgnl(0.45)
     rlo = ssui.sgnl(0.25)
     rhi = ssui.sgnl(0.75)
+    act = ssui.sgnl("—")
 
     win.tint(op)
     win.blur(blurv)
@@ -53,6 +54,11 @@ def main():
 
     with win.bx(pd=18.0, gp=14.0) as scr:
         win.cls(scr, "clear")
+
+        win.mb([("Файл", ["Открыть", "Сохранить", "Выход"]),
+                ("Правка", ["Отменить", "Повторить"]),
+                ("Справка", ["О программе"])],
+               on_select=lambda m, i: act.st(f"меню {m}·{i}"), h=40.0)
 
         with win.bx(ax="h", gp=12.0, pd=14.0, h=64.0) as head:
             win.align(head, justify="btw", cross="cnt")
@@ -99,6 +105,12 @@ def main():
                     win.lb(bind=lambda: f"План: {plan()}", h=24.0)
                     win.sep()
                     win.dd(["Низко", "Средне", "Высоко"], sel=1, h=44.0)
+                    win.sep()
+                    win.sbt("Сохранить",
+                            ["Сохранить как…", "Экспорт", "Печать"],
+                            clk=lambda: act.st("сохранено"),
+                            ch=lambda i: act.st(f"пункт {i}"), h=44.0)
+                    win.lb(bind=lambda: f"Действие: {act()}", h=24.0)
                 with win.bx(pd=16.0, gp=10.0):
                     win.lb("Значения", h=26.0)
                     win.gg(bind=lambda: vol(), lb="VOL", h=130.0)
@@ -268,7 +280,7 @@ def main():
                         win.bt("100%", h=40.0, clk=lambda: fx(vol, 1.0, dur=0.4))
 
     bar = win.stb(pr=win.rt(), h=32.0, bind=lambda: (
-        f"Готово · громкость {int(vol() * 100)}% · "
+        f"{act()} · громкость {int(vol() * 100)}% · "
         f"диапазон {int(rlo() * 100)}–{int(rhi() * 100)}%"
     ))
     win.pin(bar, l=0.0, r=0.0, b=0.0)

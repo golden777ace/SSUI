@@ -82,9 +82,6 @@ impl Window {
 
             let init_mode: u32 = if blur { 3 } else { 0 };
             let init_tint: u32 = 0x40101418;
-            if blur {
-                set_accent(hwnd, init_mode, init_tint);
-            }
             let mut renderer = Renderer::new(hwnd, tree, glass, tint, width, height)?;
             renderer.set_blur(init_mode, init_tint);
             let state = Box::new(WindowState {
@@ -99,6 +96,18 @@ impl Window {
             let _ = SetTimer(Some(hwnd), 1, 16, None);
             let _ = ShowWindow(hwnd, SW_SHOW);
             let _ = UpdateWindow(hwnd);
+            if blur {
+                set_accent(hwnd, init_mode, init_tint);
+                let _ = SetWindowPos(
+                    hwnd,
+                    None,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+                );
+            }
 
             Ok(Window { hwnd })
         }
