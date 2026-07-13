@@ -18,14 +18,15 @@ use windows::Win32::System::DataExchange::{
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 use windows::Win32::System::Ole::CF_UNICODETEXT;
 use windows::Win32::Graphics::Imaging::*;
-use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
-};
+use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED};
 
 use super::canvas::Canvas;
 use super::types::{Color, Rect};
 use crate::theme::Theme;
-use crate::tree::{NodeId, NodeKind, Style, Tree, TABLE_HEADER, TABLE_ROW, TAB_HEADER};
+use crate::tree::{
+    NodeId, NodeKind, Style, Tree, ACC_HEADER, GROUP_HEADER, LIST_ROW, SCROLLBAR_W, TABLE_HEADER,
+    TABLE_ROW, TAB_HEADER,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum CursorKind {
@@ -60,6 +61,7 @@ pub struct Renderer {
     focused: Option<NodeId>,
     hot: Option<NodeId>,
     text_selecting: bool,
+    scroll_drag: Option<NodeId>,
     theme: Theme,
     theme_index: usize,
     last_tick: Instant,
@@ -231,6 +233,7 @@ impl Renderer {
                 focused: None,
                 hot: None,
                 text_selecting: false,
+                scroll_drag: None,
                 theme,
                 theme_index,
                 last_tick: Instant::now(),
@@ -332,7 +335,41 @@ impl Renderer {
 
     /// Прокручивает таблицу под курсором колесом мыши.
     pub fn on_wheel(&mut self, delta: i32) -> bool {
-        if let Some(id) = self.hot {
+        if let Some(mut id) = self.hot {
+            let mut guard = 0;
+            while !self.tree.is_scroll(id)
+                && !self.tree.is_list(id)
+                && !self.tree.is_table(id)
+                && guard < 32
+            {
+                match self.tree.parent(id) {
+                    Some(p) => id = p,
+                    None => break,
+                }
+                guard += 1;
+            }
+            if self.tree.is_scroll(id) {
+                let r = self.tree.get(id).rect;
+                let content = self.tree.scroll_content(id);
+                let max_scroll = (content - r.height).max(0.0);
+                let cur = self.tree.scroll_offset(id);
+                let next = (cur - (delta as f32 / 120.0) * 48.0).clamp(0.0, max_scroll);
+                if (next - cur).abs() > 0.01 {
+                    self.tree.set_scroll_offset(id, next);
+                    return true;
+                }
+                return false;
+            }
+            if self.tree.is_list(id) {
+                let (max_scroll, _, _) = self.list_metrics(id);
+                let cur = self.tree.list_scroll(id);
+                let next = (cur - (delta as f32 / 120.0) * LIST_ROW).clamp(0.0, max_scroll);
+                if (next - cur).abs() > 0.01 {
+                    self.tree.set_list_scroll(id, next);
+                    return true;
+                }
+                return false;
+            }
             if self.tree.is_table(id) {
                 let r = self.tree.get(id).rect;
                 let n = self.tree.table_len(id);
@@ -349,6 +386,72 @@ impl Renderer {
             }
         }
         false
+    }
+
+    fn list_metrics(&self, id: NodeId) -> (f32, f32, f32) {
+        let r = self.tree.get(id).rect;
+        let n = self.tree.list_len(id);
+        let content = n as f32 * LIST_ROW;
+        let visible = r.height.max(0.0);
+        ((content - visible).max(0.0), content, visible)
+    }
+
+    fn list_row_at(&self, id: NodeId, y: f32) -> Option<usize> {
+        let r = self.tree.get(id).rect;
+        let n = self.tree.list_len(id);
+        if n == 0 || y < r.y {
+            return None;
+        }
+        let scroll = self.tree.list_scroll(id);
+        let i = ((y - r.y + scroll) / LIST_ROW).floor();
+        if i < 0.0 {
+            return None;
+        }
+        let i = i as usize;
+        if i < n {
+            Some(i)
+        } else {
+            None
+        }
+    }
+
+    fn scrollbar_zone(&self, id: NodeId, x: f32) -> bool {
+        let r = self.tree.get(id).rect;
+        x >= r.x + r.width - SCROLLBAR_W - 2.0
+    }
+
+    fn scroll_from_y(&mut self, id: NodeId, y: f32) {
+        let r = self.tree.get(id).rect;
+        if self.tree.is_scroll(id) {
+            let content = self.tree.scroll_content(id);
+            let max_scroll = (content - r.height).max(0.0);
+            if max_scroll <= 0.0 || r.height <= 0.0 {
+                return;
+            }
+            let t = ((y - r.y) / r.height).clamp(0.0, 1.0);
+            self.tree.set_scroll_offset(id, t * max_scroll);
+            return;
+        }
+        let is_list = self.tree.is_list(id);
+        let (max_scroll, track_y, track_h) = if is_list {
+            let (m, _, _) = self.list_metrics(id);
+            (m, r.y, r.height)
+        } else {
+            let n = self.tree.table_len(id);
+            let content = n as f32 * TABLE_ROW;
+            let visible = (r.height - TABLE_HEADER).max(0.0);
+            ((content - visible).max(0.0), r.y + TABLE_HEADER, visible)
+        };
+        if max_scroll <= 0.0 || track_h <= 0.0 {
+            return;
+        }
+        let t = ((y - track_y) / track_h).clamp(0.0, 1.0);
+        let v = t * max_scroll;
+        if is_list {
+            self.tree.set_list_scroll(id, v);
+        } else {
+            self.tree.set_table_scroll(id, v);
+        }
     }
 
     fn reveal_table_row(&mut self, id: NodeId, row: usize) {
@@ -442,6 +545,7 @@ impl Renderer {
             Some(id) if self.tree.is_interactive(id) => CursorKind::Hand,
             Some(id) if self.tree.is_dropdown(id) => CursorKind::Hand,
             Some(id) if self.tree.is_tabs(id) => CursorKind::Hand,
+            Some(id) if self.tree.is_accordion(id) => CursorKind::Hand,
             Some(id) if self.tree.is_textbox(id) => CursorKind::IBeam,
             _ => CursorKind::Arrow,
         }
@@ -454,6 +558,20 @@ impl Renderer {
             Some(st) => {
                 let local_x = x - (rect.x + pad - st.scroll);
                 index_at_x(&self.dwrite, &self.text_format_left, &st.text, local_x)
+            }
+            None => 0,
+        }
+    }
+
+    fn textarea_index_at(&self, id: NodeId, x: f32, y: f32) -> usize {
+        let rect = self.tree.get(id).rect;
+        let pad = 10.0;
+        match self.tree.textbox_state(id) {
+            Some(st) => {
+                let width = (rect.width - 2.0 * pad).max(1.0);
+                let lx = x - (rect.x + pad);
+                let ly = y - (rect.y + pad);
+                wrapped_index(&self.dwrite, &self.text_format_wrap, &st.text, width, lx, ly)
             }
             None => 0,
         }
@@ -564,9 +682,20 @@ impl Renderer {
             self.set_slider_from_x(id, x);
             dirty = true;
         }
+        if let Some(id) = self.scroll_drag {
+            self.scroll_from_y(id, y);
+            dirty = true;
+        }
+        if hit.map_or(false, |h| self.tree.is_list(h)) {
+            dirty = true;
+        }
         if self.text_selecting {
             if let Some(id) = self.focused {
-                let idx = self.textbox_index_at(id, x);
+                let idx = if self.tree.is_multiline(id) {
+                    self.textarea_index_at(id, x, y)
+                } else {
+                    self.textbox_index_at(id, x)
+                };
                 if let Some(st) = self.tree.textbox_state_mut(id) {
                     st.set_caret(idx, true);
                 }
@@ -623,6 +752,33 @@ impl Renderer {
         self.focused = new_focus;
 
         if let Some(id) = hit {
+            if self.tree.is_accordion(id) {
+                let r = self.tree.get(id).rect;
+                if y <= r.y + ACC_HEADER {
+                    self.tree.toggle_acc(id);
+                    self.focused = Some(id);
+                    return true;
+                }
+            }
+            if self.tree.is_scroll(id) && self.scrollbar_zone(id, x) {
+                self.scroll_drag = Some(id);
+                self.scroll_from_y(id, y);
+                return true;
+            }
+            if (self.tree.is_list(id) || self.tree.is_table(id)) && self.scrollbar_zone(id, x) {
+                self.scroll_drag = Some(id);
+                self.scroll_from_y(id, y);
+                self.focused = Some(id);
+                return true;
+            }
+            if self.tree.is_list(id) {
+                if let Some(ri) = self.list_row_at(id, y) {
+                    self.tree.set_list_selected(id, Some(ri));
+                    self.tree.fire_change(id, ri as f32);
+                }
+                self.focused = Some(id);
+                return true;
+            }
             if self.tree.is_dropdown(id) {
                 let sel = self.tree.dropdown_selected(id);
                 self.tree.set_dropdown_open(id, true);
@@ -654,7 +810,11 @@ impl Renderer {
                 return true;
             }
             if self.tree.is_textbox(id) {
-                let idx = self.textbox_index_at(id, x);
+                let idx = if self.tree.is_multiline(id) {
+                    self.textarea_index_at(id, x, y)
+                } else {
+                    self.textbox_index_at(id, x)
+                };
                 if let Some(st) = self.tree.textbox_state_mut(id) {
                     st.set_caret(idx, false);
                 }
@@ -683,12 +843,13 @@ impl Renderer {
         };
         let was_pressed = self.pressed.take().is_some();
         let was_dragging = self.dragging.take().is_some();
+        let was_scroll = self.scroll_drag.take().is_some();
         let was_selecting = self.text_selecting;
         self.text_selecting = false;
         if let Some(id) = click_id {
             self.dispatch(id);
         }
-        was_pressed || was_dragging || was_selecting || click_id.is_some()
+        was_pressed || was_dragging || was_scroll || was_selecting || click_id.is_some()
     }
 
     /// Обрабатывает символьный ввод. Возвращает true, если нужна перерисовка.
@@ -940,6 +1101,30 @@ impl Renderer {
                 let ctrl = key_down(0x11);
                 let mut handled = false;
                 let mut changed = false;
+                let multi = self.tree.is_multiline(id);
+                if multi && (vk == 0x26 || vk == 0x28) {
+                    let rect = self.tree.get(id).rect;
+                    let (text, caret) = match self.tree.textbox_state(id) {
+                        Some(s) => (s.text.clone(), s.caret),
+                        None => (Vec::new(), 0),
+                    };
+                    let width = (rect.width - 20.0).max(1.0);
+                    let (cx, cy, lh) =
+                        wrapped_caret(&self.dwrite, &self.text_format_wrap, &text, width, caret);
+                    let ny = if vk == 0x26 { cy - lh * 0.5 } else { cy + lh * 1.5 };
+                    let idx = wrapped_index(
+                        &self.dwrite,
+                        &self.text_format_wrap,
+                        &text,
+                        width,
+                        cx,
+                        ny.max(0.0),
+                    );
+                    if let Some(st) = self.tree.textbox_state_mut(id) {
+                        st.set_caret(idx, shift);
+                    }
+                    handled = true;
+                }
                 if let Some(st) = self.tree.textbox_state_mut(id) {
                     match vk {
                         VK_LEFT => {
@@ -960,6 +1145,11 @@ impl Renderer {
                         }
                         VK_DELETE => {
                             st.delete_forward();
+                            handled = true;
+                            changed = true;
+                        }
+                        0x0D if multi => {
+                            st.insert(&[0x0A]);
                             handled = true;
                             changed = true;
                         }
@@ -1077,6 +1267,10 @@ impl Renderer {
     }
 
     fn dispatch(&mut self, id: NodeId) {
+        if self.tree.is_accordion(id) {
+            self.tree.toggle_acc(id);
+            return;
+        }
         if self.tree.is_switch(id) {
             self.tree.toggle_switch(id);
             let on = self.tree.switch_on(id);
@@ -1086,6 +1280,12 @@ impl Renderer {
         if self.tree.is_radio(id) {
             self.tree.select_radio(id);
             self.tree.fire_change(id, 1.0);
+            return;
+        }
+        if self.tree.is_toggle(id) {
+            self.tree.flip_toggle(id);
+            let on = self.tree.toggle_on(id);
+            self.tree.fire_change(id, if on { 1.0 } else { 0.0 });
             return;
         }
         if self.tree.is_checkbox(id) {
@@ -1106,7 +1306,7 @@ impl Renderer {
 
     fn update_scroll(&mut self) {
         if let Some(id) = self.focused {
-            if self.tree.is_textbox(id) {
+            if self.tree.is_textbox(id) && !self.tree.is_multiline(id) {
                 let rect = self.tree.get(id).rect;
                 let avail = (rect.width - 24.0).max(0.0);
                 let (text, caret) = match self.tree.textbox_state(id) {
@@ -1194,6 +1394,7 @@ impl Renderer {
             let format_left = &self.text_format_left;
             let format_wrap = &self.text_format_wrap;
             let img_cache = &self.img_cache;
+            let dwrite = &self.dwrite;
             let clear = if self.glass {
                 Color::rgba(
                     theme.background.r,
@@ -1446,7 +1647,215 @@ impl Renderer {
                         let color = style.text.unwrap_or(theme.content);
                         canvas.draw_text(label, format_left, label_rect, color);
                     }
+                    NodeKind::Toggle { label, on } => {
+                        let r = node.rect;
+                        let radius = 10.0;
+                        if focused == Some(id) {
+                            let ring =
+                                Rect::new(r.x - 3.0, r.y - 3.0, r.width + 6.0, r.height + 6.0);
+                            canvas.fill_rounded_rect(ring, radius + 3.0, theme.content);
+                        }
+                        let fill = if *on {
+                            style.fill.unwrap_or(theme.accent)
+                        } else {
+                            style.fill.unwrap_or(theme.surface)
+                        };
+                        canvas.fill_rounded_rect(r, radius, fill);
+                        let tc = if *on {
+                            theme.on_accent
+                        } else {
+                            style.text.unwrap_or(theme.content)
+                        };
+                        canvas.draw_text(label, format, r, tc);
+                    }
+                    NodeKind::Separator { vertical } => {
+                        let r = node.rect;
+                        let col = style.fill.unwrap_or(theme.track);
+                        let th = 2.0;
+                        let line = if *vertical {
+                            Rect::new(r.x + (r.width - th) / 2.0, r.y, th, r.height)
+                        } else {
+                            Rect::new(r.x, r.y + (r.height - th) / 2.0, r.width, th)
+                        };
+                        canvas.fill_rounded_rect(line, th / 2.0, col);
+                    }
+                    NodeKind::Accordion {
+                        title,
+                        open,
+                        radius,
+                    } => {
+                        let r = node.rect;
+                        let rad = style.radius.unwrap_or(*radius);
+                        let head = Rect::new(r.x, r.y, r.width, ACC_HEADER);
+                        let fill = if hovered == Some(id) {
+                            style.fill.unwrap_or(theme.track)
+                        } else {
+                            style.fill.unwrap_or(theme.surface)
+                        };
+                        canvas.fill_rounded_rect(head, rad, fill);
+                        let arrow: Vec<u16> = if *open {
+                            "\u{25BC}".encode_utf16().collect()
+                        } else {
+                            "\u{25B6}".encode_utf16().collect()
+                        };
+                        let color = style.text.unwrap_or(theme.content);
+                        canvas.draw_text(
+                            &arrow,
+                            format_left,
+                            Rect::new(r.x + 12.0, r.y, 24.0, ACC_HEADER),
+                            color,
+                        );
+                        canvas.draw_text(
+                            title,
+                            format_left,
+                            Rect::new(r.x + 40.0, r.y, (r.width - 52.0).max(0.0), ACC_HEADER),
+                            color,
+                        );
+                        if focused == Some(id) {
+                            canvas.stroke_rect(head, 2.0, theme.accent);
+                        }
+                    }
+                    NodeKind::Scroll { offset, content } => {
+                        let r = node.rect;
+                        if let Some(f) = style.fill {
+                            canvas.fill_rounded_rect(r, style.radius.unwrap_or(8.0), f);
+                        }
+                        draw_scrollbar(
+                            &canvas,
+                            r,
+                            *content,
+                            r.height,
+                            *offset,
+                            theme.track,
+                            theme.content,
+                        );
+                    }
+                    NodeKind::Group { title, radius } => {
+                        let r = node.rect;
+                        let rad = style.radius.unwrap_or(*radius);
+                        if let Some(f) = style.fill {
+                            canvas.fill_rounded_rect(r, rad, f);
+                        }
+                        canvas.stroke_rect(r, 1.0, theme.track);
+                        let tr = Rect::new(
+                            r.x + 14.0,
+                            r.y + 2.0,
+                            (r.width - 28.0).max(0.0),
+                            GROUP_HEADER,
+                        );
+                        let color = style.text.unwrap_or(theme.content);
+                        canvas.draw_text(title, format_left, tr, color);
+                    }
+                    NodeKind::Link { label } => {
+                        let r = node.rect;
+                        let color = style.text.unwrap_or(theme.accent);
+                        canvas.draw_text(label, format_left, r, color);
+                        if hovered == Some(id) || focused == Some(id) {
+                            let w = text_width(dwrite, format_left, label);
+                            let uy = r.y + r.height / 2.0 + 10.0;
+                            canvas.fill_rounded_rect(
+                                Rect::new(r.x, uy, w.min(r.width), 1.5),
+                                0.75,
+                                color,
+                            );
+                        }
+                    }
+                    NodeKind::List {
+                        items,
+                        selected,
+                        scroll,
+                    } => {
+                        let r = node.rect;
+                        canvas.push_clip(r);
+                        let bg = style.fill.unwrap_or(theme.surface);
+                        canvas.fill_rounded_rect(r, style.radius.unwrap_or(8.0), bg);
+                        let hover_row = if hot == Some(id) && mouse.1 >= r.y {
+                            let ri = ((mouse.1 - r.y + *scroll) / LIST_ROW).floor();
+                            if ri >= 0.0 && (ri as usize) < items.len() {
+                                Some(ri as usize)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
+                        for (i, item) in items.iter().enumerate() {
+                            let iy = r.y - *scroll + LIST_ROW * i as f32;
+                            if iy + LIST_ROW <= r.y || iy >= r.y + r.height {
+                                continue;
+                            }
+                            let row_rect = Rect::new(r.x, iy, r.width, LIST_ROW);
+                            if *selected == Some(i) {
+                                canvas.fill_rounded_rect(row_rect, 0.0, theme.selection);
+                            } else if hover_row == Some(i) {
+                                canvas.fill_rounded_rect(row_rect, 0.0, theme.track);
+                            }
+                            let tr = Rect::new(
+                                r.x + 12.0,
+                                iy,
+                                (r.width - 24.0 - SCROLLBAR_W).max(0.0),
+                                LIST_ROW,
+                            );
+                            let color = style.text.unwrap_or(theme.content);
+                            canvas.draw_text(item, format_left, tr, color);
+                        }
+                        draw_scrollbar(
+                            &canvas,
+                            r,
+                            items.len() as f32 * LIST_ROW,
+                            r.height,
+                            *scroll,
+                            theme.track,
+                            theme.content,
+                        );
+                        if focused == Some(id) {
+                            canvas.stroke_rect(r, 2.0, theme.accent);
+                        }
+                        canvas.pop_clip();
+                    }
                     NodeKind::TextBox { state } => {
+                        if node.multiline {
+                            let r = node.rect;
+                            let is_focused = focused == Some(id);
+                            let border = if is_focused { theme.accent } else { theme.track };
+                            let rad = style.radius.unwrap_or(8.0);
+                            canvas.fill_rounded_rect(r, rad, border);
+                            let inner =
+                                Rect::new(r.x + 2.0, r.y + 2.0, r.width - 4.0, r.height - 4.0);
+                            let inner_fill = style.fill.unwrap_or(theme.surface);
+                            canvas.fill_rounded_rect(inner, (rad - 2.0).max(0.0), inner_fill);
+                            let pad = 10.0;
+                            let text_rect = Rect::new(
+                                r.x + pad,
+                                r.y + pad,
+                                (r.width - 2.0 * pad).max(0.0),
+                                (r.height - 2.0 * pad).max(0.0),
+                            );
+                            canvas.push_clip(text_rect);
+                            let tcolor = style.text.unwrap_or(theme.content);
+                            if !state.text.is_empty() {
+                                canvas.draw_text(&state.text, format_wrap, text_rect, tcolor);
+                            }
+                            if is_focused {
+                                let width = text_rect.width.max(1.0);
+                                let (cx, cy, lh) = wrapped_caret(
+                                    dwrite,
+                                    format_wrap,
+                                    &state.text,
+                                    width,
+                                    state.caret,
+                                );
+                                let caret = Rect::new(
+                                    text_rect.x + cx,
+                                    text_rect.y + cy,
+                                    2.0,
+                                    lh.max(16.0),
+                                );
+                                canvas.fill_rounded_rect(caret, 1.0, theme.accent);
+                            }
+                            canvas.pop_clip();
+                            return;
+                        }
                         let r = node.rect;
                         let is_focused = focused == Some(id);
                         let border = if is_focused { theme.accent } else { theme.track };
@@ -1584,6 +1993,21 @@ impl Renderer {
                                 Rect::new(cx + 10.0, r.y, (col_w - 20.0).max(0.0), TABLE_HEADER);
                             canvas.draw_text(col, format_left, hr, theme.content);
                         }
+                        let body = Rect::new(
+                            r.x,
+                            r.y + TABLE_HEADER,
+                            r.width,
+                            (r.height - TABLE_HEADER).max(0.0),
+                        );
+                        draw_scrollbar(
+                            &canvas,
+                            body,
+                            rows.len() as f32 * TABLE_ROW,
+                            body.height,
+                            *scroll,
+                            theme.track,
+                            theme.content,
+                        );
                         if focused == Some(id) {
                             canvas.stroke_rect(r, 2.0, theme.accent);
                         }
@@ -1792,7 +2216,45 @@ fn kind_name(kind: &NodeKind) -> &'static str {
         NodeKind::Image { .. } => "Image",
         NodeKind::Switch { .. } => "Switch",
         NodeKind::Radio { .. } => "Radio",
+        NodeKind::Toggle { .. } => "Toggle",
+        NodeKind::Separator { .. } => "Separator",
+        NodeKind::List { .. } => "List",
+        NodeKind::Group { .. } => "Group",
+        NodeKind::Link { .. } => "Link",
+        NodeKind::Accordion { .. } => "Accordion",
+        NodeKind::Scroll { .. } => "Scroll",
     }
+}
+
+fn draw_scrollbar(
+    canvas: &Canvas,
+    track: Rect,
+    content: f32,
+    visible: f32,
+    scroll: f32,
+    track_col: Color,
+    thumb_col: Color,
+) {
+    if content <= visible || visible <= 0.0 {
+        return;
+    }
+    let bar = Rect::new(
+        track.x + track.width - SCROLLBAR_W - 2.0,
+        track.y + 2.0,
+        SCROLLBAR_W,
+        (track.height - 4.0).max(0.0),
+    );
+    canvas.fill_rounded_rect(bar, SCROLLBAR_W / 2.0, track_col);
+    let ratio = (visible / content).clamp(0.05, 1.0);
+    let th = (bar.height * ratio).max(24.0);
+    let max_scroll = (content - visible).max(1.0);
+    let t = (scroll / max_scroll).clamp(0.0, 1.0);
+    let ty = bar.y + (bar.height - th) * t;
+    canvas.fill_rounded_rect(
+        Rect::new(bar.x, ty, SCROLLBAR_W, th),
+        SCROLLBAR_W / 2.0,
+        thumb_col,
+    );
 }
 
 fn theme_from_index(index: usize) -> Theme {
@@ -1876,6 +2338,76 @@ fn x_at_index(dwrite: &IDWriteFactory, format: &IDWriteTextFormat, text: &[u16],
         }
     }
     0.0
+}
+
+fn text_width(dwrite: &IDWriteFactory, format: &IDWriteTextFormat, text: &[u16]) -> f32 {
+    if text.is_empty() {
+        return 0.0;
+    }
+    unsafe {
+        if let Ok(layout) = dwrite.CreateTextLayout(text, format, 100000.0, 100.0) {
+            let mut m = DWRITE_TEXT_METRICS::default();
+            if layout.GetMetrics(&mut m).is_ok() {
+                return m.width;
+            }
+        }
+    }
+    0.0
+}
+
+fn wrapped_caret(
+    dwrite: &IDWriteFactory,
+    format: &IDWriteTextFormat,
+    text: &[u16],
+    width: f32,
+    index: usize,
+) -> (f32, f32, f32) {
+    unsafe {
+        if let Ok(layout) = dwrite.CreateTextLayout(text, format, width.max(1.0), 100000.0) {
+            let mut px = 0.0f32;
+            let mut py = 0.0f32;
+            let mut m = DWRITE_HIT_TEST_METRICS::default();
+            if layout
+                .HitTestTextPosition(index as u32, false, &mut px, &mut py, &mut m)
+                .is_ok()
+            {
+                let lh = if m.height > 0.0 { m.height } else { 22.0 };
+                return (px, py, lh);
+            }
+        }
+    }
+    (0.0, 0.0, 22.0)
+}
+
+fn wrapped_index(
+    dwrite: &IDWriteFactory,
+    format: &IDWriteTextFormat,
+    text: &[u16],
+    width: f32,
+    x: f32,
+    y: f32,
+) -> usize {
+    if text.is_empty() {
+        return 0;
+    }
+    unsafe {
+        if let Ok(layout) = dwrite.CreateTextLayout(text, format, width.max(1.0), 100000.0) {
+            let mut trailing = BOOL(0);
+            let mut inside = BOOL(0);
+            let mut m = DWRITE_HIT_TEST_METRICS::default();
+            if layout
+                .HitTestPoint(x.max(0.0), y.max(0.0), &mut trailing, &mut inside, &mut m)
+                .is_ok()
+            {
+                let mut idx = m.textPosition as usize;
+                if trailing.as_bool() {
+                    idx += 1;
+                }
+                return idx.min(text.len());
+            }
+        }
+    }
+    text.len()
 }
 
 fn set_clipboard_text(text: &[u16]) {

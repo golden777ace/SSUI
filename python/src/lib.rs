@@ -300,6 +300,126 @@ impl PyWindow {
         })
     }
 
+    /// Секция аккордеона как контекст: `with win.acc("Имя"):`.
+    #[pyo3(signature = (title="", *, pr=None, open=false, rad=10.0, pd=8.0, gp=8.0, w=None, h=None))]
+    fn acc(
+        &mut self,
+        title: &str,
+        pr: Option<PyNode>,
+        open: bool,
+        rad: f32,
+        pd: f32,
+        gp: f32,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<Ctx> {
+        let props = make_props("v", pd, gp, w, h);
+        let parent = self.parent_of(pr);
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let id = tree.add_child(
+            parent,
+            NodeKind::Accordion {
+                title: utf16(title),
+                open,
+                radius: rad,
+            },
+            props,
+        );
+        Ok(Ctx {
+            stack: self.stack.clone(),
+            node: id,
+        })
+    }
+
+    /// Область прокрутки как контекст: `with win.scr():`.
+    #[pyo3(signature = (*, pr=None, pd=8.0, gp=8.0, w=None, h=None))]
+    fn scr(
+        &mut self,
+        pr: Option<PyNode>,
+        pd: f32,
+        gp: f32,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<Ctx> {
+        let props = make_props("v", pd, gp, w, h);
+        let parent = self.parent_of(pr);
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let id = tree.add_child(
+            parent,
+            NodeKind::Scroll {
+                offset: 0.0,
+                content: 0.0,
+            },
+            props,
+        );
+        Ok(Ctx {
+            stack: self.stack.clone(),
+            node: id,
+        })
+    }
+
+    /// Группа с заголовком как контекст: `with win.grp("Имя"):`.
+    #[pyo3(signature = (title="", *, pr=None, rad=12.0, ax="v", pd=12.0, gp=8.0, w=None, h=None))]
+    fn grp(
+        &mut self,
+        title: &str,
+        pr: Option<PyNode>,
+        rad: f32,
+        ax: &str,
+        pd: f32,
+        gp: f32,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<Ctx> {
+        let props = make_props(ax, pd, gp, w, h);
+        let parent = self.parent_of(pr);
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let id = tree.add_child(
+            parent,
+            NodeKind::Group {
+                title: utf16(title),
+                radius: rad,
+            },
+            props,
+        );
+        Ok(Ctx {
+            stack: self.stack.clone(),
+            node: id,
+        })
+    }
+
+    /// Добавляет ссылку; `clk` вызывается по нажатию.
+    #[pyo3(signature = (lb="", *, pr=None, clk=None, pd=0.0, gp=0.0, w=None, h=None))]
+    fn lnk(
+        &mut self,
+        lb: &str,
+        pr: Option<PyNode>,
+        clk: Option<PyObject>,
+        pd: f32,
+        gp: f32,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<PyNode> {
+        let h = h.or(Some(28.0));
+        let props = make_props("v", pd, gp, w, h);
+        let parent = self.parent_of(pr);
+        let texts = self.bindings.clone();
+        let values = self.value_bindings.clone();
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let id = tree.add_child(parent, NodeKind::Link { label: utf16(lb) }, props);
+        tree.set_on_click(id, move |t| {
+            Python::with_gil(|py| {
+                if let Some(cb) = &clk {
+                    if let Err(e) = cb.bind(py).call0() {
+                        e.print(py);
+                    }
+                }
+                refresh_all(py, t, &texts, &values);
+            });
+        });
+        Ok(PyNode { id })
+    }
+
     /// Добавляет метку; `bind` — колбэк, возвращающий текст.
     #[pyo3(signature = (txt="", *, pr=None, bind=None, icon=None, pd=0.0, gp=0.0, w=None, h=None, wrap=false))]
     fn lb(
@@ -601,6 +721,67 @@ impl PyWindow {
         Ok(tree.radio_on(n.id))
     }
 
+    /// Добавляет кнопку-переключатель; `clk(on)` при смене состояния.
+    #[pyo3(signature = (lb="", *, pr=None, on=false, clk=None, pd=0.0, gp=0.0, w=None, h=None))]
+    fn tgl(
+        &mut self,
+        lb: &str,
+        pr: Option<PyNode>,
+        on: bool,
+        clk: Option<PyObject>,
+        pd: f32,
+        gp: f32,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<PyNode> {
+        let props = make_props("v", pd, gp, w, h);
+        let parent = self.parent_of(pr);
+        let texts = self.bindings.clone();
+        let values = self.value_bindings.clone();
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let id = tree.add_child(parent, NodeKind::Toggle { label: utf16(lb), on }, props);
+        tree.set_on_change(id, move |t, v| {
+            Python::with_gil(|py| {
+                if let Some(cb) = &clk {
+                    if let Err(e) = cb.bind(py).call1((v >= 0.5,)) {
+                        e.print(py);
+                    }
+                }
+                refresh_all(py, t, &texts, &values);
+            });
+        });
+        Ok(PyNode { id })
+    }
+
+    /// Возвращает состояние кнопки-переключателя.
+    fn tglv(&self, n: PyNode) -> PyResult<bool> {
+        let tree = self.tree.as_ref().ok_or_else(consumed)?;
+        Ok(tree.toggle_on(n.id))
+    }
+
+    /// Добавляет разделитель; `vertical` — вертикальная линия.
+    #[pyo3(signature = (*, pr=None, vertical=false, pd=0.0, gp=0.0, w=None, h=None))]
+    fn sep(
+        &mut self,
+        pr: Option<PyNode>,
+        vertical: bool,
+        pd: f32,
+        gp: f32,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<PyNode> {
+        let (w2, h2) = if vertical {
+            (w.or(Some(12.0)), h)
+        } else {
+            (w, h.or(Some(12.0)))
+        };
+        let props = make_props("v", pd, gp, w2, h2);
+        let parent = self.parent_of(pr);
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let id = tree.add_child(parent, NodeKind::Separator { vertical }, props);
+        Ok(PyNode { id })
+    }
+
     /// Добавляет поле ввода; `sig` — сигнал, куда пишется текст.
     #[pyo3(signature = (txt="", *, pr=None, sig=None, pd=0.0, gp=0.0, w=None, h=None))]
     fn tx(
@@ -636,6 +817,129 @@ impl PyWindow {
             });
         }
         Ok(PyNode { id })
+    }
+
+    /// Многострочное поле ввода; Enter — перенос строки, `sig` — сигнал текста.
+    #[pyo3(signature = (txt="", *, pr=None, sig=None, pd=0.0, gp=0.0, w=None, h=None))]
+    fn ta(
+        &mut self,
+        txt: &str,
+        pr: Option<PyNode>,
+        sig: Option<PyObject>,
+        pd: f32,
+        gp: f32,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<PyNode> {
+        let h = h.or(Some(120.0));
+        let props = make_props("v", pd, gp, w, h);
+        let mut st = TextState::new();
+        if !txt.is_empty() {
+            st.text = utf16(txt);
+            st.caret = st.text.len();
+            st.anchor = st.caret;
+        }
+        let parent = self.parent_of(pr);
+        let texts = self.bindings.clone();
+        let values = self.value_bindings.clone();
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let id = tree.add_child(parent, NodeKind::TextBox { state: st }, props);
+        tree.set_multiline(id);
+        if let Some(sig) = sig {
+            tree.set_on_input(id, move |t, text| {
+                Python::with_gil(|py| {
+                    if let Err(e) = sig.bind(py).call_method1("st", (text,)) {
+                        e.print(py);
+                    }
+                    refresh_all(py, t, &texts, &values);
+                });
+            });
+        }
+        Ok(PyNode { id })
+    }
+
+    /// Числовое поле с кнопками −/+; `ch(value)` при изменении.
+    #[pyo3(signature = (value=0.0, *, pr=None, min=0.0, max=100.0, step=1.0, ch=None, pd=0.0, gp=6.0, w=None, h=None))]
+    fn spin(
+        &mut self,
+        value: f32,
+        pr: Option<PyNode>,
+        min: f32,
+        max: f32,
+        step: f32,
+        ch: Option<PyObject>,
+        pd: f32,
+        gp: f32,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<PyNode> {
+        let bh = h.or(Some(44.0));
+        let props = make_props("h", pd, gp, w, bh);
+        let parent = self.parent_of(pr);
+        let texts = self.bindings.clone();
+        let values = self.value_bindings.clone();
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let box_id = tree.add_child(parent, NodeKind::Container, props);
+
+        let minus = tree.add_child(
+            box_id,
+            NodeKind::Button { label: utf16("−"), radius: 8.0 },
+            make_props("v", 0.0, 0.0, Some(44.0), bh),
+        );
+        let lbl = tree.add_child(
+            box_id,
+            NodeKind::Label {
+                text: utf16(&fmt_num(value.clamp(min, max), step)),
+            },
+            make_props("v", 0.0, 0.0, None, bh),
+        );
+        tree.set_grow(lbl, 1.0);
+        let plus = tree.add_child(
+            box_id,
+            NodeKind::Button { label: utf16("+"), radius: 8.0 },
+            make_props("v", 0.0, 0.0, Some(44.0), bh),
+        );
+
+        let cur = std::rc::Rc::new(std::cell::Cell::new(value.clamp(min, max)));
+        let cb_rc = std::rc::Rc::new(ch);
+
+        let c1 = cur.clone();
+        let ch1 = cb_rc.clone();
+        let t1 = texts.clone();
+        let v1 = values.clone();
+        tree.set_on_click(minus, move |t| {
+            let nv = (c1.get() - step).clamp(min, max);
+            c1.set(nv);
+            t.set_label_text(lbl, utf16(&fmt_num(nv, step)));
+            Python::with_gil(|py| {
+                if let Some(cb) = ch1.as_ref() {
+                    if let Err(e) = cb.bind(py).call1((nv,)) {
+                        e.print(py);
+                    }
+                }
+                refresh_all(py, t, &t1, &v1);
+            });
+        });
+
+        let c2 = cur.clone();
+        let ch2 = cb_rc.clone();
+        let t2 = texts.clone();
+        let v2 = values.clone();
+        tree.set_on_click(plus, move |t| {
+            let nv = (c2.get() + step).clamp(min, max);
+            c2.set(nv);
+            t.set_label_text(lbl, utf16(&fmt_num(nv, step)));
+            Python::with_gil(|py| {
+                if let Some(cb) = ch2.as_ref() {
+                    if let Err(e) = cb.bind(py).call1((nv,)) {
+                        e.print(py);
+                    }
+                }
+                refresh_all(py, t, &t2, &v2);
+            });
+        });
+
+        Ok(PyNode { id: box_id })
     }
 
     /// Возвращает текущий текст поля ввода.
@@ -751,7 +1055,55 @@ impl PyWindow {
         Ok(())
     }
 
-    /// Добавляет таблицу; `ch(index)` при выборе строки.
+    /// Добавляет список; `ch(index)` при выборе пункта.
+    #[pyo3(signature = (items, *, pr=None, sel=None, ch=None, pd=0.0, gp=0.0, w=None, h=None))]
+    fn lst(
+        &mut self,
+        items: Vec<String>,
+        pr: Option<PyNode>,
+        sel: Option<usize>,
+        ch: Option<PyObject>,
+        pd: f32,
+        gp: f32,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<PyNode> {
+        let h = h.or(Some(240.0));
+        let props = make_props("v", pd, gp, w, h);
+        let its: Vec<Vec<u16>> = items.iter().map(|s| utf16(s)).collect();
+        let parent = self.parent_of(pr);
+        let texts = self.bindings.clone();
+        let values = self.value_bindings.clone();
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let id = tree.add_child(
+            parent,
+            NodeKind::List {
+                items: its,
+                selected: sel,
+                scroll: 0.0,
+            },
+            props,
+        );
+        tree.set_on_change(id, move |t, v| {
+            Python::with_gil(|py| {
+                if let Some(cb) = &ch {
+                    if let Err(e) = cb.bind(py).call1((v as i64,)) {
+                        e.print(py);
+                    }
+                }
+                refresh_all(py, t, &texts, &values);
+            });
+        });
+        Ok(PyNode { id })
+    }
+
+    /// Возвращает выбранный пункт списка или -1.
+    fn lstv(&self, n: PyNode) -> PyResult<i64> {
+        let tree = self.tree.as_ref().ok_or_else(consumed)?;
+        Ok(tree.list_selected(n.id).map_or(-1, |i| i as i64))
+    }
+
+    /// Добавляет таблицу; `ch(row)` при выборе строки.
     #[pyo3(signature = (columns, rows, *, pr=None, ch=None, pd=0.0, gp=0.0, w=None, h=None))]
     fn tbl(
         &mut self,
@@ -918,6 +1270,14 @@ fn fit_code(s: &str) -> u8 {
         "fill" | "stretch" => 2,
         "center" | "none" => 3,
         _ => 0,
+    }
+}
+
+fn fmt_num(v: f32, step: f32) -> String {
+    if (step - step.round()).abs() < 1e-6 {
+        format!("{}", v.round() as i64)
+    } else {
+        format!("{:.1}", v)
     }
 }
 

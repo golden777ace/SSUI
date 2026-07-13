@@ -255,7 +255,45 @@ pub enum NodeKind {
         on: bool,
         group: u32,
     },
+    Toggle {
+        label: Vec<u16>,
+        on: bool,
+    },
+    Separator {
+        vertical: bool,
+    },
+    List {
+        items: Vec<Vec<u16>>,
+        selected: Option<usize>,
+        scroll: f32,
+    },
+    Group {
+        title: Vec<u16>,
+        radius: f32,
+    },
+    Link {
+        label: Vec<u16>,
+    },
+    Accordion {
+        title: Vec<u16>,
+        open: bool,
+        radius: f32,
+    },
+    Scroll {
+        offset: f32,
+        content: f32,
+    },
 }
+
+/// Высота заголовка группы в пикселях.
+pub const GROUP_HEADER: f32 = 30.0;
+
+/// Высота заголовка секции аккордеона в пикселях.
+pub const ACC_HEADER: f32 = 40.0;
+
+/// Высота строки списка и ширина полосы прокрутки.
+pub const LIST_ROW: f32 = 32.0;
+pub const SCROLLBAR_W: f32 = 10.0;
 
 /// Высота полосы вкладок в пикселях.
 pub const TAB_HEADER: f32 = 40.0;
@@ -323,6 +361,7 @@ pub struct Node {
     pub style_hover: Style,
     pub class_name: Option<String>,
     pub icon: Option<String>,
+    pub multiline: bool,
     on_click: Option<Box<dyn FnMut(&mut Tree)>>,
     on_change: Option<Box<dyn FnMut(&mut Tree, f32)>>,
     on_input: Option<Box<dyn FnMut(&mut Tree, &str)>>,
@@ -359,6 +398,7 @@ impl Tree {
             style_hover: Style::default(),
             class_name: None,
             icon: None,
+            multiline: false,
             on_click: None,
             on_change: None,
             on_input: None,
@@ -617,6 +657,7 @@ impl Tree {
             style_hover: Style::default(),
             class_name: None,
             icon: None,
+            multiline: false,
             on_click: None,
             on_change: None,
             on_input: None,
@@ -663,6 +704,17 @@ impl Tree {
         p.t = t;
         p.r = r;
         p.b = b;
+    }
+
+
+    /// Возвращает родителя узла.
+    pub fn parent(&self, id: NodeId) -> Option<NodeId> {
+        for (i, n) in self.nodes.iter().enumerate() {
+            if n.children.contains(&id) {
+                return Some(NodeId(i));
+            }
+        }
+        None
     }
 
     /// Возвращает узел по идентификатору.
@@ -848,7 +900,66 @@ impl Tree {
 
     /// Реагирует ли узел на клик.
     pub fn is_interactive(&self, id: NodeId) -> bool {
-        self.is_button(id) || self.is_checkbox(id) || self.is_switch(id) || self.is_radio(id)
+        self.is_button(id)
+            || self.is_checkbox(id)
+            || self.is_switch(id)
+            || self.is_radio(id)
+            || self.is_toggle(id)
+            || self.is_link(id)
+    }
+
+    /// Является ли узел ссылкой.
+    pub fn is_link(&self, id: NodeId) -> bool {
+        matches!(self.nodes[id.0].kind, NodeKind::Link { .. })
+    }
+
+    /// Является ли узел секцией аккордеона.
+    pub fn is_accordion(&self, id: NodeId) -> bool {
+        matches!(self.nodes[id.0].kind, NodeKind::Accordion { .. })
+    }
+
+    /// Раскрыта ли секция аккордеона.
+    pub fn acc_open(&self, id: NodeId) -> bool {
+        matches!(&self.nodes[id.0].kind, NodeKind::Accordion { open, .. } if *open)
+    }
+
+    /// Переключает раскрытие секции аккордеона.
+    pub fn toggle_acc(&mut self, id: NodeId) {
+        if let NodeKind::Accordion { open, .. } = &mut self.nodes[id.0].kind {
+            *open = !*open;
+        }
+        self.dirty = true;
+    }
+
+    /// Является ли узел областью прокрутки.
+    pub fn is_scroll(&self, id: NodeId) -> bool {
+        matches!(self.nodes[id.0].kind, NodeKind::Scroll { .. })
+    }
+
+    /// Возвращает смещение прокрутки области.
+    pub fn scroll_offset(&self, id: NodeId) -> f32 {
+        if let NodeKind::Scroll { offset, .. } = &self.nodes[id.0].kind {
+            *offset
+        } else {
+            0.0
+        }
+    }
+
+    /// Задаёт смещение прокрутки области.
+    pub fn set_scroll_offset(&mut self, id: NodeId, value: f32) {
+        if let NodeKind::Scroll { offset, .. } = &mut self.nodes[id.0].kind {
+            *offset = value;
+        }
+        self.dirty = true;
+    }
+
+    /// Возвращает высоту содержимого области прокрутки.
+    pub fn scroll_content(&self, id: NodeId) -> f32 {
+        if let NodeKind::Scroll { content, .. } = &self.nodes[id.0].kind {
+            *content
+        } else {
+            0.0
+        }
     }
 
     /// Является ли узел переключателем.
@@ -896,6 +1007,23 @@ impl Tree {
         matches!(&self.nodes[id.0].kind, NodeKind::Radio { on, .. } if *on)
     }
 
+    /// Является ли узел кнопкой-переключателем.
+    pub fn is_toggle(&self, id: NodeId) -> bool {
+        matches!(self.nodes[id.0].kind, NodeKind::Toggle { .. })
+    }
+
+    /// Инвертирует состояние кнопки-переключателя.
+    pub fn flip_toggle(&mut self, id: NodeId) {
+        if let NodeKind::Toggle { on, .. } = &mut self.nodes[id.0].kind {
+            *on = !*on;
+        }
+    }
+
+    /// Возвращает состояние кнопки-переключателя.
+    pub fn toggle_on(&self, id: NodeId) -> bool {
+        matches!(&self.nodes[id.0].kind, NodeKind::Toggle { on, .. } if *on)
+    }
+
     /// Является ли узел ползунком.
     pub fn is_slider(&self, id: NodeId) -> bool {
         matches!(self.nodes[id.0].kind, NodeKind::Slider { .. })
@@ -907,11 +1035,59 @@ impl Tree {
             || self.is_checkbox(id)
             || self.is_switch(id)
             || self.is_radio(id)
+            || self.is_toggle(id)
             || self.is_textbox(id)
             || self.is_slider(id)
             || self.is_dropdown(id)
             || self.is_tabs(id)
             || self.is_table(id)
+            || self.is_list(id)
+    }
+
+    /// Является ли узел списком.
+    pub fn is_list(&self, id: NodeId) -> bool {
+        matches!(self.nodes[id.0].kind, NodeKind::List { .. })
+    }
+
+    /// Число пунктов списка.
+    pub fn list_len(&self, id: NodeId) -> usize {
+        if let NodeKind::List { items, .. } = &self.nodes[id.0].kind {
+            items.len()
+        } else {
+            0
+        }
+    }
+
+    /// Возвращает выбранный пункт списка.
+    pub fn list_selected(&self, id: NodeId) -> Option<usize> {
+        if let NodeKind::List { selected, .. } = &self.nodes[id.0].kind {
+            *selected
+        } else {
+            None
+        }
+    }
+
+    /// Задаёт выбранный пункт списка.
+    pub fn set_list_selected(&mut self, id: NodeId, index: Option<usize>) {
+        if let NodeKind::List { selected, .. } = &mut self.nodes[id.0].kind {
+            *selected = index;
+        }
+    }
+
+    /// Возвращает прокрутку списка в пикселях.
+    pub fn list_scroll(&self, id: NodeId) -> f32 {
+        if let NodeKind::List { scroll, .. } = &self.nodes[id.0].kind {
+            *scroll
+        } else {
+            0.0
+        }
+    }
+
+    /// Задаёт прокрутку списка в пикселях.
+    pub fn set_list_scroll(&mut self, id: NodeId, value: f32) {
+        if let NodeKind::List { scroll, .. } = &mut self.nodes[id.0].kind {
+            *scroll = value;
+        }
     }
 
     /// Список фокусируемых узлов в порядке обхода дерева.
@@ -969,6 +1145,16 @@ impl Tree {
         } else {
             None
         }
+    }
+
+    /// Многострочное ли поле ввода.
+    pub fn is_multiline(&self, id: NodeId) -> bool {
+        self.nodes[id.0].multiline
+    }
+
+    /// Делает поле ввода многострочным.
+    pub fn set_multiline(&mut self, id: NodeId) {
+        self.nodes[id.0].multiline = true;
     }
 
     /// Возвращает верхний узел, содержащий точку `(x, y)`.
@@ -1032,12 +1218,57 @@ impl Tree {
             return;
         }
 
+        if let NodeKind::Accordion { open, .. } = &self.nodes[id.0].kind {
+            let open = *open;
+            let pad = props.padding;
+            let body = Rect::new(
+                rect.x + pad,
+                rect.y + ACC_HEADER,
+                (rect.width - 2.0 * pad).max(0.0),
+                (rect.height - ACC_HEADER - pad).max(0.0),
+            );
+            let off = Rect::new(-1.0e6, -1.0e6, 0.0, 0.0);
+            let mut cursor = body.y;
+            for &c in &children {
+                if !open {
+                    self.layout_node(c, off);
+                    continue;
+                }
+                let ch = self.nodes[c.0].props.height.unwrap_or(36.0);
+                self.layout_node(c, Rect::new(body.x, cursor, body.width, ch));
+                cursor += ch + props.gap;
+            }
+            return;
+        }
+
+        if self.is_scroll(id) {
+            let pad = props.padding;
+            let gap = props.gap;
+            let offset = self.scroll_offset(id);
+            let inner_w = (rect.width - 2.0 * pad - SCROLLBAR_W - 4.0).max(0.0);
+            let mut cursor = rect.y + pad - offset;
+            let mut total = pad;
+            for &c in &children {
+                let ch = self.nodes[c.0].props.height.unwrap_or(40.0);
+                self.layout_node(c, Rect::new(rect.x + pad, cursor, inner_w, ch));
+                cursor += ch + gap;
+                total += ch + gap;
+            }
+            let total = (total + pad - gap).max(0.0);
+            if let NodeKind::Scroll { content, .. } = &mut self.nodes[id.0].kind {
+                *content = total;
+            }
+            return;
+        }
+
+        let is_group = matches!(self.nodes[id.0].kind, NodeKind::Group { .. });
+        let head = if is_group { GROUP_HEADER } else { 0.0 };
         let pad = props.padding;
         let inner = Rect::new(
             rect.x + pad,
-            rect.y + pad,
+            rect.y + pad + head,
             (rect.width - 2.0 * pad).max(0.0),
-            (rect.height - 2.0 * pad).max(0.0),
+            (rect.height - 2.0 * pad - head).max(0.0),
         );
         for &c in &children {
             let cp = self.nodes[c.0].props;
@@ -1190,6 +1421,13 @@ fn kind_tag(kind: &NodeKind) -> &'static str {
         NodeKind::Image { .. } => "image",
         NodeKind::Switch { .. } => "switch",
         NodeKind::Radio { .. } => "radio",
+        NodeKind::Toggle { .. } => "toggle",
+        NodeKind::Separator { .. } => "separator",
+        NodeKind::List { .. } => "list",
+        NodeKind::Group { .. } => "group",
+        NodeKind::Link { .. } => "link",
+        NodeKind::Accordion { .. } => "accordion",
+        NodeKind::Scroll { .. } => "scroll",
     }
 }
 
