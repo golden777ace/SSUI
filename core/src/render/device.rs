@@ -24,8 +24,8 @@ use super::canvas::Canvas;
 use super::types::{Color, Rect};
 use crate::theme::Theme;
 use crate::tree::{
-    NodeId, NodeKind, Style, Tree, ACC_HEADER, GROUP_HEADER, LIST_ROW, SCROLLBAR_W, TABLE_HEADER,
-    TABLE_ROW, TAB_HEADER,
+    NodeId, NodeKind, Style, Tree, ACC_HEADER, GROUP_HEADER, LIST_ROW, SCROLLBAR_W, SPLIT_W,
+    TABLE_HEADER, TABLE_ROW, TAB_HEADER,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -62,6 +62,7 @@ pub struct Renderer {
     hot: Option<NodeId>,
     text_selecting: bool,
     scroll_drag: Option<NodeId>,
+    split_drag: Option<NodeId>,
     theme: Theme,
     theme_index: usize,
     last_tick: Instant,
@@ -234,6 +235,7 @@ impl Renderer {
                 hot: None,
                 text_selecting: false,
                 scroll_drag: None,
+                split_drag: None,
                 theme,
                 theme_index,
                 last_tick: Instant::now(),
@@ -418,6 +420,47 @@ impl Renderer {
     fn scrollbar_zone(&self, id: NodeId, x: f32) -> bool {
         let r = self.tree.get(id).rect;
         x >= r.x + r.width - SCROLLBAR_W - 2.0
+    }
+
+    fn splitter_bar_at(&self, x: f32, y: f32) -> Option<NodeId> {
+        let mut found = None;
+        self.tree.for_each(|id, node| {
+            if !matches!(node.kind, NodeKind::Splitter { .. }) {
+                return;
+            }
+            let r = node.rect;
+            if r.x <= -100000.0 {
+                return;
+            }
+            let ratio = self.tree.split_ratio(id);
+            let bar = if self.tree.split_vertical(id) {
+                let w1 = (r.width - SPLIT_W) * ratio;
+                Rect::new(r.x + w1, r.y, SPLIT_W, r.height)
+            } else {
+                let h1 = (r.height - SPLIT_W) * ratio;
+                Rect::new(r.x, r.y + h1, r.width, SPLIT_W)
+            };
+            if bar.contains(x, y) {
+                found = Some(id);
+            }
+        });
+        found
+    }
+
+    fn set_split_from(&mut self, id: NodeId, x: f32, y: f32) {
+        let r = self.tree.get(id).rect;
+        let v = if self.tree.split_vertical(id) {
+            if r.width <= SPLIT_W {
+                return;
+            }
+            (x - r.x) / (r.width - SPLIT_W)
+        } else {
+            if r.height <= SPLIT_W {
+                return;
+            }
+            (y - r.y) / (r.height - SPLIT_W)
+        };
+        self.tree.set_split_ratio(id, v);
     }
 
     fn scroll_from_y(&mut self, id: NodeId, y: f32) {
@@ -686,6 +729,10 @@ impl Renderer {
             self.scroll_from_y(id, y);
             dirty = true;
         }
+        if let Some(id) = self.split_drag {
+            self.set_split_from(id, x, y);
+            dirty = true;
+        }
         if hit.map_or(false, |h| self.tree.is_list(h)) {
             dirty = true;
         }
@@ -751,6 +798,11 @@ impl Renderer {
         let new_focus = hit.filter(|&id| self.tree.is_textbox(id) || self.tree.is_slider(id));
         self.focused = new_focus;
 
+        if let Some(id) = self.splitter_bar_at(x, y) {
+            self.split_drag = Some(id);
+            self.set_split_from(id, x, y);
+            return true;
+        }
         if let Some(id) = hit {
             if self.tree.is_accordion(id) {
                 let r = self.tree.get(id).rect;
@@ -844,12 +896,13 @@ impl Renderer {
         let was_pressed = self.pressed.take().is_some();
         let was_dragging = self.dragging.take().is_some();
         let was_scroll = self.scroll_drag.take().is_some();
+        let was_split = self.split_drag.take().is_some();
         let was_selecting = self.text_selecting;
         self.text_selecting = false;
         if let Some(id) = click_id {
             self.dispatch(id);
         }
-        was_pressed || was_dragging || was_scroll || was_selecting || click_id.is_some()
+        was_pressed || was_dragging || was_scroll || was_split || was_selecting || click_id.is_some()
     }
 
     /// Обрабатывает символьный ввод. Возвращает true, если нужна перерисовка.
@@ -1384,7 +1437,6 @@ impl Renderer {
         let hot = self.hot;
         let mouse = self.mouse;
         let theme = self.theme;
-        let dwrite = &self.dwrite;
         unsafe {
             self.rt.BeginDraw();
         }
@@ -1714,6 +1766,36 @@ impl Renderer {
                         if focused == Some(id) {
                             canvas.stroke_rect(head, 2.0, theme.accent);
                         }
+                    }
+                    NodeKind::Stack { .. } => {}
+                    NodeKind::Splitter { ratio, vertical } => {
+                        let r = node.rect;
+                        let bar = if *vertical {
+                            let w1 = (r.width - SPLIT_W) * *ratio;
+                            Rect::new(r.x + w1, r.y, SPLIT_W, r.height)
+                        } else {
+                            let h1 = (r.height - SPLIT_W) * *ratio;
+                            Rect::new(r.x, r.y + h1, r.width, SPLIT_W)
+                        };
+                        let col = style.fill.unwrap_or(theme.track);
+                        canvas.fill_rounded_rect(bar, SPLIT_W / 2.0, col);
+                        let g = 3.0;
+                        let grip = if *vertical {
+                            Rect::new(
+                                bar.x + (SPLIT_W - g) / 2.0,
+                                bar.y + bar.height / 2.0 - 16.0,
+                                g,
+                                32.0,
+                            )
+                        } else {
+                            Rect::new(
+                                bar.x + bar.width / 2.0 - 16.0,
+                                bar.y + (SPLIT_W - g) / 2.0,
+                                32.0,
+                                g,
+                            )
+                        };
+                        canvas.fill_rounded_rect(grip, g / 2.0, theme.content);
                     }
                     NodeKind::Scroll { offset, content } => {
                         let r = node.rect;
@@ -2223,6 +2305,8 @@ fn kind_name(kind: &NodeKind) -> &'static str {
         NodeKind::Link { .. } => "Link",
         NodeKind::Accordion { .. } => "Accordion",
         NodeKind::Scroll { .. } => "Scroll",
+        NodeKind::Stack { .. } => "Stack",
+        NodeKind::Splitter { .. } => "Splitter",
     }
 }
 

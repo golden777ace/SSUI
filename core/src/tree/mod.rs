@@ -283,7 +283,17 @@ pub enum NodeKind {
         offset: f32,
         content: f32,
     },
+    Stack {
+        page: usize,
+    },
+    Splitter {
+        ratio: f32,
+        vertical: bool,
+    },
 }
+
+/// Толщина разделителя в пикселях.
+pub const SPLIT_W: f32 = 8.0;
 
 /// Высота заголовка группы в пикселях.
 pub const GROUP_HEADER: f32 = 30.0;
@@ -936,6 +946,55 @@ impl Tree {
         matches!(self.nodes[id.0].kind, NodeKind::Scroll { .. })
     }
 
+    /// Является ли узел стопкой страниц.
+    pub fn is_stack(&self, id: NodeId) -> bool {
+        matches!(self.nodes[id.0].kind, NodeKind::Stack { .. })
+    }
+
+    /// Возвращает активную страницу стопки.
+    pub fn stack_page(&self, id: NodeId) -> usize {
+        if let NodeKind::Stack { page } = &self.nodes[id.0].kind {
+            *page
+        } else {
+            0
+        }
+    }
+
+    /// Задаёт активную страницу стопки.
+    pub fn set_stack_page(&mut self, id: NodeId, index: usize) {
+        if let NodeKind::Stack { page } = &mut self.nodes[id.0].kind {
+            *page = index;
+        }
+        self.dirty = true;
+    }
+
+    /// Является ли узел разделителем областей.
+    pub fn is_splitter(&self, id: NodeId) -> bool {
+        matches!(self.nodes[id.0].kind, NodeKind::Splitter { .. })
+    }
+
+    /// Вертикален ли разделитель (делит по горизонтали).
+    pub fn split_vertical(&self, id: NodeId) -> bool {
+        matches!(&self.nodes[id.0].kind, NodeKind::Splitter { vertical, .. } if *vertical)
+    }
+
+    /// Возвращает долю первой области разделителя.
+    pub fn split_ratio(&self, id: NodeId) -> f32 {
+        if let NodeKind::Splitter { ratio, .. } = &self.nodes[id.0].kind {
+            *ratio
+        } else {
+            0.5
+        }
+    }
+
+    /// Задаёт долю первой области разделителя.
+    pub fn set_split_ratio(&mut self, id: NodeId, value: f32) {
+        if let NodeKind::Splitter { ratio, .. } = &mut self.nodes[id.0].kind {
+            *ratio = value.clamp(0.1, 0.9);
+        }
+        self.dirty = true;
+    }
+
     /// Возвращает смещение прокрутки области.
     pub fn scroll_offset(&self, id: NodeId) -> f32 {
         if let NodeKind::Scroll { offset, .. } = &self.nodes[id.0].kind {
@@ -1218,6 +1277,46 @@ impl Tree {
             return;
         }
 
+        if let NodeKind::Stack { page } = &self.nodes[id.0].kind {
+            let page = *page;
+            let off = Rect::new(-1.0e6, -1.0e6, 0.0, 0.0);
+            for (i, &c) in children.iter().enumerate() {
+                let cr = if i == page { rect } else { off };
+                self.layout_node(c, cr);
+            }
+            return;
+        }
+
+        if let NodeKind::Splitter { ratio, vertical } = &self.nodes[id.0].kind {
+            let ratio = *ratio;
+            let vertical = *vertical;
+            let off = Rect::new(-1.0e6, -1.0e6, 0.0, 0.0);
+            let (r1, r2) = if vertical {
+                let w1 = (rect.width - SPLIT_W) * ratio;
+                let w2 = (rect.width - SPLIT_W - w1).max(0.0);
+                (
+                    Rect::new(rect.x, rect.y, w1.max(0.0), rect.height),
+                    Rect::new(rect.x + w1 + SPLIT_W, rect.y, w2, rect.height),
+                )
+            } else {
+                let h1 = (rect.height - SPLIT_W) * ratio;
+                let h2 = (rect.height - SPLIT_W - h1).max(0.0);
+                (
+                    Rect::new(rect.x, rect.y, rect.width, h1.max(0.0)),
+                    Rect::new(rect.x, rect.y + h1 + SPLIT_W, rect.width, h2),
+                )
+            };
+            for (i, &c) in children.iter().enumerate() {
+                let cr = match i {
+                    0 => r1,
+                    1 => r2,
+                    _ => off,
+                };
+                self.layout_node(c, cr);
+            }
+            return;
+        }
+
         if let NodeKind::Accordion { open, .. } = &self.nodes[id.0].kind {
             let open = *open;
             let pad = props.padding;
@@ -1428,6 +1527,8 @@ fn kind_tag(kind: &NodeKind) -> &'static str {
         NodeKind::Link { .. } => "link",
         NodeKind::Accordion { .. } => "accordion",
         NodeKind::Scroll { .. } => "scroll",
+        NodeKind::Stack { .. } => "stack",
+        NodeKind::Splitter { .. } => "splitter",
     }
 }
 

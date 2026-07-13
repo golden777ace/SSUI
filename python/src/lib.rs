@@ -300,6 +300,59 @@ impl PyWindow {
         })
     }
 
+    /// Стопка страниц как контекст; видна одна страница.
+    #[pyo3(signature = (*, pr=None, page=0, w=None, h=None))]
+    fn stk(
+        &mut self,
+        pr: Option<PyNode>,
+        page: usize,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<Ctx> {
+        let props = make_props("v", 0.0, 0.0, w, h);
+        let parent = self.parent_of(pr);
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let id = tree.add_child(parent, NodeKind::Stack { page }, props);
+        Ok(Ctx {
+            stack: self.stack.clone(),
+            node: id,
+        })
+    }
+
+    /// Переключает страницу стопки.
+    fn page(&mut self, n: PyNode, index: usize) -> PyResult<()> {
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        tree.set_stack_page(n.id, index);
+        Ok(())
+    }
+
+    /// Разделитель двух областей как контекст; тянется мышью.
+    #[pyo3(signature = (*, pr=None, ratio=0.5, vertical=true, w=None, h=None))]
+    fn spl(
+        &mut self,
+        pr: Option<PyNode>,
+        ratio: f32,
+        vertical: bool,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<Ctx> {
+        let props = make_props("v", 0.0, 0.0, w, h);
+        let parent = self.parent_of(pr);
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let id = tree.add_child(
+            parent,
+            NodeKind::Splitter {
+                ratio: ratio.clamp(0.1, 0.9),
+                vertical,
+            },
+            props,
+        );
+        Ok(Ctx {
+            stack: self.stack.clone(),
+            node: id,
+        })
+    }
+
     /// Секция аккордеона как контекст: `with win.acc("Имя"):`.
     #[pyo3(signature = (title="", *, pr=None, open=false, rad=10.0, pd=8.0, gp=8.0, w=None, h=None))]
     fn acc(

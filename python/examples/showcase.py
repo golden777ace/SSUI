@@ -57,7 +57,7 @@ def main():
                                    ["Отмена", "Ок"], on=lambda i: None))
 
         with win.tab(["Виджеты", "Ввод", "Раскладка", "Данные",
-                      "Секции", "Окно"], h=600.0) as tabs:
+                      "Секции", "Панели", "Окно"], h=600.0) as tabs:
 
             # --- Виджеты ---
             with win.bx(pr=tabs, ax="h", gp=16.0, pd=8.0) as p1:
@@ -159,47 +159,76 @@ def main():
                         h=400.0,
                     )
 
-                # --- Секции ---
-                with win.bx(pr=tabs, ax="h", pd=8.0, gp=16.0) as pacc:
-                    win.cls(pacc, "clear")
-                    with win.bx(pd=12.0, gp=8.0, w=420.0):
-                        win.lb("Аккордеон — клик по заголовку", h=26.0)
-                        with win.acc("Общие", open=True, h=180.0):
-                            win.sw("Автозапуск", h=36.0)
-                            win.ch("Показывать подсказки", chk=True, h=32.0)
-                            win.sl(0.5, h=36.0)
-                        with win.acc("Сеть", h=140.0):
-                            win.tgl("Прокси", h=40.0)
-                            win.tx("proxy.local:8080", h=44.0)
-                        with win.acc("О программе", h=110.0):
-                            win.lb("SSUI — GPU-GUI для Windows", h=26.0)
-                            win.lnk("github.com/golden777ace/SSUI")
-                    with win.bx(pd=12.0, gp=8.0):
-                        win.lb("Область прокрутки — колесо мыши", h=26.0)
-                        with win.scr(h=460.0):
-                            for i in range(1, 26):
-                                win.bt(f"Кнопка {i}", h=44.0,
-                                       clk=lambda i=i: clicks.st(i))
-                        win.lb(bind=lambda: f"Последняя: {clicks()}", h=26.0)
+            # --- Секции ---
+            with win.bx(pr=tabs, ax="h", pd=8.0, gp=16.0) as pacc:
+                win.cls(pacc, "clear")
+                with win.bx(pd=12.0, gp=8.0, w=420.0):
+                    win.lb("Аккордеон — клик по заголовку", h=26.0)
+                    with win.acc("Общие", open=True, h=180.0):
+                        win.sw("Автозапуск", h=36.0)
+                        win.ch("Показывать подсказки", chk=True, h=32.0)
+                        win.sl(0.5, h=36.0)
+                    with win.acc("Сеть", h=140.0):
+                        win.tgl("Прокси", h=40.0)
+                        win.tx("proxy.local:8080", h=44.0)
+                    with win.acc("О программе", h=110.0):
+                        win.lb("SSUI — GPU-GUI для Windows", h=26.0)
+                        win.lnk("github.com/golden777ace/SSUI")
+                with win.bx(pd=12.0, gp=8.0):
+                    win.lb("Область прокрутки — колесо мыши", h=26.0)
+                    with win.scr(h=460.0):
+                        for i in range(1, 26):
+                            win.bt(f"Кнопка {i}", h=44.0,
+                                   clk=lambda i=i: clicks.st(i))
+                    win.lb(bind=lambda: f"Последняя: {clicks()}", h=26.0)
 
-                # --- Окно ---
-                with win.bx(pr=tabs, pd=8.0, gp=16.0) as p5:
-                    win.cls(p5, "clear")
-                with win.bx(pd=16.0, gp=10.0):
-                    win.lb("Прозрачность фона окна", h=26.0)
-                    win.lb(bind=lambda: f"Тон: {int(op()*100)}%", h=24.0)
-                    win.sl(op(), ch=lambda v: op.st(v), h=36.0)
-                    win.sep()
-                    win.lb(bind=lambda: f"Размытие: {int(blurv()*100)}%", h=24.0)
-                    win.sl(blurv(), ch=lambda v: blurv.st(v), h=36.0)
-                with win.bx(pd=16.0, gp=10.0):
-                    win.lb("Анимация громкости", h=26.0)
-                    win.pr(bind=lambda: vol(), h=18.0)
-                    with win.bx(ax="h", gp=8.0, h=48.0) as arow:
-                        win.cls(arow, "clear")
-                        win.bt("0%", h=40.0, clk=lambda: fx(vol, 0.0, dur=0.4))
-                        win.bt("50%", h=40.0, clk=lambda: fx(vol, 0.5, dur=0.4))
-                        win.bt("100%", h=40.0, clk=lambda: fx(vol, 1.0, dur=0.4))
+            # --- Панели ---
+            with win.bx(pr=tabs, pd=8.0, gp=12.0) as pstk:
+                win.cls(pstk, "clear")
+                with win.bx(ax="h", gp=8.0, h=52.0) as nav:
+                    win.cls(nav, "clear")
+                    b0 = win.bt("Страница 1", h=44.0)
+                    b1 = win.bt("Страница 2", h=44.0)
+                    b2 = win.bt("Страница 3", h=44.0)
+
+                with win.stk(h=200.0) as pages:
+                    with win.bx(pd=16.0, gp=8.0):
+                        win.lb("Первая страница стопки", h=28.0)
+                        win.sl(0.3, h=36.0)
+                    with win.bx(pd=16.0, gp=8.0):
+                        win.lb("Вторая страница стопки", h=28.0)
+                        win.tx("Ввод на странице 2", h=44.0)
+                    with win.bx(pd=16.0, gp=8.0):
+                        win.lb("Третья страница стопки", h=28.0)
+                        win.sw("Опция", on=True, h=36.0)
+
+                win.lb("Splitter — тяни серую полосу", h=26.0)
+                with win.spl(ratio=0.4, h=260.0):
+                    with win.bx(pd=12.0, gp=8.0):
+                        win.lb("Левая область", h=26.0)
+                        win.lst([f"Файл {i}.txt" for i in range(1, 15)], h=180.0)
+                    with win.bx(pd=12.0, gp=8.0):
+                        win.lb("Правая область", h=26.0)
+                        win.ta("Содержимое…", h=180.0)
+
+            # --- Окно ---
+            with win.bx(pr=tabs, pd=8.0, gp=16.0) as p5:
+                win.cls(p5, "clear")
+            with win.bx(pd=16.0, gp=10.0):
+                win.lb("Прозрачность фона окна", h=26.0)
+                win.lb(bind=lambda: f"Тон: {int(op()*100)}%", h=24.0)
+                win.sl(op(), ch=lambda v: op.st(v), h=36.0)
+                win.sep()
+                win.lb(bind=lambda: f"Размытие: {int(blurv()*100)}%", h=24.0)
+                win.sl(blurv(), ch=lambda v: blurv.st(v), h=36.0)
+            with win.bx(pd=16.0, gp=10.0):
+                win.lb("Анимация громкости", h=26.0)
+                win.pr(bind=lambda: vol(), h=18.0)
+                with win.bx(ax="h", gp=8.0, h=48.0) as arow:
+                    win.cls(arow, "clear")
+                    win.bt("0%", h=40.0, clk=lambda: fx(vol, 0.0, dur=0.4))
+                    win.bt("50%", h=40.0, clk=lambda: fx(vol, 0.5, dur=0.4))
+                    win.bt("100%", h=40.0, clk=lambda: fx(vol, 1.0, dur=0.4))
 
     fab = win.bt("+", pr=win.rt(), w=54.0, h=54.0,
                  clk=lambda: fx(vol, 1.0, dur=0.5))
