@@ -234,7 +234,9 @@ Spinner, Gauge, Tooltip, Toast.
 - ✅ Progress Bar — прогресс (`pr`).
 - ✅ Spinner — индикатор загрузки (`spn`).
 - ✅ Gauge — круговой индикатор (`gg`).
-- ⏳ Chart, Meter, Status Bar.
+- ✅ Chart — столбчатая диаграмма (`cht`).
+- ✅ Meter — сегментная шкала (`mt`).
+- ✅ Status Bar — строка состояния (`stb`).
 
 ### Кнопки и действия
 - ✅ Button — действие (`bt`).
@@ -252,7 +254,8 @@ Spinner, Gauge, Tooltip, Toast.
 - ✅ Slider — ползунок (`sl`).
 - ✅ SpinBox — числовое поле с −/+ (`spin`).
 - ✅ ComboBox — выбор из списка (`dd`).
-- ⏳ Range Slider, Dial/Knob.
+- ✅ Range Slider — диапазон двумя ползунками (`rsl`).
+- ⏳ Dial/Knob.
 
 ### Списки и данные
 - ✅ ListBox — список с выбором (`lst`).

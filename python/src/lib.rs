@@ -21,6 +21,7 @@ type Stack = Rc<RefCell<Vec<NodeId>>>;
 
 thread_local! {
     static WIN_SETTINGS: RefCell<Vec<(u8, Py<PyAny>)>> = RefCell::new(Vec::new());
+    static CHART_BINDINGS: RefCell<Vec<(NodeId, Py<PyAny>)>> = RefCell::new(Vec::new());
 }
 
 #[pyclass(unsendable, name = "Ctx")]
@@ -635,6 +636,145 @@ impl PyWindow {
                 refresh_all(py, t, &texts, &values);
             });
         });
+        Ok(PyNode { id })
+    }
+
+    /// Диапазонный ползунок 0..1; `ch(lo, hi)` при перетаскивании.
+    #[pyo3(signature = (lo=0.25, hi=0.75, *, pr=None, ch=None, pd=0.0, gp=0.0, w=None, h=None))]
+    fn rsl(
+        &mut self,
+        lo: f32,
+        hi: f32,
+        pr: Option<PyNode>,
+        ch: Option<PyObject>,
+        pd: f32,
+        gp: f32,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<PyNode> {
+        let h = h.or(Some(36.0));
+        let props = make_props("v", pd, gp, w, h);
+        let parent = self.parent_of(pr);
+        let texts = self.bindings.clone();
+        let values = self.value_bindings.clone();
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let id = tree.add_child(
+            parent,
+            NodeKind::Range {
+                lo: lo.min(hi).clamp(0.0, 1.0),
+                hi: lo.max(hi).clamp(0.0, 1.0),
+            },
+            props,
+        );
+        tree.set_on_change(id, move |t, _v| {
+            let (a, b) = t.range_values(id);
+            Python::with_gil(|py| {
+                if let Some(cb) = &ch {
+                    if let Err(e) = cb.bind(py).call1((a, b)) {
+                        e.print(py);
+                    }
+                }
+                refresh_all(py, t, &texts, &values);
+            });
+        });
+        Ok(PyNode { id })
+    }
+
+    /// Строка состояния; `bind` — колбэк текста.
+    #[pyo3(signature = (txt="", *, pr=None, bind=None, pd=0.0, gp=0.0, w=None, h=None))]
+    fn stb(
+        &mut self,
+        py: Python,
+        txt: &str,
+        pr: Option<PyNode>,
+        bind: Option<PyObject>,
+        pd: f32,
+        gp: f32,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<PyNode> {
+        let h = h.or(Some(32.0));
+        let props = make_props("h", pd, gp, w, h);
+        let initial = match &bind {
+            Some(f) => f.bind(py).call0()?.extract::<String>()?,
+            None => txt.to_string(),
+        };
+        let parent = self.parent_of(pr);
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let id = tree.add_child(
+            parent,
+            NodeKind::Status {
+                text: utf16(&initial),
+            },
+            props,
+        );
+        if let Some(f) = bind {
+            self.bindings.borrow_mut().push((id, f));
+        }
+        Ok(PyNode { id })
+    }
+
+    /// Сегментная шкала 0..1; `bind` — колбэк значения.
+    #[pyo3(signature = (vl=0.0, *, pr=None, bind=None, seg=10, pd=0.0, gp=0.0, w=None, h=None))]
+    fn mt(
+        &mut self,
+        py: Python,
+        vl: f32,
+        pr: Option<PyNode>,
+        bind: Option<PyObject>,
+        seg: usize,
+        pd: f32,
+        gp: f32,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<PyNode> {
+        let h = h.or(Some(28.0));
+        let props = make_props("v", pd, gp, w, h);
+        let initial = match &bind {
+            Some(f) => f.bind(py).call0()?.extract::<f32>()?,
+            None => vl,
+        };
+        let parent = self.parent_of(pr);
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let id = tree.add_child(
+            parent,
+            NodeKind::Meter {
+                value: initial.clamp(0.0, 1.0),
+                segments: seg.max(1),
+            },
+            props,
+        );
+        if let Some(f) = bind {
+            self.value_bindings.borrow_mut().push((id, f));
+        }
+        Ok(PyNode { id })
+    }
+
+    /// Столбчатая диаграмма; `bind` — колбэк списка значений.
+    #[pyo3(signature = (data, *, pr=None, bind=None, pd=0.0, gp=0.0, w=None, h=None))]
+    fn cht(
+        &mut self,
+        py: Python,
+        data: Vec<f32>,
+        pr: Option<PyNode>,
+        bind: Option<PyObject>,
+        pd: f32,
+        gp: f32,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<PyNode> {
+        let h = h.or(Some(200.0));
+        let props = make_props("v", pd, gp, w, h);
+        let initial = match &bind {
+            Some(f) => f.bind(py).call0()?.extract::<Vec<f32>>()?,
+            None => data,
+        };
+        let parent = self.parent_of(pr);
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let id = tree.add_child(parent, NodeKind::Chart { values: initial }, props);
+        if let Some(f) = bind {
+            CHART_BINDINGS.with(|c| c.borrow_mut().push((id, f)));
+        }
         Ok(PyNode { id })
     }
 
@@ -1441,6 +1581,7 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
                 t.set_slider_value(*id, v);
                 t.set_progress_value(*id, v);
                 t.set_gauge_value(*id, v);
+                t.set_meter_value(*id, v);
                 t.set_image_fit(*id, v as u8);
                 if t.is_stack(*id) {
                     t.set_stack_page(*id, v.max(0.0) as usize);
@@ -1449,6 +1590,14 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
             Err(e) => e.print(py),
         }
     }
+    CHART_BINDINGS.with(|c| {
+        for (id, f) in c.borrow().iter() {
+            match f.bind(py).call0().and_then(|v| v.extract::<Vec<f32>>()) {
+                Ok(v) => t.set_chart_values(*id, v),
+                Err(e) => e.print(py),
+            }
+        }
+    });
     WIN_SETTINGS.with(|s| {
         for (tag, f) in s.borrow().iter() {
             let v = match f.bind(py).call0().and_then(|x| x.extract::<f32>()) {

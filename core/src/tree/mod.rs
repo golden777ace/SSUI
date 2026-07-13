@@ -297,6 +297,20 @@ pub enum NodeKind {
         value: f32,
         label: Vec<u16>,
     },
+    Meter {
+        value: f32,
+        segments: usize,
+    },
+    Chart {
+        values: Vec<f32>,
+    },
+    Range {
+        lo: f32,
+        hi: f32,
+    },
+    Status {
+        text: Vec<u16>,
+    },
 }
 
 /// Толщина разделителя в пикселях.
@@ -525,6 +539,20 @@ impl Tree {
         }
     }
 
+    /// Задаёт значение сегментной шкалы (0..1).
+    pub fn set_meter_value(&mut self, id: NodeId, v: f32) {
+        if let NodeKind::Meter { value, .. } = &mut self.nodes[id.0].kind {
+            *value = v.clamp(0.0, 1.0);
+        }
+    }
+
+    /// Задаёт данные столбчатой диаграммы.
+    pub fn set_chart_values(&mut self, id: NodeId, data: Vec<f32>) {
+        if let NodeKind::Chart { values } = &mut self.nodes[id.0].kind {
+            *values = data;
+        }
+    }
+
     pub fn tick(&mut self, dt: f32) -> bool {
         {
             let mut p = self.pending.borrow_mut();
@@ -608,8 +636,10 @@ impl Tree {
 
     /// Меняет текст у узла-метки.
     pub fn set_label_text(&mut self, id: NodeId, text: Vec<u16>) {
-        if let NodeKind::Label { text: t } = &mut self.nodes[id.0].kind {
-            *t = text;
+        match &mut self.nodes[id.0].kind {
+            NodeKind::Label { text: t } => *t = text,
+            NodeKind::Status { text: t } => *t = text,
+            _ => {}
         }
     }
 
@@ -1142,6 +1172,30 @@ impl Tree {
         matches!(self.nodes[id.0].kind, NodeKind::Slider { .. })
     }
 
+    /// Является ли узел диапазонным ползунком.
+    pub fn is_range(&self, id: NodeId) -> bool {
+        matches!(self.nodes[id.0].kind, NodeKind::Range { .. })
+    }
+
+    /// Возвращает границы диапазона `(lo, hi)`.
+    pub fn range_values(&self, id: NodeId) -> (f32, f32) {
+        if let NodeKind::Range { lo, hi } = &self.nodes[id.0].kind {
+            (*lo, *hi)
+        } else {
+            (0.0, 0.0)
+        }
+    }
+
+    /// Задаёт границы диапазона (0..1).
+    pub fn set_range(&mut self, id: NodeId, a: f32, b: f32) {
+        if let NodeKind::Range { lo, hi } = &mut self.nodes[id.0].kind {
+            let a = a.clamp(0.0, 1.0);
+            let b = b.clamp(0.0, 1.0);
+            *lo = a.min(b);
+            *hi = a.max(b);
+        }
+    }
+
     /// Может ли узел получать фокус клавиатуры.
     pub fn is_focusable(&self, id: NodeId) -> bool {
         self.is_button(id)
@@ -1585,6 +1639,10 @@ fn kind_tag(kind: &NodeKind) -> &'static str {
         NodeKind::Splitter { .. } => "splitter",
         NodeKind::Spinner { .. } => "spinner",
         NodeKind::Gauge { .. } => "gauge",
+        NodeKind::Meter { .. } => "meter",
+        NodeKind::Chart { .. } => "chart",
+        NodeKind::Range { .. } => "range",
+        NodeKind::Status { .. } => "status",
     }
 }
 

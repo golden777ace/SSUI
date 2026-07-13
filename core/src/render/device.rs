@@ -63,6 +63,7 @@ pub struct Renderer {
     text_selecting: bool,
     scroll_drag: Option<NodeId>,
     split_drag: Option<NodeId>,
+    range_drag: Option<(NodeId, bool)>,
     hover_since: Option<(NodeId, Instant)>,
     toast: Option<(Vec<u16>, Instant, f32)>,
     theme: Theme,
@@ -238,6 +239,7 @@ impl Renderer {
                 text_selecting: false,
                 scroll_drag: None,
                 split_drag: None,
+                range_drag: None,
                 hover_since: None,
                 toast: None,
                 theme,
@@ -751,6 +753,10 @@ impl Renderer {
             self.set_split_from(id, x, y);
             dirty = true;
         }
+        if let Some((id, upper)) = self.range_drag {
+            self.set_range_from_x(id, upper, x);
+            dirty = true;
+        }
         if hit.map_or(false, |h| self.tree.is_list(h)) {
             dirty = true;
         }
@@ -900,6 +906,19 @@ impl Renderer {
                 self.set_slider_from_x(id, x);
                 return true;
             }
+            if self.tree.is_range(id) {
+                let r = self.tree.get(id).rect;
+                let (lo, hi) = self.tree.range_values(id);
+                let t = if r.width > 0.0 {
+                    ((x - r.x) / r.width).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                let upper = (t - hi).abs() < (t - lo).abs();
+                self.range_drag = Some((id, upper));
+                self.set_range_from_x(id, upper, x);
+                return true;
+            }
         }
         true
     }
@@ -915,12 +934,19 @@ impl Renderer {
         let was_dragging = self.dragging.take().is_some();
         let was_scroll = self.scroll_drag.take().is_some();
         let was_split = self.split_drag.take().is_some();
+        let was_range = self.range_drag.take().is_some();
         let was_selecting = self.text_selecting;
         self.text_selecting = false;
         if let Some(id) = click_id {
             self.dispatch(id);
         }
-        was_pressed || was_dragging || was_scroll || was_split || was_selecting || click_id.is_some()
+        was_pressed
+            || was_dragging
+            || was_scroll
+            || was_split
+            || was_range
+            || was_selecting
+            || click_id.is_some()
     }
 
     /// Обрабатывает символьный ввод. Возвращает true, если нужна перерисовка.
@@ -1375,6 +1401,18 @@ impl Renderer {
         self.tree.fire_change(id, value);
     }
 
+    fn set_range_from_x(&mut self, id: NodeId, upper: bool, x: f32) {
+        let rect = self.tree.get(id).rect;
+        if rect.width <= 0.0 {
+            return;
+        }
+        let t = ((x - rect.x) / rect.width).clamp(0.0, 1.0);
+        let (lo, hi) = self.tree.range_values(id);
+        let (a, b) = if upper { (lo.min(t), t) } else { (t, hi.max(t)) };
+        self.tree.set_range(id, a, b);
+        self.tree.fire_change(id, t);
+    }
+
     fn update_scroll(&mut self) {
         if let Some(id) = self.focused {
             if self.tree.is_textbox(id) && !self.tree.is_multiline(id) {
@@ -1760,6 +1798,73 @@ impl Renderer {
                             Rect::new(r.x, r.y + (r.height - th) / 2.0, r.width, th)
                         };
                         canvas.fill_rounded_rect(line, th / 2.0, col);
+                    }
+                    NodeKind::Meter { value, segments } => {
+                        let r = node.rect;
+                        let n = (*segments).max(1);
+                        let bh = r.height.min(24.0);
+                        let by = r.y + (r.height - bh) / 2.0;
+                        let gap = 3.0;
+                        let sw = ((r.width - gap * (n - 1) as f32) / n as f32).max(1.0);
+                        let filled = (value.clamp(0.0, 1.0) * n as f32).round() as usize;
+                        let col = style.fill.unwrap_or(theme.accent);
+                        for i in 0..n {
+                            let x = r.x + i as f32 * (sw + gap);
+                            let c = if i < filled { col } else { theme.track };
+                            canvas.fill_rounded_rect(Rect::new(x, by, sw, bh), 3.0, c);
+                        }
+                    }
+                    NodeKind::Chart { values } => {
+                        let r = node.rect;
+                        let n = values.len();
+                        if n == 0 {
+                            return;
+                        }
+                        let base = Rect::new(r.x, r.y + r.height - 2.0, r.width, 2.0);
+                        canvas.fill_rounded_rect(base, 1.0, theme.track);
+                        let gap = 8.0;
+                        let bw = ((r.width - gap * (n - 1) as f32) / n as f32).max(1.0);
+                        let max = values.iter().cloned().fold(0.0f32, f32::max).max(0.0001);
+                        let area = (r.height - 6.0).max(0.0);
+                        let col = style.fill.unwrap_or(theme.accent);
+                        for (i, v) in values.iter().enumerate() {
+                            let hh = (v.max(0.0) / max * area).max(2.0);
+                            let x = r.x + i as f32 * (bw + gap);
+                            let y = r.y + r.height - 2.0 - hh;
+                            canvas.fill_rounded_rect(Rect::new(x, y, bw, hh), 4.0, col);
+                        }
+                    }
+                    NodeKind::Range { lo, hi } => {
+                        let r = node.rect;
+                        let a = lo.clamp(0.0, 1.0);
+                        let b = hi.clamp(a, 1.0);
+                        let track_h = 6.0;
+                        let cy = r.y + r.height / 2.0;
+                        let track = Rect::new(r.x, cy - track_h / 2.0, r.width, track_h);
+                        canvas.fill_rounded_rect(track, track_h / 2.0, theme.track);
+                        let fill = style.fill.unwrap_or(theme.accent);
+                        let sel = Rect::new(
+                            r.x + r.width * a,
+                            cy - track_h / 2.0,
+                            (r.width * (b - a)).max(0.0),
+                            track_h,
+                        );
+                        canvas.fill_rounded_rect(sel, track_h / 2.0, fill);
+                        let kd = 16.0;
+                        let cap = (r.x + r.width - kd).max(r.x);
+                        for t in [a, b] {
+                            let kx = (r.x + r.width * t - kd / 2.0).clamp(r.x, cap);
+                            let knob = Rect::new(kx, cy - kd / 2.0, kd, kd);
+                            canvas.fill_rounded_rect(knob, kd / 2.0, theme.content);
+                        }
+                    }
+                    NodeKind::Status { text } => {
+                        let r = node.rect;
+                        let fill = style.fill.unwrap_or(theme.surface);
+                        canvas.fill_rounded_rect(r, style.radius.unwrap_or(6.0), fill);
+                        let tr = Rect::new(r.x + 12.0, r.y, (r.width - 24.0).max(0.0), r.height);
+                        let col = style.text.unwrap_or(theme.content);
+                        canvas.draw_text(text, format_left, tr, col);
                     }
                     NodeKind::Spinner { phase } => {
                         let r = node.rect;
@@ -2425,6 +2530,10 @@ fn kind_name(kind: &NodeKind) -> &'static str {
         NodeKind::Splitter { .. } => "Splitter",
         NodeKind::Spinner { .. } => "Spinner",
         NodeKind::Gauge { .. } => "Gauge",
+        NodeKind::Meter { .. } => "Meter",
+        NodeKind::Chart { .. } => "Chart",
+        NodeKind::Range { .. } => "Range",
+        NodeKind::Status { .. } => "Status",
     }
 }
 

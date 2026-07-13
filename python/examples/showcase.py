@@ -13,6 +13,8 @@ tabs   { background: #1c2440cc; color: #eef3ff; }
 label  { color: #eef3ff; }
 """
 
+DATA = [0.4, 0.9, 0.6, 1.0, 0.7, 0.3, 0.85]
+
 
 def main():
     win = ssui.W("SSUI Showcase", 1060, 760, thm="drk",
@@ -33,6 +35,10 @@ def main():
     page = ssui.sgnl(0)
     op = ssui.sgnl(0.15)
     blurv = ssui.sgnl(0.5)
+    lvl = ssui.sgnl(0.6)
+    load = ssui.sgnl(0.45)
+    rlo = ssui.sgnl(0.25)
+    rhi = ssui.sgnl(0.75)
 
     win.tint(op)
     win.blur(blurv)
@@ -118,6 +124,13 @@ def main():
                     win.lb("Многострочное поле (Enter — перенос)", h=26.0)
                     win.ta("", sig=note, h=220.0)
                     win.lb(bind=lambda: f"Символов: {len(note())}", h=26.0)
+                    win.sep()
+                    win.lb("Диапазон (два ползунка)", h=26.0)
+                    win.rsl(rlo(), rhi(),
+                            ch=lambda a, b: (rlo.st(a), rhi.st(b)), h=36.0)
+                    win.lb(bind=lambda: (
+                        f"Диапазон: {int(rlo()*100)}–{int(rhi()*100)}%"
+                    ), h=26.0)
 
             # --- Раскладка ---
             with win.bx(pr=tabs, pd=8.0, gp=12.0) as p3:
@@ -165,6 +178,22 @@ def main():
                         ch=lambda i: row.st(i),
                         h=400.0,
                     )
+                    with win.bx(pd=12.0, gp=8.0, w=320.0):
+                        win.lb("Диаграмма", h=26.0)
+                        win.cht(DATA, bind=lambda: [v * lvl() for v in DATA],
+                                h=200.0)
+                        win.lb(bind=lambda: f"Масштаб: {int(lvl() * 100)}%", h=24.0)
+                        win.sl(lvl(), ch=lambda v: lvl.st(v), h=36.0)
+                        with win.bx(ax="h", gp=8.0, h=48.0) as crow:
+                            win.cls(crow, "clear")
+                            win.bt("30%", h=40.0, clk=lambda: fx(lvl, 0.3, dur=0.4))
+                            win.bt("100%", h=40.0, clk=lambda: fx(lvl, 1.0, dur=0.4))
+                        win.sep()
+                        win.lb("Шкала-метр", h=26.0)
+                        win.mt(load(), bind=lambda: load(), seg=10, h=28.0)
+                        win.mt(load(), bind=lambda: load(), seg=20, h=22.0)
+                        win.lb(bind=lambda: f"Нагрузка: {int(load() * 100)}%", h=24.0)
+                        win.sl(load(), ch=lambda v: load.st(v), h=36.0)
 
             # --- Секции ---
             with win.bx(pr=tabs, ax="h", pd=8.0, gp=16.0) as pacc:
@@ -237,6 +266,12 @@ def main():
                         win.bt("0%", h=40.0, clk=lambda: fx(vol, 0.0, dur=0.4))
                         win.bt("50%", h=40.0, clk=lambda: fx(vol, 0.5, dur=0.4))
                         win.bt("100%", h=40.0, clk=lambda: fx(vol, 1.0, dur=0.4))
+
+    bar = win.stb(pr=win.rt(), h=32.0, bind=lambda: (
+        f"Готово · громкость {int(vol() * 100)}% · "
+        f"диапазон {int(rlo() * 100)}–{int(rhi() * 100)}%"
+    ))
+    win.pin(bar, l=0.0, r=0.0, b=0.0)
 
     fab = win.bt("+", pr=win.rt(), w=54.0, h=54.0,
                  clk=lambda: fx(vol, 1.0, dur=0.5))
