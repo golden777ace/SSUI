@@ -63,6 +63,8 @@ pub struct Renderer {
     text_selecting: bool,
     scroll_drag: Option<NodeId>,
     split_drag: Option<NodeId>,
+    hover_since: Option<(NodeId, Instant)>,
+    toast: Option<(Vec<u16>, Instant, f32)>,
     theme: Theme,
     theme_index: usize,
     last_tick: Instant,
@@ -236,6 +238,8 @@ impl Renderer {
                 text_selecting: false,
                 scroll_drag: None,
                 split_drag: None,
+                hover_since: None,
+                toast: None,
                 theme,
                 theme_index,
                 last_tick: Instant::now(),
@@ -311,7 +315,21 @@ impl Renderer {
         let now = Instant::now();
         let dt = (now - self.last_tick).as_secs_f32();
         self.last_tick = now;
-        self.tree.tick(dt)
+        let anim = self.tree.tick(dt);
+        let spin = self.tree.has_spinner();
+        if spin {
+            self.tree.spin(dt);
+        }
+        anim || spin || self.toast.is_some() || self.tip_pending()
+    }
+
+    fn tip_pending(&self) -> bool {
+        match self.hover_since {
+            Some((id, since)) => {
+                self.tree.tip(id).is_some() && since.elapsed().as_secs_f32() < 1.2
+            }
+            None => false,
+        }
     }
 
     /// Задаёт режим и тон фонового размытия.
@@ -1410,6 +1428,17 @@ impl Renderer {
         }
     }
 
+    fn poll_toast(&mut self) {
+        if let Some((text, secs)) = self.tree.take_toast() {
+            self.toast = Some((text, Instant::now(), secs));
+        }
+        if let Some((_, at, secs)) = &self.toast {
+            if at.elapsed().as_secs_f32() > *secs {
+                self.toast = None;
+            }
+        }
+    }
+
     fn poll_dialog(&mut self) {
         if self.dialog.is_some() {
             return;
@@ -1428,6 +1457,7 @@ impl Renderer {
 
     pub fn render(&mut self) {
         self.poll_dialog();
+        self.poll_toast();
         self.tree.layout(Rect::new(0.0, 0.0, self.width, self.height));
         self.update_scroll();
         self.preload_images();
@@ -1730,6 +1760,55 @@ impl Renderer {
                             Rect::new(r.x, r.y + (r.height - th) / 2.0, r.width, th)
                         };
                         canvas.fill_rounded_rect(line, th / 2.0, col);
+                    }
+                    NodeKind::Spinner { phase } => {
+                        let r = node.rect;
+                        let d = r.width.min(r.height).min(48.0);
+                        let cx = r.x + r.width / 2.0;
+                        let cy = r.y + r.height / 2.0;
+                        let radius = d / 2.0 - 4.0;
+                        let dot = (d / 10.0).max(2.5);
+                        let col = style.fill.unwrap_or(theme.accent);
+                        for i in 0..8 {
+                            let t = i as f32 / 8.0;
+                            let a = (t + *phase) * std::f32::consts::TAU;
+                            let alpha = 0.15 + 0.85 * t;
+                            let px = cx + a.cos() * radius - dot / 2.0;
+                            let py = cy + a.sin() * radius - dot / 2.0;
+                            canvas.fill_rounded_rect(
+                                Rect::new(px, py, dot, dot),
+                                dot / 2.0,
+                                Color::rgba(col.r, col.g, col.b, alpha),
+                            );
+                        }
+                    }
+                    NodeKind::Gauge { value, label } => {
+                        let r = node.rect;
+                        let d = r.width.min(r.height);
+                        let cx = r.x + r.width / 2.0;
+                        let cy = r.y + r.height / 2.0;
+                        let radius = d / 2.0 - 8.0;
+                        let th = (d / 10.0).max(4.0);
+                        let steps = 48;
+                        let start = 0.75 * std::f32::consts::TAU;
+                        let sweep = 0.75 * std::f32::consts::TAU;
+                        let filled = (steps as f32 * value.clamp(0.0, 1.0)) as usize;
+                        let track_col = theme.track;
+                        let fill_col = style.fill.unwrap_or(theme.accent);
+                        for i in 0..steps {
+                            let t = i as f32 / (steps - 1) as f32;
+                            let a = start + sweep * t;
+                            let px = cx + a.cos() * radius - th / 2.0;
+                            let py = cy + a.sin() * radius - th / 2.0;
+                            let col = if i < filled { fill_col } else { track_col };
+                            canvas.fill_rounded_rect(
+                                Rect::new(px, py, th, th),
+                                th / 2.0,
+                                col,
+                            );
+                        }
+                        let tc = style.text.unwrap_or(theme.content);
+                        canvas.draw_text(label, format, r, tc);
                     }
                     NodeKind::Accordion {
                         title,
@@ -2178,6 +2257,43 @@ impl Renderer {
                     canvas.draw_text(&text, format_left, tr, INSPECT_LABEL_FG);
                 }
             }
+        if self.dialog.is_none() {
+                if let Some((id, since)) = self.hover_since {
+                    if since.elapsed().as_secs_f32() > 0.6 {
+                        if let Some(tip) = self.tree.tip(id) {
+                            let tw = text_width(&self.dwrite, format_left, tip);
+                            let bw = tw + 24.0;
+                            let bh = 30.0;
+                            let bx = (self.mouse.0 + 14.0).min(self.width - bw - 6.0);
+                            let by = (self.mouse.1 + 22.0).min(self.height - bh - 6.0);
+                            let r = Rect::new(bx.max(4.0), by.max(4.0), bw, bh);
+                            canvas.fill_rounded_rect(r, 6.0, theme.content);
+                            canvas.draw_text(tip, format, r, theme.surface);
+                        }
+                    }
+                }
+            }
+
+            if let Some((text, at, secs)) = &self.toast {
+                let e = at.elapsed().as_secs_f32();
+                if e <= *secs {
+                    let fade = ((*secs - e) / 0.35).clamp(0.0, 1.0);
+                    let tw = text_width(&self.dwrite, format_left, text);
+                    let bw = (tw + 48.0).min(self.width - 40.0);
+                    let bh = 48.0;
+                    let r = Rect::new(
+                        (self.width - bw) / 2.0,
+                        self.height - bh - 28.0,
+                        bw,
+                        bh,
+                    );
+                    let a = theme.accent;
+                    let fg = theme.on_accent;
+                    canvas.fill_rounded_rect(r, 12.0, Color::rgba(a.r, a.g, a.b, fade));
+                    canvas.draw_text(text, format, r, Color::rgba(fg.r, fg.g, fg.b, fade));
+                }
+            }
+
         if let Some((panel, btns)) = self.dialog_rects() {
                 let backdrop = Rect::new(0.0, 0.0, self.width, self.height);
                 canvas.fill_rounded_rect(backdrop, 0.0, DIALOG_SCRIM);
@@ -2307,6 +2423,8 @@ fn kind_name(kind: &NodeKind) -> &'static str {
         NodeKind::Scroll { .. } => "Scroll",
         NodeKind::Stack { .. } => "Stack",
         NodeKind::Splitter { .. } => "Splitter",
+        NodeKind::Spinner { .. } => "Spinner",
+        NodeKind::Gauge { .. } => "Gauge",
     }
 }
 

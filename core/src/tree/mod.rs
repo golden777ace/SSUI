@@ -290,6 +290,13 @@ pub enum NodeKind {
         ratio: f32,
         vertical: bool,
     },
+    Spinner {
+        phase: f32,
+    },
+    Gauge {
+        value: f32,
+        label: Vec<u16>,
+    },
 }
 
 /// Толщина разделителя в пикселях.
@@ -371,6 +378,7 @@ pub struct Node {
     pub style_hover: Style,
     pub class_name: Option<String>,
     pub icon: Option<String>,
+    pub tip: Option<Vec<u16>>,
     pub multiline: bool,
     on_click: Option<Box<dyn FnMut(&mut Tree)>>,
     on_change: Option<Box<dyn FnMut(&mut Tree, f32)>>,
@@ -392,6 +400,7 @@ pub struct Tree {
     drag_smooth: bool,
     dirty: bool,
     last_root: Option<Rect>,
+    toast: Option<(Vec<u16>, f32)>,
 }
 
 impl Tree {
@@ -408,6 +417,7 @@ impl Tree {
             style_hover: Style::default(),
             class_name: None,
             icon: None,
+            tip: None,
             multiline: false,
             on_click: None,
             on_change: None,
@@ -428,6 +438,7 @@ impl Tree {
             drag_smooth: true,
             dirty: true,
             last_root: None,
+            toast: None,
         }
     }
 
@@ -491,7 +502,29 @@ impl Tree {
         !self.anims.is_empty() || !self.pending.borrow().is_empty()
     }
 
-    /// Продвигает анимации на `dt` секунд; true, если были активные.
+    /// Есть ли в дереве вращающийся спиннер.
+    pub fn has_spinner(&self) -> bool {
+        self.nodes
+            .iter()
+            .any(|n| matches!(n.kind, NodeKind::Spinner { .. }))
+    }
+
+    /// Продвигает фазу всех спиннеров.
+    pub fn spin(&mut self, dt: f32) {
+        for n in self.nodes.iter_mut() {
+            if let NodeKind::Spinner { phase } = &mut n.kind {
+                *phase = (*phase + dt * 1.6) % 1.0;
+            }
+        }
+    }
+
+    /// Задаёт значение кругового индикатора (0..1).
+    pub fn set_gauge_value(&mut self, id: NodeId, v: f32) {
+        if let NodeKind::Gauge { value, .. } = &mut self.nodes[id.0].kind {
+            *value = v.clamp(0.0, 1.0);
+        }
+    }
+
     pub fn tick(&mut self, dt: f32) -> bool {
         {
             let mut p = self.pending.borrow_mut();
@@ -667,6 +700,7 @@ impl Tree {
             style_hover: Style::default(),
             class_name: None,
             icon: None,
+            tip: None,
             multiline: false,
             on_click: None,
             on_change: None,
@@ -686,6 +720,26 @@ impl Tree {
     /// Задаёт иконку узла из файла.
     pub fn set_icon(&mut self, id: NodeId, path: &str) {
         self.nodes[id.0].icon = Some(path.to_string());
+    }
+
+    /// Задаёт всплывающую подсказку узла.
+    pub fn set_tip(&mut self, id: NodeId, text: Vec<u16>) {
+        self.nodes[id.0].tip = Some(text);
+    }
+
+    /// Возвращает подсказку узла.
+    pub fn tip(&self, id: NodeId) -> Option<&[u16]> {
+        self.nodes[id.0].tip.as_deref()
+    }
+
+    /// Ставит всплывающее уведомление на `secs` секунд.
+    pub fn push_toast(&mut self, text: Vec<u16>, secs: f32) {
+        self.toast = Some((text, secs));
+    }
+
+    /// Забирает уведомление из очереди.
+    pub fn take_toast(&mut self) -> Option<(Vec<u16>, f32)> {
+        self.toast.take()
     }
 
     /// Задаёт flex-вес узла вдоль главной оси.
@@ -1529,6 +1583,8 @@ fn kind_tag(kind: &NodeKind) -> &'static str {
         NodeKind::Scroll { .. } => "scroll",
         NodeKind::Stack { .. } => "stack",
         NodeKind::Splitter { .. } => "splitter",
+        NodeKind::Spinner { .. } => "spinner",
+        NodeKind::Gauge { .. } => "gauge",
     }
 }
 

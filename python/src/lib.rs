@@ -552,13 +552,15 @@ impl PyWindow {
     }
 
     /// Добавляет кнопку; `clk` вызывается по нажатию.
-    #[pyo3(signature = (lb="", *, pr=None, rad=10.0, icon=None, pd=0.0, gp=0.0, w=None, h=None, clk=None, elev=0.0))]
+    #[pyo3(signature = (lb="", *, pr=None, rad=10.0, icon=None, tip=None, toast=None, pd=0.0, gp=0.0, w=None, h=None, clk=None, elev=0.0))]
     fn bt(
         &mut self,
         lb: &str,
         pr: Option<PyNode>,
         rad: f32,
         icon: Option<String>,
+        tip: Option<String>,
+        toast: Option<String>,
         pd: f32,
         gp: f32,
         w: Option<f32>,
@@ -585,7 +587,14 @@ impl PyWindow {
         if let Some(ic) = &icon {
             tree.set_icon(id, ic);
         }
+        if let Some(tp) = &tip {
+            tree.set_tip(id, utf16(tp));
+        }
+        let toast_msg = toast.map(|s| utf16(&s));
         tree.set_on_click(id, move |t| {
+            if let Some(m) = &toast_msg {
+                t.push_toast(m.clone(), 2.5);
+            }
             Python::with_gil(|py| {
                 if let Some(cb) = &clk {
                     if let Err(e) = cb.bind(py).call0() {
@@ -629,7 +638,61 @@ impl PyWindow {
         Ok(PyNode { id })
     }
 
-    /// Добавляет индикатор; `bind` — колбэк, возвращающий 0..1.
+    /// Добавляет вращающийся индикатор загрузки.
+    #[pyo3(signature = (*, pr=None, pd=0.0, gp=0.0, w=None, h=None))]
+    fn spn(
+        &mut self,
+        pr: Option<PyNode>,
+        pd: f32,
+        gp: f32,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<PyNode> {
+        let h = h.or(Some(48.0));
+        let props = make_props("v", pd, gp, w, h);
+        let parent = self.parent_of(pr);
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let id = tree.add_child(parent, NodeKind::Spinner { phase: 0.0 }, props);
+        Ok(PyNode { id })
+    }
+
+    /// Круговой индикатор; `bind` — колбэк значения 0..1.
+    #[pyo3(signature = (value=0.0, *, pr=None, lb="", bind=None, pd=0.0, gp=0.0, w=None, h=None))]
+    fn gg(
+        &mut self,
+        py: Python,
+        value: f32,
+        pr: Option<PyNode>,
+        lb: &str,
+        bind: Option<PyObject>,
+        pd: f32,
+        gp: f32,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<PyNode> {
+        let h = h.or(Some(140.0));
+        let props = make_props("v", pd, gp, w, h);
+        let initial = match &bind {
+            Some(f) => f.bind(py).call0()?.extract::<f32>()?,
+            None => value,
+        };
+        let parent = self.parent_of(pr);
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let id = tree.add_child(
+            parent,
+            NodeKind::Gauge {
+                value: initial.clamp(0.0, 1.0),
+                label: utf16(lb),
+            },
+            props,
+        );
+        if let Some(f) = bind {
+            self.value_bindings.borrow_mut().push((id, f));
+        }
+        Ok(PyNode { id })
+    }
+
+    /// Добавляет индикатор прогресса; `bind` — колбэк значения 0..1.
     #[pyo3(signature = (vl=0.0, *, pr=None, bind=None, pd=0.0, gp=0.0, w=None, h=None))]
     fn pr(
         &mut self,
@@ -1087,7 +1150,14 @@ impl PyWindow {
         })
     }
 
-    /// Задаёт CSS-класс узла.
+    /// Задаёт всплывающую подсказку узла.
+    fn tip(&mut self, n: PyNode, text: &str) -> PyResult<()> {
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        tree.set_tip(n.id, utf16(text));
+        Ok(())
+    }
+
+    /// Присваивает узлу CSS-класс.
     fn cls(&mut self, n: PyNode, name: &str) -> PyResult<()> {
         let tree = self.tree.as_mut().ok_or_else(consumed)?;
         tree.set_class(n.id, Some(name.to_string()));
@@ -1370,6 +1440,7 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
             Ok(v) => {
                 t.set_slider_value(*id, v);
                 t.set_progress_value(*id, v);
+                t.set_gauge_value(*id, v);
                 t.set_image_fit(*id, v as u8);
                 if t.is_stack(*id) {
                     t.set_stack_page(*id, v.max(0.0) as usize);

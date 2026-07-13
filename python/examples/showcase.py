@@ -54,8 +54,12 @@ def main():
             win.lb(bind=lambda: f"Громкость {int(vol()*100)}%   ·   пробел — тема",
                    h=28.0)
             win.bt("Диалог", w=120.0, h=40.0,
+                   tip="Открыть модальное окно",
                    clk=lambda: dlg("Привет", "Это модальный диалог SSUI.",
                                    ["Отмена", "Ок"], on=lambda i: None))
+            win.bt("Toast", w=110.0, h=40.0,
+                   tip="Показать уведомление",
+                   toast="Настройки сохранены ✓")
 
         with win.tab(["Виджеты", "Ввод", "Раскладка", "Данные",
                       "Секции", "Панели", "Окно"], h=600.0) as tabs:
@@ -91,6 +95,8 @@ def main():
                     win.dd(["Низко", "Средне", "Высоко"], sel=1, h=44.0)
                 with win.bx(pd=16.0, gp=10.0):
                     win.lb("Значения", h=26.0)
+                    win.gg(bind=lambda: vol(), lb="VOL", h=130.0)
+                    win.spn(h=44.0)
                     win.lb(bind=lambda: f"Громкость: {int(vol()*100)}%", h=24.0)
                     win.pr(bind=lambda: vol(), h=18.0)
                     win.sl(vol(), ch=lambda v: vol.st(v), h=36.0)
