@@ -300,30 +300,32 @@ impl PyWindow {
         })
     }
 
-    /// Стопка страниц как контекст; видна одна страница.
-    #[pyo3(signature = (*, pr=None, page=0, w=None, h=None))]
+    /// Стопка страниц как контекст; `bind` — колбэк, возвращающий индекс.
+    #[pyo3(signature = (*, pr=None, page=0, bind=None, w=None, h=None))]
     fn stk(
         &mut self,
+        py: Python,
         pr: Option<PyNode>,
         page: usize,
+        bind: Option<PyObject>,
         w: Option<f32>,
         h: Option<f32>,
     ) -> PyResult<Ctx> {
         let props = make_props("v", 0.0, 0.0, w, h);
+        let initial = match &bind {
+            Some(f) => f.bind(py).call0()?.extract::<f32>()? as usize,
+            None => page,
+        };
         let parent = self.parent_of(pr);
         let tree = self.tree.as_mut().ok_or_else(consumed)?;
-        let id = tree.add_child(parent, NodeKind::Stack { page }, props);
+        let id = tree.add_child(parent, NodeKind::Stack { page: initial }, props);
+        if let Some(f) = bind {
+            self.value_bindings.borrow_mut().push((id, f));
+        }
         Ok(Ctx {
             stack: self.stack.clone(),
             node: id,
         })
-    }
-
-    /// Переключает страницу стопки.
-    fn page(&mut self, n: PyNode, index: usize) -> PyResult<()> {
-        let tree = self.tree.as_mut().ok_or_else(consumed)?;
-        tree.set_stack_page(n.id, index);
-        Ok(())
     }
 
     /// Разделитель двух областей как контекст; тянется мышью.
@@ -1369,6 +1371,9 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
                 t.set_slider_value(*id, v);
                 t.set_progress_value(*id, v);
                 t.set_image_fit(*id, v as u8);
+                if t.is_stack(*id) {
+                    t.set_stack_page(*id, v.max(0.0) as usize);
+                }
             }
             Err(e) => e.print(py),
         }

@@ -30,6 +30,7 @@ def main():
     row = ssui.sgnl(-1)
     pick = ssui.sgnl(-1)
     clicks = ssui.sgnl(0)
+    page = ssui.sgnl(0)
     op = ssui.sgnl(0.15)
     blurv = ssui.sgnl(0.5)
 
@@ -146,15 +147,15 @@ def main():
                         else f"Выбрана строка #{row()+1}"
                     ), h=26.0)
                     win.tbl(
-                    ["Имя", "Роль", "Статус"],
-                    [
-                        ["Анна", "Дизайнер", "Онлайн"],
-                        ["Борис", "Бэкенд", "Отошёл"],
-                        ["Вера", "Фронтенд", "Онлайн"],
-                        ["Глеб", "QA", "Не в сети"],
-                        ["Дина", "PM", "Онлайн"],
-                        ["Егор", "DevOps", "Отошёл"],
-                    ],
+                        ["Имя", "Роль", "Статус"],
+                        [
+                            ["Анна", "Дизайнер", "Онлайн"],
+                            ["Борис", "Бэкенд", "Отошёл"],
+                            ["Вера", "Фронтенд", "Онлайн"],
+                            ["Глеб", "QA", "Не в сети"],
+                            ["Дина", "PM", "Онлайн"],
+                            ["Егор", "DevOps", "Отошёл"],
+                        ],
                         ch=lambda i: row.st(i),
                         h=400.0,
                     )
@@ -185,13 +186,14 @@ def main():
             # --- Панели ---
             with win.bx(pr=tabs, pd=8.0, gp=12.0) as pstk:
                 win.cls(pstk, "clear")
+
                 with win.bx(ax="h", gp=8.0, h=52.0) as nav:
                     win.cls(nav, "clear")
-                    b0 = win.bt("Страница 1", h=44.0)
-                    b1 = win.bt("Страница 2", h=44.0)
-                    b2 = win.bt("Страница 3", h=44.0)
+                    win.bt("Страница 1", h=44.0, clk=lambda: page.st(0))
+                    win.bt("Страница 2", h=44.0, clk=lambda: page.st(1))
+                    win.bt("Страница 3", h=44.0, clk=lambda: page.st(2))
 
-                with win.stk(h=200.0) as pages:
+                with win.stk(bind=lambda: float(page()), h=200.0) as pages:
                     with win.bx(pd=16.0, gp=8.0):
                         win.lb("Первая страница стопки", h=28.0)
                         win.sl(0.3, h=36.0)
@@ -202,7 +204,7 @@ def main():
                         win.lb("Третья страница стопки", h=28.0)
                         win.sw("Опция", on=True, h=36.0)
 
-                win.lb("Splitter — тяни серую полосу", h=26.0)
+                win.lb(bind=lambda: f"Splitter · страница {page() + 1}", h=26.0)
                 with win.spl(ratio=0.4, h=260.0):
                     with win.bx(pd=12.0, gp=8.0):
                         win.lb("Левая область", h=26.0)
@@ -214,21 +216,21 @@ def main():
             # --- Окно ---
             with win.bx(pr=tabs, pd=8.0, gp=16.0) as p5:
                 win.cls(p5, "clear")
-            with win.bx(pd=16.0, gp=10.0):
-                win.lb("Прозрачность фона окна", h=26.0)
-                win.lb(bind=lambda: f"Тон: {int(op()*100)}%", h=24.0)
-                win.sl(op(), ch=lambda v: op.st(v), h=36.0)
-                win.sep()
-                win.lb(bind=lambda: f"Размытие: {int(blurv()*100)}%", h=24.0)
-                win.sl(blurv(), ch=lambda v: blurv.st(v), h=36.0)
-            with win.bx(pd=16.0, gp=10.0):
-                win.lb("Анимация громкости", h=26.0)
-                win.pr(bind=lambda: vol(), h=18.0)
-                with win.bx(ax="h", gp=8.0, h=48.0) as arow:
-                    win.cls(arow, "clear")
-                    win.bt("0%", h=40.0, clk=lambda: fx(vol, 0.0, dur=0.4))
-                    win.bt("50%", h=40.0, clk=lambda: fx(vol, 0.5, dur=0.4))
-                    win.bt("100%", h=40.0, clk=lambda: fx(vol, 1.0, dur=0.4))
+                with win.bx(pd=16.0, gp=10.0):
+                    win.lb("Прозрачность фона окна", h=26.0)
+                    win.lb(bind=lambda: f"Тон: {int(op()*100)}%", h=24.0)
+                    win.sl(op(), ch=lambda v: op.st(v), h=36.0)
+                    win.sep()
+                    win.lb(bind=lambda: f"Размытие: {int(blurv()*100)}%", h=24.0)
+                    win.sl(blurv(), ch=lambda v: blurv.st(v), h=36.0)
+                with win.bx(pd=16.0, gp=10.0):
+                    win.lb("Анимация громкости", h=26.0)
+                    win.pr(bind=lambda: vol(), h=18.0)
+                    with win.bx(ax="h", gp=8.0, h=48.0) as arow:
+                        win.cls(arow, "clear")
+                        win.bt("0%", h=40.0, clk=lambda: fx(vol, 0.0, dur=0.4))
+                        win.bt("50%", h=40.0, clk=lambda: fx(vol, 0.5, dur=0.4))
+                        win.bt("100%", h=40.0, clk=lambda: fx(vol, 1.0, dur=0.4))
 
     fab = win.bt("+", pr=win.rt(), w=54.0, h=54.0,
                  clk=lambda: fx(vol, 1.0, dur=0.5))
