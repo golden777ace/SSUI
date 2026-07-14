@@ -6,11 +6,20 @@ use super::types::{Color, Rect};
 
 pub struct Canvas<'a> {
     rt: &'a ID2D1RenderTarget,
+    brush: Option<ID2D1SolidColorBrush>,
 }
 
 impl<'a> Canvas<'a> {
     pub fn new(rt: &'a ID2D1RenderTarget) -> Self {
-        Self { rt }
+        let c = Color::rgb(0.0, 0.0, 0.0).to_d2d();
+        let brush = unsafe { rt.CreateSolidColorBrush(&c, None).ok() };
+        Self { rt, brush }
+    }
+
+    fn solid(&self, color: Color) -> Option<&ID2D1SolidColorBrush> {
+        let b = self.brush.as_ref()?;
+        unsafe { b.SetColor(&color.to_d2d()) };
+        Some(b)
     }
 
     /// Заливает всю поверхность указанным цветом.
@@ -23,27 +32,21 @@ impl<'a> Canvas<'a> {
 
     /// Рисует залитый прямоугольник со скруглёнными углами.
     pub fn fill_rounded_rect(&self, rect: Rect, radius: f32, color: Color) {
-        let c = color.to_d2d();
-        unsafe {
-            if let Ok(brush) = self.rt.CreateSolidColorBrush(&c, None) {
-                let rr = D2D1_ROUNDED_RECT {
-                    rect: rect.to_d2d(),
-                    radiusX: radius,
-                    radiusY: radius,
-                };
-                self.rt.FillRoundedRectangle(&rr, &brush);
-            }
+        if let Some(brush) = self.solid(color) {
+            let rr = D2D1_ROUNDED_RECT {
+                rect: rect.to_d2d(),
+                radiusX: radius,
+                radiusY: radius,
+            };
+            unsafe { self.rt.FillRoundedRectangle(&rr, brush) };
         }
     }
 
     /// Рисует контур прямоугольника заданной толщины.
     pub fn stroke_rect(&self, rect: Rect, width: f32, color: Color) {
-        let c = color.to_d2d();
         let r = rect.to_d2d();
-        unsafe {
-            if let Ok(brush) = self.rt.CreateSolidColorBrush(&c, None) {
-                self.rt.DrawRectangle(&r, &brush, width, None);
-            }
+        if let Some(brush) = self.solid(color) {
+            unsafe { self.rt.DrawRectangle(&r, brush, width, None) };
         }
     }
 
@@ -98,15 +101,14 @@ impl<'a> Canvas<'a> {
 
     /// Рисует строку текста внутри прямоугольника `rect`.
     pub fn draw_text(&self, text: &[u16], format: &IDWriteTextFormat, rect: Rect, color: Color) {
-        let c = color.to_d2d();
         let layout = rect.to_d2d();
-        unsafe {
-            if let Ok(brush) = self.rt.CreateSolidColorBrush(&c, None) {
+        if let Some(brush) = self.solid(color) {
+            unsafe {
                 self.rt.DrawText(
                     text,
                     format,
                     &layout,
-                    &brush,
+                    brush,
                     D2D1_DRAW_TEXT_OPTIONS_NONE,
                     DWRITE_MEASURING_MODE_NATURAL,
                 );

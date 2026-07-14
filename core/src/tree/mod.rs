@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::render::types::{Color, Rect};
@@ -190,6 +190,34 @@ impl TextState {
         if !extend {
             self.anchor = self.caret;
         }
+    }
+
+    /// Выделяет слово вокруг позиции `index`.
+    pub fn select_word(&mut self, index: usize) {
+        let n = self.text.len();
+        if n == 0 {
+            return;
+        }
+        let i = index.min(n.saturating_sub(1));
+        let is_word = |c: u16| {
+            let ch = char::from_u32(c as u32).unwrap_or(' ');
+            ch.is_alphanumeric() || ch == '_'
+        };
+        if !is_word(self.text[i]) {
+            self.anchor = i;
+            self.caret = (i + 1).min(n);
+            return;
+        }
+        let mut a = i;
+        while a > 0 && is_word(self.text[a - 1]) {
+            a -= 1;
+        }
+        let mut b = i + 1;
+        while b < n && is_word(self.text[b]) {
+            b += 1;
+        }
+        self.anchor = a;
+        self.caret = b;
     }
 
     /// Отменяет последнее изменение.
@@ -442,6 +470,12 @@ pub const TAB_HEADER: f32 = 40.0;
 pub const TABLE_HEADER: f32 = 34.0;
 pub const TABLE_ROW: f32 = 30.0;
 
+/// Координата укладки скрытых узлов.
+pub const OFF_COORD: f32 = -1.0e6;
+/// Порог: узлы левее/выше считаются скрытыми.
+pub const OFF_LIMIT: f32 = -100000.0;
+const OFF_RECT: Rect = Rect::new(OFF_COORD, OFF_COORD, 0.0, 0.0);
+
 #[derive(Clone, Copy)]
 pub enum Ease {
     Linear,
@@ -530,6 +564,7 @@ pub struct Tree {
     pending_notes: NoteQueue,
     pending_theme: Rc<RefCell<Option<usize>>>,
     ghosts: HashSet<usize>,
+    placeholders: HashMap<usize, Vec<u16>>,
     on_dialog: Option<Box<dyn FnMut(&mut Tree, usize)>>,
     tint: f32,
     blur_mode: u32,
@@ -571,6 +606,7 @@ impl Tree {
             pending_notes: Rc::new(RefCell::new(Vec::new())),
             pending_theme: Rc::new(RefCell::new(None)),
             ghosts: HashSet::new(),
+            placeholders: HashMap::new(),
             on_dialog: None,
             tint: 0.0,
             blur_mode: 0,
@@ -1899,6 +1935,9 @@ impl Tree {
     }
 
     fn collect_focus(&self, id: NodeId, out: &mut Vec<NodeId>) {
+        if self.nodes[id.0].rect.x <= OFF_LIMIT {
+            return;
+        }
         if self.is_focusable(id) {
             out.push(id);
         }
@@ -1966,6 +2005,9 @@ impl Tree {
     }
 
     fn hit_walk(&self, id: NodeId, x: f32, y: f32, hit: &mut Option<NodeId>) {
+        if self.nodes[id.0].rect.x <= OFF_LIMIT {
+            return;
+        }
         if contains(self.nodes[id.0].rect, x, y) && !self.ghosts.contains(&id.0) {
             *hit = Some(id);
         }
@@ -1983,6 +2025,30 @@ impl Tree {
         } else {
             self.ghosts.remove(&id.0);
         }
+    }
+
+    /// Задаёт текст-подсказку пустого поля ввода.
+    pub fn set_placeholder(&mut self, id: NodeId, text: Vec<u16>) {
+        self.placeholders.insert(id.0, text);
+    }
+
+    /// Пустые поля с подсказкой: прямоугольник, текст, многострочность.
+    pub fn empty_placeholders(&self) -> Vec<(Rect, &Vec<u16>, bool)> {
+        self.placeholders
+            .iter()
+            .filter_map(|(i, ph)| {
+                let n = &self.nodes[*i];
+                if n.rect.x <= OFF_LIMIT {
+                    return None;
+                }
+                if let NodeKind::TextBox { state } = &n.kind {
+                    if state.text.is_empty() {
+                        return Some((n.rect, ph, n.multiline));
+                    }
+                }
+                None
+            })
+            .collect()
     }
 
     /// Помечает раскладку устаревшей — следующий кадр пересчитает геометрию.
@@ -2020,7 +2086,7 @@ impl Tree {
                 rect.width,
                 (rect.height - TAB_HEADER).max(0.0),
             );
-            let off = Rect::new(-1.0e6, -1.0e6, 0.0, 0.0);
+            let off = OFF_RECT;
             for (i, &c) in children.iter().enumerate() {
                 let cr = if i == selected { content } else { off };
                 self.layout_node(c, cr);
@@ -2031,7 +2097,7 @@ impl Tree {
         let dock_closed =
             matches!(&self.nodes[id.0].kind, NodeKind::Dock { open, .. } if !*open);
         if dock_closed {
-            let off = Rect::new(-1.0e6, -1.0e6, 0.0, 0.0);
+            let off = OFF_RECT;
             for &c in &children {
                 self.layout_node(c, off);
             }
@@ -2040,7 +2106,7 @@ impl Tree {
 
         if let NodeKind::Stack { page } = &self.nodes[id.0].kind {
             let page = *page;
-            let off = Rect::new(-1.0e6, -1.0e6, 0.0, 0.0);
+            let off = OFF_RECT;
             for (i, &c) in children.iter().enumerate() {
                 let cr = if i == page { rect } else { off };
                 self.layout_node(c, cr);
@@ -2051,7 +2117,7 @@ impl Tree {
         if let NodeKind::Splitter { ratio, vertical } = &self.nodes[id.0].kind {
             let ratio = *ratio;
             let vertical = *vertical;
-            let off = Rect::new(-1.0e6, -1.0e6, 0.0, 0.0);
+            let off = OFF_RECT;
             let (r1, r2) = if vertical {
                 let w1 = (rect.width - SPLIT_W) * ratio;
                 let w2 = (rect.width - SPLIT_W - w1).max(0.0);
@@ -2087,7 +2153,7 @@ impl Tree {
                 (rect.width - 2.0 * pad).max(0.0),
                 (rect.height - ACC_HEADER - pad).max(0.0),
             );
-            let off = Rect::new(-1.0e6, -1.0e6, 0.0, 0.0);
+            let off = OFF_RECT;
             let mut cursor = body.y;
             for &c in &children {
                 if !open {
@@ -2272,7 +2338,7 @@ struct Rule {
     decls: Vec<(String, String)>,
 }
 
-fn kind_tag(kind: &NodeKind) -> &'static str {
+pub fn kind_tag(kind: &NodeKind) -> &'static str {
     match kind {
         NodeKind::Container => "container",
         NodeKind::Frame { .. } => "frame",
@@ -2473,20 +2539,7 @@ fn apply_decl(node: &mut Node, key: &str, value: &str) {
 }
 
 fn parse_color(value: &str) -> Option<Color> {
-    let hex = value.trim().strip_prefix('#')?;
-    match hex.len() {
-        8 => u32::from_str_radix(hex, 16).ok().map(Color::hexa),
-        6 => u32::from_str_radix(hex, 16).ok().map(Color::hex),
-        3 => {
-            let mut full = String::new();
-            for ch in hex.chars() {
-                full.push(ch);
-                full.push(ch);
-            }
-            u32::from_str_radix(&full, 16).ok().map(Color::hex)
-        }
-        _ => None,
-    }
+    crate::render::types::parse_hex(value)
 }
 
 fn parse_num(value: &str) -> Option<f32> {

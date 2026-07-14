@@ -14,14 +14,9 @@ use ssui_core::tree::{
 type ShapeSpec = (String, Vec<f32>, String, String);
 
 fn hexa(s: &str) -> u32 {
-    let t = s.trim_start_matches('#');
-    match t.len() {
-        6 => u32::from_str_radix(t, 16)
-            .map(|v| (v << 8) | 0xFF)
-            .unwrap_or(0xFFFFFFFF),
-        8 => u32::from_str_radix(t, 16).unwrap_or(0xFFFFFFFF),
-        _ => 0xFFFFFFFF,
-    }
+    ssui_core::render::parse_hex(s)
+        .unwrap_or(ssui_core::render::Color::rgba(1.0, 1.0, 1.0, 1.0))
+        .pack()
 }
 
 fn make_shapes(items: Vec<ShapeSpec>) -> Vec<Shape> {
@@ -406,25 +401,25 @@ impl PyWindow {
 
     /// Привязывает прозрачность фона окна к сигналу 0..1.
     fn tint(&mut self, sig: PyObject) -> PyResult<()> {
-        WIN_SETTINGS.with(|s| s.borrow_mut().push((0, sig)));
+        set_win_setting(0, sig);
         Ok(())
     }
 
     /// Привязывает силу размытия к сигналу 0..1 (0 — выключено).
     fn blur(&mut self, sig: PyObject) -> PyResult<()> {
-        WIN_SETTINGS.with(|s| s.borrow_mut().push((1, sig)));
+        set_win_setting(1, sig);
         Ok(())
     }
 
     /// Привязывает режим фона к сигналу: 0 — нет, иначе — размытие.
     fn blur_mode(&mut self, sig: PyObject) -> PyResult<()> {
-        WIN_SETTINGS.with(|s| s.borrow_mut().push((2, sig)));
+        set_win_setting(2, sig);
         Ok(())
     }
 
     /// Привязывает гашение размытия при перемещении к сигналу (0/1).
     fn drag_smooth(&mut self, sig: PyObject) -> PyResult<()> {
-        WIN_SETTINGS.with(|s| s.borrow_mut().push((3, sig)));
+        set_win_setting(3, sig);
         Ok(())
     }
 
@@ -1951,13 +1946,14 @@ impl PyWindow {
         Ok(PyNode { id })
     }
 
-    /// Добавляет поле ввода; `sig` — сигнал, куда пишется текст.
-    #[pyo3(signature = (txt="", *, pr=None, sig=None, pd=0.0, gp=0.0, w=None, h=None))]
+    /// Добавляет поле ввода; `sig` — сигнал текста, `ph` — подсказка пустого поля.
+    #[pyo3(signature = (txt="", *, pr=None, sig=None, ph="", pd=0.0, gp=0.0, w=None, h=None))]
     fn tx(
         &mut self,
         txt: &str,
         pr: Option<PyNode>,
         sig: Option<PyObject>,
+        ph: &str,
         pd: f32,
         gp: f32,
         w: Option<f32>,
@@ -1975,6 +1971,9 @@ impl PyWindow {
         let values = self.value_bindings.clone();
         let tree = self.tree.as_mut().ok_or_else(consumed)?;
         let id = tree.add_child(parent, NodeKind::TextBox { state: st }, props);
+        if !ph.is_empty() {
+            tree.set_placeholder(id, utf16(ph));
+        }
         if let Some(sig) = sig {
             tree.set_on_input(id, move |t, text| {
                 Python::with_gil(|py| {
@@ -1988,13 +1987,14 @@ impl PyWindow {
         Ok(PyNode { id })
     }
 
-    /// Многострочное поле ввода; Enter — перенос строки, `sig` — сигнал текста.
-    #[pyo3(signature = (txt="", *, pr=None, sig=None, pd=0.0, gp=0.0, w=None, h=None))]
+    /// Многострочное поле ввода; Enter — перенос, `ph` — подсказка пустого поля.
+    #[pyo3(signature = (txt="", *, pr=None, sig=None, ph="", pd=0.0, gp=0.0, w=None, h=None))]
     fn ta(
         &mut self,
         txt: &str,
         pr: Option<PyNode>,
         sig: Option<PyObject>,
+        ph: &str,
         pd: f32,
         gp: f32,
         w: Option<f32>,
@@ -2014,6 +2014,9 @@ impl PyWindow {
         let tree = self.tree.as_mut().ok_or_else(consumed)?;
         let id = tree.add_child(parent, NodeKind::TextBox { state: st }, props);
         tree.set_multiline(id);
+        if !ph.is_empty() {
+            tree.set_placeholder(id, utf16(ph));
+        }
         if let Some(sig) = sig {
             tree.set_on_input(id, move |t, text| {
                 Python::with_gil(|py| {
@@ -2406,6 +2409,14 @@ fn sgnl(vl: PyObject) -> Signal {
 
 fn consumed() -> PyErr {
     PyRuntimeError::new_err("окно уже запущено")
+}
+
+fn set_win_setting(tag: u8, sig: PyObject) {
+    WIN_SETTINGS.with(|s| {
+        let mut v = s.borrow_mut();
+        v.retain(|(t, _)| *t != tag);
+        v.push((tag, sig));
+    });
 }
 
 fn make_props(ax: &str, pd: f32, gp: f32, w: Option<f32>, h: Option<f32>) -> Props {

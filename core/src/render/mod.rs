@@ -4,4 +4,4 @@ pub mod types;
 
 pub use canvas::Canvas;
 pub use device::{CursorKind, Renderer};
-pub use types::{Color, Rect};
+pub use types::{parse_hex, Color, Rect};

@@ -191,13 +191,13 @@ def main():
                 win.cls(p2, "clear")
                 with win.bx(pd=16.0, gp=10.0):
                     win.lb("Однострочное поле", h=26.0)
-                    win.tx("", sig=name, h=44.0)
+                    win.tx("", sig=name, ph="Введите имя…", h=44.0)
                     win.lb(bind=lambda: f"Привет, {name() or '…'}", h=26.0)
                     win.sep()
                     win.lb("Ctrl+C/V/Z, выделение мышью", h=24.0)
                 with win.bx(pd=16.0, gp=10.0):
                     win.lb("Многострочное поле (Enter — перенос)", h=26.0)
-                    win.ta("", sig=note, h=220.0)
+                    win.ta("", sig=note, ph="Текст заметки…", h=220.0)
                     win.lb(bind=lambda: f"Символов: {len(note())}", h=26.0)
                     win.sep()
                     win.lb("Диапазон (два ползунка)", h=26.0)

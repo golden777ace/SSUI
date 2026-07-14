@@ -25,8 +25,8 @@ use super::types::{Color, Rect};
 use crate::theme::Theme;
 use crate::tree::{
     NodeId, NodeKind, Style, Tree, ACC_HEADER, BAR_ITEM, CAL_HEADER, CAL_WEEK, DOCK_HEADER,
-    GROUP_HEADER, LIST_ROW, POPUP_ROW, SCROLLBAR_W, SPLIT_ARROW, SPLIT_W, TABLE_HEADER, TABLE_ROW,
-    TAB_HEADER, TERM_INPUT, TERM_ROW,
+    GROUP_HEADER, LIST_ROW, OFF_LIMIT, POPUP_ROW, SCROLLBAR_W, SPLIT_ARROW, SPLIT_W,
+    TABLE_HEADER, TABLE_ROW, TAB_HEADER, TERM_INPUT, TERM_ROW,
 };
 
 const MONTHS: [&str; 12] = [
@@ -202,6 +202,8 @@ pub struct Renderer {
     focused: Option<NodeId>,
     hot: Option<NodeId>,
     text_selecting: bool,
+    last_click: Option<(Instant, f32, f32)>,
+    focus_ring: bool,
     scroll_drag: Option<NodeId>,
     split_drag: Option<NodeId>,
     range_drag: Option<(NodeId, bool)>,
@@ -382,6 +384,8 @@ impl Renderer {
                 focused: None,
                 hot: None,
                 text_selecting: false,
+                last_click: None,
+                focus_ring: false,
                 scroll_drag: None,
                 split_drag: None,
                 range_drag: None,
@@ -531,6 +535,25 @@ impl Renderer {
                 self.tree.fire_change(hot, v);
                 return true;
             }
+            if self.tree.is_tabs(hot) {
+                let r = self.tree.get(hot).rect;
+                if self.mouse.1 <= r.y + TAB_HEADER {
+                    let n = self.tree.tabs_len(hot);
+                    if n > 0 {
+                        let cur = self.tree.tabs_selected(hot);
+                        let next = if delta > 0 {
+                            if cur == 0 { 0 } else { cur - 1 }
+                        } else {
+                            (cur + 1).min(n - 1)
+                        };
+                        if next != cur {
+                            self.tree.set_tabs_selected(hot, next);
+                            self.tree.fire_change(hot, next as f32);
+                        }
+                    }
+                    return true;
+                }
+            }
         }
         if let Some(mut id) = self.hot {
             let mut guard = 0;
@@ -657,6 +680,19 @@ impl Renderer {
         x >= r.x + r.width - SCROLLBAR_W - 2.0
     }
 
+    fn is_double_click(&mut self, x: f32, y: f32) -> bool {
+        let now = Instant::now();
+        let dbl = matches!(
+            self.last_click,
+            Some((t, lx, ly))
+                if now.duration_since(t).as_millis() < 400
+                    && (lx - x).abs() < 6.0
+                    && (ly - y).abs() < 6.0
+        );
+        self.last_click = Some((now, x, y));
+        dbl
+    }
+
     fn splitter_bar_at(&self, x: f32, y: f32) -> Option<NodeId> {
         let mut found = None;
         self.tree.for_each(|id, node| {
@@ -664,7 +700,7 @@ impl Renderer {
                 return;
             }
             let r = node.rect;
-            if r.x <= -100000.0 {
+            if r.x <= OFF_LIMIT {
                 return;
             }
             let ratio = self.tree.split_ratio(id);
@@ -1091,11 +1127,16 @@ impl Renderer {
         }
 
         self.text_selecting = false;
+        self.focus_ring = false;
         let hit = self.tree.hit_test(x, y);
         let new_focus = hit.filter(|&id| self.tree.is_textbox(id) || self.tree.is_slider(id));
         self.focused = new_focus;
 
         if let Some(id) = self.splitter_bar_at(x, y) {
+            if self.is_double_click(x, y) {
+                self.tree.set_split_ratio(id, 0.5);
+                return true;
+            }
             self.split_drag = Some(id);
             self.set_split_from(id, x, y);
             return true;
@@ -1164,10 +1205,15 @@ impl Renderer {
                 } else {
                     self.textbox_index_at(id, x)
                 };
+                let dbl = self.is_double_click(x, y);
                 if let Some(st) = self.tree.textbox_state_mut(id) {
-                    st.set_caret(idx, false);
+                    if dbl {
+                        st.select_word(idx);
+                    } else {
+                        st.set_caret(idx, false);
+                    }
                 }
-                self.text_selecting = true;
+                self.text_selecting = !dbl;
                 return true;
             }
             if self.tree.is_split(id) {
@@ -1698,6 +1744,31 @@ impl Renderer {
                 }
                 return false;
             }
+            if self.tree.is_list(id) {
+                let n = self.tree.list_len(id);
+                if n > 0 && (vk == VK_UP || vk == VK_DOWN) {
+                    let cur = self.tree.list_selected(id).unwrap_or(0);
+                    let next = if vk == VK_UP {
+                        if cur == 0 { 0 } else { cur - 1 }
+                    } else {
+                        (cur + 1).min(n - 1)
+                    };
+                    self.tree.set_list_selected(id, Some(next));
+                    let vis = self.tree.get(id).rect.height.max(0.0);
+                    let top = next as f32 * LIST_ROW;
+                    let mut ns = self.tree.list_scroll(id);
+                    if top < ns {
+                        ns = top;
+                    }
+                    if top + LIST_ROW > ns + vis {
+                        ns = top + LIST_ROW - vis;
+                    }
+                    self.tree.set_list_scroll(id, ns.max(0.0));
+                    self.tree.fire_change(id, next as f32);
+                    return true;
+                }
+                return false;
+            }
             if self.tree.is_textbox(id) {
                 let shift = key_down(0x10);
                 let ctrl = key_down(0x11);
@@ -1864,6 +1935,7 @@ impl Renderer {
         };
         self.focused = Some(list[next]);
         self.text_selecting = false;
+        self.focus_ring = true;
     }
 
     fn dispatch(&mut self, id: NodeId) {
@@ -2087,6 +2159,7 @@ impl Renderer {
         let hovered = self.hovered;
         let pressed = self.pressed;
         let focused = self.focused;
+        let ring = if self.focus_ring { self.focused } else { None };
         let hot = self.hot;
         let mouse = self.mouse;
         let theme = self.theme;
@@ -2112,7 +2185,7 @@ impl Renderer {
             };
             canvas.clear(clear);
             self.tree.for_each(|id, node| {
-                if node.rect.x <= -100000.0 || node.rect.y <= -100000.0 {
+                if node.rect.x <= OFF_LIMIT || node.rect.y <= OFF_LIMIT {
                     return;
                 }
                 let mut style = node.style;
@@ -2238,7 +2311,7 @@ impl Renderer {
                         let hi = (r.x + r.width - knob_d).max(r.x);
                         let knob_x = (r.x + filled_w - knob_d / 2.0).clamp(r.x, hi);
                         let knob = Rect::new(knob_x, cy - knob_d / 2.0, knob_d, knob_d);
-                        let knob_color = if focused == Some(id) { theme.accent } else { theme.content };
+                        let knob_color = if ring == Some(id) { theme.accent } else { theme.content };
                         canvas.fill_rounded_rect(knob, knob_d / 2.0, knob_color);
                     }
                     NodeKind::Progress { value } => {
@@ -3081,7 +3154,7 @@ impl Renderer {
                             style.radius.unwrap_or(10.0),
                             style.fill.unwrap_or(theme.surface),
                         );
-                        let col = style.fill.map(|_| theme.accent).unwrap_or(theme.accent);
+                        let col = theme.accent;
                         let dash: f32 = 10.0;
                         let step = dash * 2.0;
                         let mut x0 = r.x + 6.0;
@@ -3194,7 +3267,7 @@ impl Renderer {
                             Rect::new(r.x + 40.0, r.y, (r.width - 52.0).max(0.0), ACC_HEADER),
                             color,
                         );
-                        if focused == Some(id) {
+                        if ring == Some(id) {
                             canvas.stroke_rect(head, 2.0, theme.accent);
                         }
                     }
@@ -3321,7 +3394,7 @@ impl Renderer {
                             theme.track,
                             theme.content,
                         );
-                        if focused == Some(id) {
+                        if ring == Some(id) {
                             canvas.stroke_rect(r, 2.0, theme.accent);
                         }
                         canvas.pop_clip();
@@ -3437,10 +3510,10 @@ impl Renderer {
                         ..
                     } => {
                         let r = node.rect;
-                        let border = if focused == Some(id) { theme.accent } else { theme.track };
+                        let border = if ring == Some(id) { theme.accent } else { theme.track };
                         let fill = style.fill.unwrap_or(theme.surface);
                         canvas.fill_rounded_rect(r, 8.0, fill);
-                        canvas.stroke_rect(r, if focused == Some(id) { 2.0 } else { 1.0 }, border);
+                        canvas.stroke_rect(r, if ring == Some(id) { 2.0 } else { 1.0 }, border);
                         let label = options.get(*selected).cloned().unwrap_or_default();
                         let color = style.text.unwrap_or(theme.content);
                         let tr = Rect::new(r.x + 12.0, r.y, (r.width - 40.0).max(0.0), r.height);
@@ -3471,7 +3544,7 @@ impl Renderer {
                             };
                             canvas.draw_text(lab, format, tab_rect, color);
                         }
-                        if focused == Some(id) {
+                        if ring == Some(id) {
                             canvas.stroke_rect(header, 2.0, theme.accent);
                         }
                     }
@@ -3562,7 +3635,7 @@ impl Renderer {
                             theme.track,
                             theme.content,
                         );
-                        if focused == Some(id) {
+                        if ring == Some(id) {
                             canvas.stroke_rect(r, 2.0, theme.accent);
                         }
                         canvas.pop_clip();
@@ -3711,6 +3784,15 @@ impl Renderer {
                 }
             }
 
+            for (pr, ph, multi) in self.tree.empty_placeholders() {
+                let tr = if multi {
+                    Rect::new(pr.x + 10.0, pr.y + 6.0, (pr.width - 20.0).max(0.0), 28.0)
+                } else {
+                    Rect::new(pr.x + 12.0, pr.y, (pr.width - 24.0).max(0.0), pr.height)
+                };
+                canvas.draw_text(ph, format_left, tr, theme.track);
+            }
+
             for (i, r, act) in self.note_rects() {
                 let n = &self.notes[i];
                 canvas.fill_rounded_rect(r, 12.0, theme.surface);
@@ -3836,53 +3918,7 @@ const INSPECT_LABEL_BG: Color = Color::rgba(0.0, 0.0, 0.0, 0.85);
 const INSPECT_LABEL_FG: Color = Color::rgba(1.0, 1.0, 1.0, 1.0);
 
 fn kind_name(kind: &NodeKind) -> &'static str {
-    match kind {
-        NodeKind::Container => "Container",
-        NodeKind::Frame { .. } => "Frame",
-        NodeKind::Label { .. } => "Label",
-        NodeKind::Button { .. } => "Button",
-        NodeKind::Slider { .. } => "Slider",
-        NodeKind::Progress { .. } => "Progress",
-        NodeKind::Checkbox { .. } => "Checkbox",
-        NodeKind::TextBox { .. } => "TextBox",
-        NodeKind::Dropdown { .. } => "Dropdown",
-        NodeKind::Tabs { .. } => "Tabs",
-        NodeKind::Table { .. } => "Table",
-        NodeKind::Image { .. } => "Image",
-        NodeKind::Switch { .. } => "Switch",
-        NodeKind::Radio { .. } => "Radio",
-        NodeKind::Toggle { .. } => "Toggle",
-        NodeKind::Separator { .. } => "Separator",
-        NodeKind::List { .. } => "List",
-        NodeKind::Group { .. } => "Group",
-        NodeKind::Link { .. } => "Link",
-        NodeKind::Accordion { .. } => "Accordion",
-        NodeKind::Scroll { .. } => "Scroll",
-        NodeKind::Stack { .. } => "Stack",
-        NodeKind::Splitter { .. } => "Splitter",
-        NodeKind::Spinner { .. } => "Spinner",
-        NodeKind::Gauge { .. } => "Gauge",
-        NodeKind::Meter { .. } => "Meter",
-        NodeKind::Chart { .. } => "Chart",
-        NodeKind::Range { .. } => "Range",
-        NodeKind::Status { .. } => "Status",
-        NodeKind::Split { .. } => "Split",
-        NodeKind::MenuBar { .. } => "MenuBar",
-        NodeKind::Dial { .. } => "Dial",
-        NodeKind::TreeView { .. } => "TreeView",
-        NodeKind::Calendar { .. } => "Calendar",
-        NodeKind::Color { .. } => "Color",
-        NodeKind::Time { .. } => "Time",
-        NodeKind::PropGrid { .. } => "PropGrid",
-        NodeKind::Badge { .. } => "Badge",
-        NodeKind::Crumbs { .. } => "Crumbs",
-        NodeKind::Pager { .. } => "Pager",
-        NodeKind::Rating { .. } => "Rating",
-        NodeKind::Canvas { .. } => "Canvas",
-        NodeKind::Term { .. } => "Term",
-        NodeKind::Dock { .. } => "Dock",
-        NodeKind::Drop { .. } => "Drop",
-    }
+    crate::tree::kind_tag(kind)
 }
 
 fn draw_scrollbar(

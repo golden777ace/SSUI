@@ -36,6 +36,15 @@ impl Color {
         }
     }
 
+    /// Упаковывает цвет в `0xRRGGBBAA`.
+    pub fn pack(self) -> u32 {
+        let r = (self.r.clamp(0.0, 1.0) * 255.0).round() as u32;
+        let g = (self.g.clamp(0.0, 1.0) * 255.0).round() as u32;
+        let b = (self.b.clamp(0.0, 1.0) * 255.0).round() as u32;
+        let a = (self.a.clamp(0.0, 1.0) * 255.0).round() as u32;
+        (r << 24) | (g << 16) | (b << 8) | a
+    }
+
     pub fn lighten(self, amount: f32) -> Self {
         Self {
             r: self.r + (1.0 - self.r) * amount,
@@ -61,6 +70,24 @@ impl Color {
             b: self.b,
             a: self.a,
         }
+    }
+}
+
+/// Разбирает `#RRGGBB`, `#RRGGBBAA` или `#RGB` в цвет.
+pub fn parse_hex(value: &str) -> Option<Color> {
+    let hex = value.trim().strip_prefix('#')?;
+    match hex.len() {
+        8 => u32::from_str_radix(hex, 16).ok().map(Color::hexa),
+        6 => u32::from_str_radix(hex, 16).ok().map(Color::hex),
+        3 => {
+            let mut full = String::new();
+            for ch in hex.chars() {
+                full.push(ch);
+                full.push(ch);
+            }
+            u32::from_str_radix(&full, 16).ok().map(Color::hex)
+        }
+        _ => None,
     }
 }
 
