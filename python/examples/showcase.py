@@ -55,6 +55,12 @@ def main():
     leaf = ssui.sgnl(-1)
     day = ssui.sgnl("—")
     hexc = ssui.sgnl("#3B82F6")
+    tmv = ssui.sgnl("12:00")
+    prow = ssui.sgnl(-1)
+    path = ssui.sgnl("Проект")
+    inbox = ssui.sgnl(3)
+    pageno = ssui.sgnl(0)
+    stars = ssui.sgnl(4)
 
     win.tint(op)
     win.blur(blurv)
@@ -66,6 +72,8 @@ def main():
             else None
         ),
     )
+
+    nt = win.nt()
 
     with win.bx(pd=18.0, gp=14.0) as scr:
         win.cls(scr, "clear")
@@ -87,6 +95,17 @@ def main():
             win.bt("Toast", w=110.0, h=40.0,
                    tip="Показать уведомление",
                    toast="Настройки сохранены ✓")
+            win.bt("MsgBox", w=120.0, h=40.0,
+                   clk=lambda: dlg.msg("Готово", "Файл сохранён на диск."))
+            win.bt("Alert", w=110.0, h=40.0,
+                   clk=lambda: dlg.alert("Не удалось открыть файл."))
+            win.bt("Notify", w=120.0, h=40.0,
+                   clk=lambda: nt("Обновление", "Доступна версия 0.14",
+                                  action="Позже", secs=6.0,
+                                  on=lambda: act.st("уведомление закрыто")))
+            win.bt("Snack", w=110.0, h=40.0,
+                   clk=lambda: nt.snack("Элемент удалён", action="Отменить",
+                                        on=lambda: act.st("отменено")))
 
         with win.tab(["Виджеты", "Ввод", "Раскладка", "Данные",
                       "Выбор", "Секции", "Панели", "Окно"], h=600.0) as tabs:
@@ -206,6 +225,29 @@ def main():
                         h=400.0,
                     )
                 with win.bx(pd=12.0, gp=8.0, w=280.0):
+                    with win.bx(ax="h", gp=8.0, h=34.0) as brow:
+                        win.cls(brow, "clear")
+                        win.lb("Входящие", h=34.0)
+                        win.bdg(bind=lambda: str(inbox()), h=26.0)
+                        win.bdg(dot=True, h=26.0)
+                    with win.bx(ax="h", gp=8.0, h=48.0) as bcnt:
+                        win.cls(bcnt, "clear")
+                        win.bt("+1", h=40.0,
+                               clk=lambda: inbox.st(inbox() + 1))
+                        win.bt("Сброс", h=40.0, clk=lambda: inbox.st(0))
+                    crumbs = win.crumb(
+                        ["Проект", "core", "render", "device.rs"],
+                        ch=lambda i: path.st(f"уровень {i}"), h=34.0)
+                    win.lb(bind=lambda: f"Путь: {path()}", h=24.0)
+                    win.sep()
+                    win.lb("Страницы", h=26.0)
+                    win.pgn(5, page=0, ch=lambda i: pageno.st(i), h=44.0)
+                    win.lb(bind=lambda: f"Страница: {pageno() + 1} из 5",
+                           h=24.0)
+                    win.lb("Оценка", h=26.0)
+                    win.rat(4, max=5, ch=lambda v: stars.st(v), h=40.0)
+                    win.lb(bind=lambda: f"Оценка: {stars()}/5", h=24.0)
+                    win.sep()
                     win.lb(bind=lambda: (
                         "Узел не выбран" if leaf() < 0
                         else f"Узел #{leaf()}"
@@ -247,7 +289,26 @@ def main():
                     win.clr(ch=lambda c: hexc.st(c), h=240.0)
                     win.lb(bind=lambda: f"Цвет: {hexc()}", h=26.0)
                     win.sep()
-                    win.lb("Тяни по квадрату и полосе оттенка", h=24.0)
+                    win.lb("Время (клик по стрелкам)", h=26.0)
+                    win.tm(12, 0, ch=lambda h, m: tmv.st(f"{h:02d}:{m:02d}"),
+                           h=120.0)
+                    win.lb(bind=lambda: f"Время: {tmv()}", h=26.0)
+                with win.bx(pd=12.0, gp=8.0, w=340.0):
+                    win.lb("Свойства", h=26.0)
+                    win.pg([("—", "—")], bind=lambda: [
+                        ("Тема", "по пробелу"),
+                        ("Громкость", f"{int(vol()*100)}%"),
+                        ("Диапазон", f"{int(rlo()*100)}–{int(rhi()*100)}%"),
+                        ("Микс", f"{int(knob()*100)}%"),
+                        ("Дата", day()),
+                        ("Время", tmv()),
+                        ("Цвет", hexc()),
+                        ("Действие", act()),
+                    ], ch=lambda i: prow.st(i), h=300.0)
+                    win.lb(bind=lambda: (
+                        "Строка не выбрана" if prow() < 0
+                        else f"Строка #{prow()}"
+                    ), h=26.0)
 
             # --- Секции ---
             with win.bx(pr=tabs, ax="h", pd=8.0, gp=16.0) as pacc:

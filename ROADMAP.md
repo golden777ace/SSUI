@@ -213,7 +213,10 @@ Spinner, Gauge, Tooltip, Toast.
 - ✅ Dialog — модальный диалог (`dlg`).
 - ✅ Tooltip — подсказка при наведении (`tip=`).
 - ✅ Toast — самоисчезающее уведомление (`toast=`).
-- ⏳ Message Box, Alert, Notification, Snackbar.
+- ✅ Message Box — окно с одной кнопкой (`dlg.msg`).
+- ✅ Alert — предупреждение (`dlg.alert`).
+- ✅ Notification — уведомление в углу (`nt`).
+- ✅ Snackbar — панель снизу с действием (`nt.snack`).
 
 ### Контейнеры
 - ✅ Panel / Frame — группировка (`fr`, `bx`).
@@ -237,6 +240,7 @@ Spinner, Gauge, Tooltip, Toast.
 - ✅ Chart — столбчатая диаграмма (`cht`).
 - ✅ Meter — сегментная шкала (`mt`).
 - ✅ Status Bar — строка состояния (`stb`).
+- ✅ Badge — значок-счётчик (`bdg`).
 
 ### Кнопки и действия
 - ✅ Button — действие (`bt`).
@@ -261,17 +265,21 @@ Spinner, Gauge, Tooltip, Toast.
 - ✅ ListBox — список с выбором (`lst`).
 - ✅ Table / Data Grid — таблица (`tbl`).
 - ✅ Tree View — дерево (`tre`).
-- ⏳ Property Grid.
+- ✅ Property Grid — таблица свойств (`pg`).
 
 ### Меню и навигация
 - ✅ Menu / Context Menu — меню (`menu`).
 - ✅ Scroll Bar — полоса прокрутки (в списках, таблицах, областях).
 - ✅ Menu Bar — строка меню (`mb`).
+- ✅ Breadcrumbs — хлебные крошки (`crumb`).
+- ✅ Pagination — постраничная навигация (`pgn`).
+- ✅ Rating — оценка звёздами (`rat`).
 
 ### Выбор значений
 - ✅ Calendar — выбор даты (`cal`).
 - ✅ Color Picker — палитра HSV (`clr`).
-- ⏳ Date Picker, Time Picker, DateTime Picker.
+- ✅ Time Picker — выбор времени (`tm`).
+- ⏳ Date Picker, DateTime Picker.
 
 ### Мультимедиа и встраивание
 - ⏳ WebView, Video Player, Audio Player, Terminal, Map View.

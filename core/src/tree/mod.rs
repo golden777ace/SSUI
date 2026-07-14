@@ -339,6 +339,30 @@ pub enum NodeKind {
         sat: f32,
         val: f32,
     },
+    Time {
+        hour: u32,
+        minute: u32,
+    },
+    PropGrid {
+        rows: Vec<(Vec<u16>, Vec<u16>)>,
+        selected: Option<usize>,
+        scroll: f32,
+    },
+    Badge {
+        text: Vec<u16>,
+        dot: bool,
+    },
+    Crumbs {
+        items: Vec<Vec<u16>>,
+    },
+    Pager {
+        page: usize,
+        total: usize,
+    },
+    Rating {
+        value: usize,
+        max: usize,
+    },
 }
 
 #[derive(Clone)]
@@ -430,6 +454,17 @@ pub struct DialogData {
 
 pub type DialogQueue = Rc<RefCell<Option<DialogData>>>;
 
+pub struct NoteData {
+    pub title: Vec<u16>,
+    pub text: Vec<u16>,
+    pub action: Vec<u16>,
+    pub secs: f32,
+    pub kind: u8,
+    pub cb: Option<Box<dyn FnMut(&mut Tree)>>,
+}
+
+pub type NoteQueue = Rc<RefCell<Vec<NoteData>>>;
+
 pub struct Node {
     pub parent: Option<NodeId>,
     pub children: Vec<NodeId>,
@@ -456,6 +491,7 @@ pub struct Tree {
     pending: AnimQueue,
     menu_items: Vec<Vec<u16>>,
     pending_dialog: DialogQueue,
+    pending_notes: NoteQueue,
     on_dialog: Option<Box<dyn FnMut(&mut Tree, usize)>>,
     tint: f32,
     blur_mode: u32,
@@ -494,6 +530,7 @@ impl Tree {
             pending: Rc::new(RefCell::new(Vec::new())),
             menu_items: Vec::new(),
             pending_dialog: Rc::new(RefCell::new(None)),
+            pending_notes: Rc::new(RefCell::new(Vec::new())),
             on_dialog: None,
             tint: 0.0,
             blur_mode: 0,
@@ -688,7 +725,80 @@ impl Tree {
         match &mut self.nodes[id.0].kind {
             NodeKind::Label { text: t } => *t = text,
             NodeKind::Status { text: t } => *t = text,
+            NodeKind::Badge { text: t, .. } => *t = text,
             _ => {}
+        }
+    }
+
+    /// Является ли узел хлебными крошками.
+    pub fn is_crumbs(&self, id: NodeId) -> bool {
+        matches!(self.nodes[id.0].kind, NodeKind::Crumbs { .. })
+    }
+
+    /// Возвращает элементы хлебных крошек.
+    pub fn crumb_items(&self, id: NodeId) -> Vec<Vec<u16>> {
+        if let NodeKind::Crumbs { items } = &self.nodes[id.0].kind {
+            items.clone()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Обрезает хлебные крошки до элемента `index` включительно.
+    pub fn crumb_truncate(&mut self, id: NodeId, index: usize) {
+        if let NodeKind::Crumbs { items } = &mut self.nodes[id.0].kind {
+            items.truncate(index + 1);
+        }
+    }
+
+    /// Задаёт элементы хлебных крошек.
+    pub fn set_crumb_items(&mut self, id: NodeId, data: Vec<Vec<u16>>) {
+        if let NodeKind::Crumbs { items } = &mut self.nodes[id.0].kind {
+            *items = data;
+        }
+    }
+
+    /// Является ли узел постраничной навигацией.
+    pub fn is_pager(&self, id: NodeId) -> bool {
+        matches!(self.nodes[id.0].kind, NodeKind::Pager { .. })
+    }
+
+    /// Возвращает `(страница, всего)`.
+    pub fn pager_state(&self, id: NodeId) -> (usize, usize) {
+        if let NodeKind::Pager { page, total } = &self.nodes[id.0].kind {
+            (*page, *total)
+        } else {
+            (0, 0)
+        }
+    }
+
+    /// Задаёт текущую страницу.
+    pub fn set_pager_page(&mut self, id: NodeId, index: usize) {
+        if let NodeKind::Pager { page, total } = &mut self.nodes[id.0].kind {
+            if *total > 0 {
+                *page = index.min(*total - 1);
+            }
+        }
+    }
+
+    /// Является ли узел оценкой звёздами.
+    pub fn is_rating(&self, id: NodeId) -> bool {
+        matches!(self.nodes[id.0].kind, NodeKind::Rating { .. })
+    }
+
+    /// Возвращает `(оценка, максимум)`.
+    pub fn rating_state(&self, id: NodeId) -> (usize, usize) {
+        if let NodeKind::Rating { value, max } = &self.nodes[id.0].kind {
+            (*value, *max)
+        } else {
+            (0, 0)
+        }
+    }
+
+    /// Задаёт оценку.
+    pub fn set_rating_value(&mut self, id: NodeId, v: usize) {
+        if let NodeKind::Rating { value, max } = &mut self.nodes[id.0].kind {
+            *value = v.min(*max);
         }
     }
 
@@ -1021,6 +1131,17 @@ impl Tree {
     /// Возвращает очередь диалогов для внешнего показа.
     pub fn dialog_queue(&self) -> DialogQueue {
         self.pending_dialog.clone()
+    }
+
+    /// Возвращает очередь уведомлений для внешнего показа.
+    pub fn note_queue(&self) -> NoteQueue {
+        self.pending_notes.clone()
+    }
+
+    /// Забирает накопленные уведомления.
+    pub fn take_notes(&mut self) -> Vec<NoteData> {
+        let mut q = self.pending_notes.borrow_mut();
+        std::mem::take(&mut *q)
     }
 
     /// Забирает отложенный запрос диалога.
@@ -1422,6 +1543,89 @@ impl Tree {
             *hue = h.clamp(0.0, 1.0);
             *sat = s.clamp(0.0, 1.0);
             *val = v.clamp(0.0, 1.0);
+        }
+    }
+
+    /// Является ли узел выбором времени.
+    pub fn is_time(&self, id: NodeId) -> bool {
+        matches!(self.nodes[id.0].kind, NodeKind::Time { .. })
+    }
+
+    /// Возвращает время `(часы, минуты)`.
+    pub fn time_hm(&self, id: NodeId) -> (u32, u32) {
+        if let NodeKind::Time { hour, minute } = &self.nodes[id.0].kind {
+            (*hour, *minute)
+        } else {
+            (0, 0)
+        }
+    }
+
+    /// Сдвигает часы или минуты на `delta`.
+    pub fn time_shift(&mut self, id: NodeId, hours: i32, minutes: i32) {
+        if let NodeKind::Time { hour, minute } = &mut self.nodes[id.0].kind {
+            let h = (*hour as i32 + hours).rem_euclid(24);
+            let m = (*minute as i32 + minutes).rem_euclid(60);
+            *hour = h as u32;
+            *minute = m as u32;
+        }
+    }
+
+    /// Код времени для колбэка: `часы * 100 + минуты`.
+    pub fn time_code(&self, id: NodeId) -> f32 {
+        let (h, m) = self.time_hm(id);
+        (h * 100 + m) as f32
+    }
+
+    /// Является ли узел таблицей свойств.
+    pub fn is_propgrid(&self, id: NodeId) -> bool {
+        matches!(self.nodes[id.0].kind, NodeKind::PropGrid { .. })
+    }
+
+    /// Число строк таблицы свойств.
+    pub fn prop_len(&self, id: NodeId) -> usize {
+        if let NodeKind::PropGrid { rows, .. } = &self.nodes[id.0].kind {
+            rows.len()
+        } else {
+            0
+        }
+    }
+
+    /// Задаёт строки таблицы свойств.
+    pub fn set_prop_rows(&mut self, id: NodeId, data: Vec<(Vec<u16>, Vec<u16>)>) {
+        if let NodeKind::PropGrid { rows, .. } = &mut self.nodes[id.0].kind {
+            *rows = data;
+        }
+    }
+
+    /// Возвращает выбранную строку таблицы свойств.
+    pub fn prop_selected(&self, id: NodeId) -> Option<usize> {
+        if let NodeKind::PropGrid { selected, .. } = &self.nodes[id.0].kind {
+            *selected
+        } else {
+            None
+        }
+    }
+
+    /// Задаёт выбранную строку таблицы свойств.
+    pub fn set_prop_selected(&mut self, id: NodeId, index: Option<usize>) {
+        if let NodeKind::PropGrid { selected, .. } = &mut self.nodes[id.0].kind {
+            *selected = index;
+        }
+    }
+
+    /// Возвращает прокрутку таблицы свойств.
+    pub fn prop_scroll(&self, id: NodeId) -> f32 {
+        if let NodeKind::PropGrid { scroll, .. } = &self.nodes[id.0].kind {
+            *scroll
+        } else {
+            0.0
+        }
+    }
+
+    /// Задаёт прокрутку таблицы свойств.
+    pub fn set_prop_scroll(&mut self, id: NodeId, value: f32) {
+        if let NodeKind::PropGrid { scroll, .. } = &mut self.nodes[id.0].kind {
+            *scroll = value;
         }
     }
 
@@ -1896,6 +2100,12 @@ fn kind_tag(kind: &NodeKind) -> &'static str {
         NodeKind::TreeView { .. } => "treeview",
         NodeKind::Calendar { .. } => "calendar",
         NodeKind::Color { .. } => "color",
+        NodeKind::Time { .. } => "time",
+        NodeKind::PropGrid { .. } => "propgrid",
+        NodeKind::Badge { .. } => "badge",
+        NodeKind::Crumbs { .. } => "crumbs",
+        NodeKind::Pager { .. } => "pager",
+        NodeKind::Rating { .. } => "rating",
     }
 }
 

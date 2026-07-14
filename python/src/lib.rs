@@ -7,8 +7,8 @@ use pyo3::wrap_pyfunction;
 
 use ssui_core::platform::{dpi, Window as CoreWindow};
 use ssui_core::tree::{
-    Anim, AnimQueue, Axis, DialogData, DialogQueue, Ease, NodeId, NodeKind, Props, TextState, Tree,
-    TreeItem,
+    Anim, AnimQueue, Axis, DialogData, DialogQueue, Ease, NodeId, NodeKind, NoteData,
+    NoteQueue, Props, TextState, Tree, TreeItem,
 };
 
 #[pyclass(name = "N")]
@@ -23,6 +23,7 @@ type Stack = Rc<RefCell<Vec<NodeId>>>;
 thread_local! {
     static WIN_SETTINGS: RefCell<Vec<(u8, Py<PyAny>)>> = RefCell::new(Vec::new());
     static CHART_BINDINGS: RefCell<Vec<(NodeId, Py<PyAny>)>> = RefCell::new(Vec::new());
+    static PROP_BINDINGS: RefCell<Vec<(NodeId, Py<PyAny>)>> = RefCell::new(Vec::new());
 }
 
 #[pyclass(unsendable, name = "Ctx")]
@@ -91,6 +92,77 @@ impl Fx {
     }
 }
 
+#[pyclass(unsendable, name = "Note")]
+struct Note {
+    queue: NoteQueue,
+    texts: Bindings,
+    values: Bindings,
+}
+
+impl Note {
+    fn push(
+        &self,
+        kind: u8,
+        title: Vec<u16>,
+        text: Vec<u16>,
+        action: Vec<u16>,
+        secs: f32,
+        on: Option<PyObject>,
+    ) {
+        let texts = self.texts.clone();
+        let values = self.values.clone();
+        let cb: Option<Box<dyn FnMut(&mut Tree)>> = match on {
+            Some(f) => Some(Box::new(move |t: &mut Tree| {
+                Python::with_gil(|py| {
+                    if let Err(e) = f.bind(py).call0() {
+                        e.print(py);
+                    }
+                    refresh_all(py, t, &texts, &values);
+                });
+            })),
+            None => None,
+        };
+        self.queue.borrow_mut().push(NoteData {
+            title,
+            text,
+            action,
+            secs,
+            kind,
+            cb,
+        });
+    }
+}
+
+#[pymethods]
+impl Note {
+    /// Уведомление в правом верхнем углу; `on()` по кнопке действия.
+    #[pyo3(signature = (title, text, *, secs=4.0, action="", on=None))]
+    fn __call__(
+        &self,
+        title: &str,
+        text: &str,
+        secs: f32,
+        action: &str,
+        on: Option<PyObject>,
+    ) -> PyResult<()> {
+        self.push(0, utf16(title), utf16(text), utf16(action), secs, on);
+        Ok(())
+    }
+
+    /// Снэкбар внизу окна; `on()` по кнопке действия.
+    #[pyo3(signature = (text, *, secs=4.0, action="", on=None))]
+    fn snack(
+        &self,
+        text: &str,
+        secs: f32,
+        action: &str,
+        on: Option<PyObject>,
+    ) -> PyResult<()> {
+        self.push(1, Vec::new(), utf16(text), utf16(action), secs, on);
+        Ok(())
+    }
+}
+
 #[pyclass(unsendable, name = "Dlg")]
 struct Dlg {
     queue: DialogQueue,
@@ -130,6 +202,31 @@ impl Dlg {
         *self.queue.borrow_mut() = Some(data);
         Ok(())
     }
+
+    /// Информационное окно с одной кнопкой.
+    #[pyo3(signature = (title, message, *, ok="Ок", on=None))]
+    fn msg(
+        &self,
+        title: &str,
+        message: &str,
+        ok: &str,
+        on: Option<PyObject>,
+    ) -> PyResult<()> {
+        self.__call__(title, message, vec![ok.to_string()], on)
+    }
+
+    /// Предупреждение с одной кнопкой.
+    #[pyo3(signature = (message, *, title="Внимание", ok="Ок", on=None))]
+    fn alert(
+        &self,
+        message: &str,
+        title: &str,
+        ok: &str,
+        on: Option<PyObject>,
+    ) -> PyResult<()> {
+        let head = format!("\u{26A0} {}", title);
+        self.__call__(&head, message, vec![ok.to_string()], on)
+    }
 }
 
 #[pyclass(unsendable, name = "W")]
@@ -144,6 +241,7 @@ struct PyWindow {
     value_bindings: Bindings,
     anim_queue: AnimQueue,
     dialog_queue: DialogQueue,
+    note_queue: NoteQueue,
     glass: bool,
     tint: f32,
     blur: bool,
@@ -159,6 +257,7 @@ impl PyWindow {
         let root = tree.root();
         let anim_queue = tree.anim_queue();
         let dialog_queue = tree.dialog_queue();
+        let note_queue = tree.note_queue();
         Self {
             tree: Some(tree),
             title: ttl.to_string(),
@@ -170,6 +269,7 @@ impl PyWindow {
             value_bindings: Rc::new(RefCell::new(Vec::new())),
             anim_queue,
             dialog_queue,
+            note_queue,
             glass,
             tint,
             blur,
@@ -179,6 +279,15 @@ impl PyWindow {
     /// Возвращает корневой узел окна.
     fn rt(&self) -> PyNode {
         PyNode { id: self.root }
+    }
+
+    /// Уведомления: `nt(title, text)` и `nt.snack(text)`.
+    fn nt(&self) -> Note {
+        Note {
+            queue: self.note_queue.clone(),
+            texts: self.bindings.clone(),
+            values: self.value_bindings.clone(),
+        }
     }
 
     /// Задаёт flex-вес узла вдоль главной оси.
@@ -637,6 +746,279 @@ impl PyWindow {
                 refresh_all(py, t, &texts, &values);
             });
         });
+        Ok(PyNode { id })
+    }
+
+    /// Постраничная навигация; `ch(page)` при смене страницы.
+    #[pyo3(signature = (total, *, pr=None, page=0, ch=None, pd=0.0, gp=0.0, w=None, h=None))]
+    fn pgn(
+        &mut self,
+        total: usize,
+        pr: Option<PyNode>,
+        page: usize,
+        ch: Option<PyObject>,
+        pd: f32,
+        gp: f32,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<PyNode> {
+        let h = h.or(Some(44.0));
+        let props = make_props("v", pd, gp, w, h);
+        let parent = self.parent_of(pr);
+        let texts = self.bindings.clone();
+        let values = self.value_bindings.clone();
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let total = total.max(1);
+        let id = tree.add_child(
+            parent,
+            NodeKind::Pager {
+                page: page.min(total - 1),
+                total,
+            },
+            props,
+        );
+        tree.set_on_change(id, move |t, v| {
+            let i = v.max(0.0) as i64;
+            Python::with_gil(|py| {
+                if let Some(cb) = &ch {
+                    if let Err(e) = cb.bind(py).call1((i,)) {
+                        e.print(py);
+                    }
+                }
+                refresh_all(py, t, &texts, &values);
+            });
+        });
+        Ok(PyNode { id })
+    }
+
+    /// Оценка звёздами; `ch(value)` при клике.
+    #[pyo3(signature = (vl=0, *, pr=None, max=5, ch=None, pd=0.0, gp=0.0, w=None, h=None))]
+    fn rat(
+        &mut self,
+        vl: usize,
+        pr: Option<PyNode>,
+        max: usize,
+        ch: Option<PyObject>,
+        pd: f32,
+        gp: f32,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<PyNode> {
+        let h = h.or(Some(40.0));
+        let props = make_props("v", pd, gp, w, h);
+        let parent = self.parent_of(pr);
+        let texts = self.bindings.clone();
+        let values = self.value_bindings.clone();
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let max = max.max(1);
+        let id = tree.add_child(
+            parent,
+            NodeKind::Rating {
+                value: vl.min(max),
+                max,
+            },
+            props,
+        );
+        tree.set_on_change(id, move |t, v| {
+            let i = v.max(0.0) as i64;
+            Python::with_gil(|py| {
+                if let Some(cb) = &ch {
+                    if let Err(e) = cb.bind(py).call1((i,)) {
+                        e.print(py);
+                    }
+                }
+                refresh_all(py, t, &texts, &values);
+            });
+        });
+        Ok(PyNode { id })
+    }
+
+    /// Значок-счётчик; `dot=True` — точка без текста, `bind` — текст.
+    #[pyo3(signature = (txt="", *, pr=None, dot=false, bind=None, pd=0.0, gp=0.0, w=None, h=None))]
+    fn bdg(
+        &mut self,
+        py: Python,
+        txt: &str,
+        pr: Option<PyNode>,
+        dot: bool,
+        bind: Option<PyObject>,
+        pd: f32,
+        gp: f32,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<PyNode> {
+        let h = h.or(Some(26.0));
+        let w = w.or(Some(if dot { 16.0 } else { 46.0 }));
+        let props = make_props("v", pd, gp, w, h);
+        let initial = match &bind {
+            Some(f) => f.bind(py).call0()?.extract::<String>()?,
+            None => txt.to_string(),
+        };
+        let parent = self.parent_of(pr);
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let id = tree.add_child(
+            parent,
+            NodeKind::Badge {
+                text: utf16(&initial),
+                dot,
+            },
+            props,
+        );
+        if let Some(f) = bind {
+            self.bindings.borrow_mut().push((id, f));
+        }
+        Ok(PyNode { id })
+    }
+
+    /// Хлебные крошки; клик обрезает путь, `ch(i)`.
+    #[pyo3(signature = (items, *, pr=None, ch=None, pd=0.0, gp=0.0, w=None, h=None))]
+    fn crumb(
+        &mut self,
+        items: Vec<String>,
+        pr: Option<PyNode>,
+        ch: Option<PyObject>,
+        pd: f32,
+        gp: f32,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<PyNode> {
+        let h = h.or(Some(34.0));
+        let props = make_props("h", pd, gp, w, h);
+        let parent = self.parent_of(pr);
+        let texts = self.bindings.clone();
+        let values = self.value_bindings.clone();
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let id = tree.add_child(
+            parent,
+            NodeKind::Crumbs {
+                items: items.iter().map(|s| utf16(s)).collect(),
+            },
+            props,
+        );
+        tree.set_on_change(id, move |t, v| {
+            let i = v.max(0.0) as i64;
+            Python::with_gil(|py| {
+                if let Some(cb) = &ch {
+                    if let Err(e) = cb.bind(py).call1((i,)) {
+                        e.print(py);
+                    }
+                }
+                refresh_all(py, t, &texts, &values);
+            });
+        });
+        Ok(PyNode { id })
+    }
+
+    /// Возвращает элементы хлебных крошек узла.
+    fn crumb_get(&mut self, node: PyNode) -> PyResult<Vec<String>> {
+        let tree = self.tree.as_ref().ok_or_else(consumed)?;
+        Ok(tree
+            .crumb_items(node.id)
+            .iter()
+            .map(|s| String::from_utf16_lossy(s))
+            .collect())
+    }
+
+    /// Задаёт элементы хлебных крошек узла.
+    fn crumb_set(&mut self, node: PyNode, items: Vec<String>) -> PyResult<()> {
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        tree.set_crumb_items(node.id, items.iter().map(|s| utf16(s)).collect());
+        Ok(())
+    }
+
+    /// Выбор времени; клики по половинам, `ch(часы, минуты)`.
+    #[pyo3(signature = (hour=12, minute=0, *, pr=None, ch=None, pd=0.0, gp=0.0, w=None, h=None))]
+    fn tm(
+        &mut self,
+        hour: u32,
+        minute: u32,
+        pr: Option<PyNode>,
+        ch: Option<PyObject>,
+        pd: f32,
+        gp: f32,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<PyNode> {
+        let h = h.or(Some(120.0));
+        let props = make_props("v", pd, gp, w, h);
+        let parent = self.parent_of(pr);
+        let texts = self.bindings.clone();
+        let values = self.value_bindings.clone();
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let id = tree.add_child(
+            parent,
+            NodeKind::Time {
+                hour: hour % 24,
+                minute: minute % 60,
+            },
+            props,
+        );
+        tree.set_on_change(id, move |t, v| {
+            let code = v.max(0.0) as i64;
+            let (hh, mm) = (code / 100, code % 100);
+            Python::with_gil(|py| {
+                if let Some(cb) = &ch {
+                    if let Err(e) = cb.bind(py).call1((hh, mm)) {
+                        e.print(py);
+                    }
+                }
+                refresh_all(py, t, &texts, &values);
+            });
+        });
+        Ok(PyNode { id })
+    }
+
+    /// Таблица свойств «ключ — значение»; `bind` — колбэк списка пар.
+    #[pyo3(signature = (rows, *, pr=None, bind=None, ch=None, pd=0.0, gp=0.0, w=None, h=None))]
+    fn pg(
+        &mut self,
+        py: Python,
+        rows: Vec<(String, String)>,
+        pr: Option<PyNode>,
+        bind: Option<PyObject>,
+        ch: Option<PyObject>,
+        pd: f32,
+        gp: f32,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<PyNode> {
+        let h = h.or(Some(260.0));
+        let props = make_props("v", pd, gp, w, h);
+        let initial = match &bind {
+            Some(f) => f.bind(py).call0()?.extract::<Vec<(String, String)>>()?,
+            None => rows,
+        };
+        let data = initial
+            .iter()
+            .map(|(k, v)| (utf16(k), utf16(v)))
+            .collect::<Vec<_>>();
+        let parent = self.parent_of(pr);
+        let texts = self.bindings.clone();
+        let values = self.value_bindings.clone();
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let id = tree.add_child(
+            parent,
+            NodeKind::PropGrid {
+                rows: data,
+                selected: None,
+                scroll: 0.0,
+            },
+            props,
+        );
+        tree.set_on_change(id, move |t, v| {
+            let i = v.max(0.0) as i64;
+            Python::with_gil(|py| {
+                if let Some(cb) = &ch {
+                    if let Err(e) = cb.bind(py).call1((i,)) {
+                        e.print(py);
+                    }
+                }
+                refresh_all(py, t, &texts, &values);
+            });
+        });
+        if let Some(f) = bind {
+            PROP_BINDINGS.with(|c| c.borrow_mut().push((id, f)));
+        }
         Ok(PyNode { id })
     }
 
@@ -1880,6 +2262,24 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
         for (id, f) in c.borrow().iter() {
             match f.bind(py).call0().and_then(|v| v.extract::<Vec<f32>>()) {
                 Ok(v) => t.set_chart_values(*id, v),
+                Err(e) => e.print(py),
+            }
+        }
+    });
+    PROP_BINDINGS.with(|c| {
+        for (id, f) in c.borrow().iter() {
+            match f
+                .bind(py)
+                .call0()
+                .and_then(|v| v.extract::<Vec<(String, String)>>())
+            {
+                Ok(rows) => {
+                    let data = rows
+                        .iter()
+                        .map(|(k, v)| (utf16(k), utf16(v)))
+                        .collect::<Vec<_>>();
+                    t.set_prop_rows(*id, data);
+                }
                 Err(e) => e.print(py),
             }
         }

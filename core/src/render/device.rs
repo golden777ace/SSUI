@@ -45,6 +45,14 @@ const MONTHS: [&str; 12] = [
 
 const WEEKDAYS: [&str; 7] = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
 
+const CRUMB_SEP: f32 = 22.0;
+
+const PAGER_CELL: f32 = 40.0;
+
+fn crumb_width(n: usize) -> f32 {
+    12.0 + n as f32 * 10.0
+}
+
 fn days_in_month(y: i32, m: u32) -> u32 {
     match m {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
@@ -114,6 +122,16 @@ struct Popup {
     base: usize,
 }
 
+struct NoteView {
+    title: Vec<u16>,
+    text: Vec<u16>,
+    action: Vec<u16>,
+    kind: u8,
+    secs: f32,
+    born: Instant,
+    cb: Option<Box<dyn FnMut(&mut Tree)>>,
+}
+
 pub struct Renderer {
     swap_chain: IDXGISwapChain1,
     context: ID2D1DeviceContext,
@@ -140,6 +158,7 @@ pub struct Renderer {
     popup: Option<Popup>,
     hover_since: Option<(NodeId, Instant)>,
     toast: Option<(Vec<u16>, Instant, f32)>,
+    notes: Vec<NoteView>,
     theme: Theme,
     theme_index: usize,
     last_tick: Instant,
@@ -319,6 +338,7 @@ impl Renderer {
                 popup: None,
                 hover_since: None,
                 toast: None,
+                notes: Vec::new(),
                 theme,
                 theme_index,
                 last_tick: Instant::now(),
@@ -399,7 +419,7 @@ impl Renderer {
         if spin {
             self.tree.spin(dt);
         }
-        anim || spin || self.toast.is_some() || self.tip_pending()
+        anim || spin || self.toast.is_some() || !self.notes.is_empty() || self.tip_pending()
     }
 
     fn tip_pending(&self) -> bool {
@@ -440,6 +460,7 @@ impl Renderer {
                 && !self.tree.is_list(id)
                 && !self.tree.is_table(id)
                 && !self.tree.is_tree(id)
+                && !self.tree.is_propgrid(id)
                 && guard < 32
             {
                 match self.tree.parent(id) {
@@ -466,6 +487,18 @@ impl Renderer {
                 let next = (cur - (delta as f32 / 120.0) * LIST_ROW).clamp(0.0, max_scroll);
                 if (next - cur).abs() > 0.01 {
                     self.tree.set_list_scroll(id, next);
+                    return true;
+                }
+                return false;
+            }
+            if self.tree.is_propgrid(id) {
+                let r = self.tree.get(id).rect;
+                let content = self.tree.prop_len(id) as f32 * LIST_ROW;
+                let max_scroll = (content - r.height).max(0.0);
+                let cur = self.tree.prop_scroll(id);
+                let next = (cur - (delta as f32 / 120.0) * LIST_ROW).clamp(0.0, max_scroll);
+                if (next - cur).abs() > 0.01 {
+                    self.tree.set_prop_scroll(id, next);
                     return true;
                 }
                 return false;
@@ -699,6 +732,9 @@ impl Renderer {
             Some(id) if self.tree.is_dropdown(id) => CursorKind::Hand,
             Some(id) if self.tree.is_split(id) => CursorKind::Hand,
             Some(id) if self.tree.is_menubar(id) => CursorKind::Hand,
+            Some(id) if self.tree.is_crumbs(id) => CursorKind::Hand,
+            Some(id) if self.tree.is_pager(id) => CursorKind::Hand,
+            Some(id) if self.tree.is_rating(id) => CursorKind::Hand,
             Some(id) if self.tree.is_tabs(id) => CursorKind::Hand,
             Some(id) if self.tree.is_accordion(id) => CursorKind::Hand,
             Some(id) if self.tree.is_textbox(id) => CursorKind::IBeam,
@@ -903,6 +939,16 @@ impl Renderer {
             }
             return true;
         }
+        for (i, _, act) in self.note_rects() {
+            if !self.notes[i].action.is_empty() && act.contains(x, y) {
+                let mut cb = self.notes[i].cb.take();
+                self.notes.remove(i);
+                if let Some(c) = cb.as_mut() {
+                    c(&mut self.tree);
+                }
+                return true;
+            }
+        }
         if let Some(p) = self.popup.take() {
             if p.rect.contains(x, y) {
                 let i = ((y - p.rect.y) / POPUP_ROW).floor();
@@ -1077,6 +1123,89 @@ impl Renderer {
             if self.tree.is_slider(id) {
                 self.dragging = Some(id);
                 self.set_slider_from_x(id, x);
+                return true;
+            }
+            if self.tree.is_pager(id) {
+                let r = self.tree.get(id).rect;
+                let (page, total) = self.tree.pager_state(id);
+                if total > 0 {
+                    let i = ((x - r.x) / PAGER_CELL).floor();
+                    let cells = total as i32 + 2;
+                    if i >= 0.0 && (i as i32) < cells {
+                        let i = i as i32;
+                        let next = if i == 0 {
+                            page.saturating_sub(1)
+                        } else if i == cells - 1 {
+                            (page + 1).min(total - 1)
+                        } else {
+                            (i - 1) as usize
+                        };
+                        if next != page {
+                            self.tree.set_pager_page(id, next);
+                            self.tree.fire_change(id, next as f32);
+                        }
+                    }
+                }
+                self.focused = Some(id);
+                return true;
+            }
+            if self.tree.is_rating(id) {
+                let r = self.tree.get(id).rect;
+                let (_, max) = self.tree.rating_state(id);
+                if max > 0 {
+                    let cell = (r.width / max as f32).max(1.0);
+                    let i = ((x - r.x) / cell).floor();
+                    if i >= 0.0 && (i as usize) < max {
+                        let v = i as usize + 1;
+                        self.tree.set_rating_value(id, v);
+                        self.tree.fire_change(id, v as f32);
+                    }
+                }
+                self.focused = Some(id);
+                return true;
+            }
+            if self.tree.is_crumbs(id) {
+                let r = self.tree.get(id).rect;
+                let items = self.tree.crumb_items(id);
+                let mut cx = r.x + 10.0;
+                for (i, it) in items.iter().enumerate() {
+                    let w = crumb_width(it.len());
+                    if x >= cx && x <= cx + w {
+                        self.tree.crumb_truncate(id, i);
+                        self.tree.fire_change(id, i as f32);
+                        break;
+                    }
+                    cx += w + CRUMB_SEP;
+                }
+                self.focused = Some(id);
+                return true;
+            }
+            if self.tree.is_time(id) {
+                let r = self.tree.get(id).rect;
+                let up = y < r.y + r.height / 2.0;
+                let left = x < r.x + r.width / 2.0;
+                let step = if up { 1 } else { -1 };
+                if left {
+                    self.tree.time_shift(id, step, 0);
+                } else {
+                    self.tree.time_shift(id, 0, step * 5);
+                }
+                let code = self.tree.time_code(id);
+                self.tree.fire_change(id, code);
+                self.focused = Some(id);
+                return true;
+            }
+            if self.tree.is_propgrid(id) {
+                let r = self.tree.get(id).rect;
+                let n = self.tree.prop_len(id);
+                let scroll = self.tree.prop_scroll(id);
+                let i = ((y - r.y + scroll) / LIST_ROW).floor();
+                if i >= 0.0 && (i as usize) < n {
+                    let i = i as usize;
+                    self.tree.set_prop_selected(id, Some(i));
+                    self.tree.fire_change(id, i as f32);
+                }
+                self.focused = Some(id);
                 return true;
             }
             if self.tree.is_dial(id) {
@@ -1751,6 +1880,53 @@ impl Renderer {
         }
     }
 
+    fn poll_notes(&mut self) {
+        for data in self.tree.take_notes() {
+            self.notes.push(NoteView {
+                title: data.title,
+                text: data.text,
+                action: data.action,
+                kind: data.kind,
+                secs: data.secs,
+                born: Instant::now(),
+                cb: data.cb,
+            });
+        }
+        self.notes
+            .retain(|n| n.secs <= 0.0 || n.born.elapsed().as_secs_f32() < n.secs);
+    }
+
+    fn note_rects(&self) -> Vec<(usize, Rect, Rect)> {
+        let mut out = Vec::new();
+        let mut top = 0usize;
+        let mut bot = 0usize;
+        for i in 0..self.notes.len() {
+            let kind = self.notes[i].kind;
+            let (r, act) = if kind == 1 {
+                let w = 460.0f32.min(self.width - 40.0);
+                let h = 56.0;
+                let r = Rect::new(
+                    (self.width - w) / 2.0,
+                    self.height - 28.0 - h - bot as f32 * (h + 10.0),
+                    w,
+                    h,
+                );
+                bot += 1;
+                let act = Rect::new(r.x + r.width - 110.0, r.y + 10.0, 96.0, h - 20.0);
+                (r, act)
+            } else {
+                let w = 320.0f32.min(self.width - 40.0);
+                let h = 76.0;
+                let r = Rect::new(self.width - w - 20.0, 20.0 + top as f32 * (h + 10.0), w, h);
+                top += 1;
+                let act = Rect::new(r.x + r.width - 100.0, r.y + h - 34.0, 86.0, 26.0);
+                (r, act)
+            };
+            out.push((i, r, act));
+        }
+        out
+    }
+
     fn poll_dialog(&mut self) {
         if self.dialog.is_some() {
             return;
@@ -1770,6 +1946,7 @@ impl Renderer {
     pub fn render(&mut self) {
         self.poll_dialog();
         self.poll_toast();
+        self.poll_notes();
         self.tree.layout(Rect::new(0.0, 0.0, self.width, self.height));
         self.update_scroll();
         self.preload_images();
@@ -2425,6 +2602,187 @@ impl Renderer {
                         );
                         canvas.fill_rounded_rect(swatch, 6.0, Color::rgb(cr, cg, cb));
                     }
+                    NodeKind::Time { hour, minute } => {
+                        let r = node.rect;
+                        let rad = style.radius.unwrap_or(8.0);
+                        canvas.fill_rounded_rect(r, rad, style.fill.unwrap_or(theme.surface));
+                        let color = style.text.unwrap_or(theme.content);
+                        let half = r.width / 2.0;
+                        let arrow_h = (r.height * 0.28).max(16.0);
+                        let up: Vec<u16> = "\u{25B2}".encode_utf16().collect();
+                        let dn: Vec<u16> = "\u{25BC}".encode_utf16().collect();
+                        for (i, part) in [*hour, *minute].iter().enumerate() {
+                            let px = r.x + i as f32 * half;
+                            canvas.draw_text(
+                                &up,
+                                format,
+                                Rect::new(px, r.y, half, arrow_h),
+                                theme.track,
+                            );
+                            canvas.draw_text(
+                                &dn,
+                                format,
+                                Rect::new(px, r.y + r.height - arrow_h, half, arrow_h),
+                                theme.track,
+                            );
+                            let t: Vec<u16> =
+                                format!("{:02}", part).encode_utf16().collect();
+                            canvas.draw_text(
+                                &t,
+                                format,
+                                Rect::new(px, r.y + arrow_h, half, (r.height - 2.0 * arrow_h).max(0.0)),
+                                color,
+                            );
+                        }
+                        let colon: Vec<u16> = ":".encode_utf16().collect();
+                        canvas.draw_text(&colon, format, r, color);
+                    }
+                    NodeKind::PropGrid {
+                        rows,
+                        selected,
+                        scroll,
+                    } => {
+                        let r = node.rect;
+                        let rad = style.radius.unwrap_or(8.0);
+                        canvas.fill_rounded_rect(r, rad, style.fill.unwrap_or(theme.surface));
+                        canvas.push_clip(r);
+                        let color = style.text.unwrap_or(theme.content);
+                        let split = r.x + r.width * 0.45;
+                        for (i, (k, v)) in rows.iter().enumerate() {
+                            let ry = r.y + i as f32 * LIST_ROW - scroll;
+                            if ry + LIST_ROW < r.y || ry > r.y + r.height {
+                                continue;
+                            }
+                            if *selected == Some(i) {
+                                let hl = Rect::new(
+                                    r.x + 3.0,
+                                    ry + 2.0,
+                                    (r.width - 6.0).max(0.0),
+                                    LIST_ROW - 4.0,
+                                );
+                                canvas.fill_rounded_rect(hl, 5.0, theme.selection);
+                            }
+                            let kr = Rect::new(
+                                r.x + 12.0,
+                                ry,
+                                (split - r.x - 20.0).max(0.0),
+                                LIST_ROW,
+                            );
+                            canvas.draw_text(k, format_left, kr, theme.track);
+                            let vr = Rect::new(
+                                split + 10.0,
+                                ry,
+                                (r.x + r.width - split - 22.0).max(0.0),
+                                LIST_ROW,
+                            );
+                            canvas.draw_text(v, format_left, vr, color);
+                            let line =
+                                Rect::new(r.x + 6.0, ry + LIST_ROW - 1.0, (r.width - 12.0).max(0.0), 1.0);
+                            canvas.fill_rounded_rect(line, 0.5, theme.track);
+                        }
+                        let content = rows.len() as f32 * LIST_ROW;
+                        draw_scrollbar(
+                            &canvas,
+                            r,
+                            content,
+                            r.height,
+                            *scroll,
+                            theme.track,
+                            theme.content,
+                        );
+                        canvas.pop_clip();
+                    }
+                    NodeKind::Badge { text, dot } => {
+                        let r = node.rect;
+                        let fill = style.fill.unwrap_or(theme.accent);
+                        if *dot {
+                            let d = r.height.min(r.width).min(12.0);
+                            let bx = r.x + r.width - d;
+                            let by = r.y + (r.height - d) / 2.0;
+                            canvas.fill_rounded_rect(
+                                Rect::new(bx, by, d, d),
+                                d / 2.0,
+                                fill,
+                            );
+                        } else {
+                            canvas.fill_rounded_rect(r, r.height / 2.0, fill);
+                            let tc = style.text.unwrap_or(theme.on_accent);
+                            canvas.draw_text(text, format, r, tc);
+                        }
+                    }
+                    NodeKind::Crumbs { items } => {
+                        let r = node.rect;
+                        let color = style.text.unwrap_or(theme.content);
+                        let sep: Vec<u16> = "\u{203A}".encode_utf16().collect();
+                        let mut cx = r.x + 10.0;
+                        let last = items.len().saturating_sub(1);
+                        for (i, it) in items.iter().enumerate() {
+                            let w = crumb_width(it.len());
+                            let tc = if i == last {
+                                color
+                            } else {
+                                style.fill.unwrap_or(theme.accent)
+                            };
+                            canvas.draw_text(
+                                it,
+                                format_left,
+                                Rect::new(cx, r.y, w, r.height),
+                                tc,
+                            );
+                            cx += w;
+                            if i != last {
+                                canvas.draw_text(
+                                    &sep,
+                                    format,
+                                    Rect::new(cx, r.y, CRUMB_SEP, r.height),
+                                    theme.track,
+                                );
+                                cx += CRUMB_SEP;
+                            }
+                        }
+                    }
+                    NodeKind::Pager { page, total } => {
+                        let r = node.rect;
+                        let color = style.text.unwrap_or(theme.content);
+                        let fill = style.fill.unwrap_or(theme.accent);
+                        let cells = *total + 2;
+                        for i in 0..cells {
+                            let cx = r.x + i as f32 * PAGER_CELL;
+                            let cell = Rect::new(cx + 2.0, r.y + 2.0, PAGER_CELL - 4.0, (r.height - 4.0).max(0.0));
+                            let label: Vec<u16> = if i == 0 {
+                                "\u{25C0}".encode_utf16().collect()
+                            } else if i == cells - 1 {
+                                "\u{25B6}".encode_utf16().collect()
+                            } else {
+                                i.to_string().encode_utf16().collect()
+                            };
+                            let active = i > 0 && i < cells - 1 && i - 1 == *page;
+                            if active {
+                                canvas.fill_rounded_rect(cell, 6.0, fill);
+                            } else {
+                                canvas.stroke_rect(cell, 1.0, theme.track);
+                            }
+                            let tc = if active { theme.on_accent } else { color };
+                            canvas.draw_text(&label, format, cell, tc);
+                        }
+                    }
+                    NodeKind::Rating { value, max } => {
+                        let r = node.rect;
+                        let n = (*max).max(1);
+                        let cell = r.width / n as f32;
+                        let fill = style.fill.unwrap_or(theme.accent);
+                        let star: Vec<u16> = "\u{2605}".encode_utf16().collect();
+                        for i in 0..n {
+                            let cx = r.x + i as f32 * cell;
+                            let col = if i < *value { fill } else { theme.track };
+                            canvas.draw_text(
+                                &star,
+                                format,
+                                Rect::new(cx, r.y, cell, r.height),
+                                col,
+                            );
+                        }
+                    }
                     NodeKind::Spinner { phase } => {
                         let r = node.rect;
                         let d = r.width.min(r.height).min(48.0);
@@ -2982,6 +3340,26 @@ impl Renderer {
                 }
             }
 
+            for (i, r, act) in self.note_rects() {
+                let n = &self.notes[i];
+                canvas.fill_rounded_rect(r, 12.0, theme.surface);
+                canvas.stroke_rect(r, 1.0, theme.track);
+                if n.kind == 1 {
+                    let tr = Rect::new(r.x + 16.0, r.y, (r.width - 140.0).max(0.0), r.height);
+                    canvas.draw_text(&n.text, format_left, tr, theme.content);
+                } else {
+                    let tr = Rect::new(r.x + 16.0, r.y + 8.0, (r.width - 32.0).max(0.0), 26.0);
+                    canvas.draw_text(&n.title, format_left, tr, theme.content);
+                    let mr =
+                        Rect::new(r.x + 16.0, r.y + 34.0, (r.width - 120.0).max(0.0), 30.0);
+                    canvas.draw_text(&n.text, format_left, mr, theme.track);
+                }
+                if !n.action.is_empty() {
+                    canvas.fill_rounded_rect(act, 6.0, theme.accent);
+                    canvas.draw_text(&n.action, format, act, theme.on_accent);
+                }
+            }
+
         if let Some((panel, btns)) = self.dialog_rects() {
                 let backdrop = Rect::new(0.0, 0.0, self.width, self.height);
                 canvas.fill_rounded_rect(backdrop, 0.0, DIALOG_SCRIM);
@@ -3123,6 +3501,12 @@ fn kind_name(kind: &NodeKind) -> &'static str {
         NodeKind::TreeView { .. } => "TreeView",
         NodeKind::Calendar { .. } => "Calendar",
         NodeKind::Color { .. } => "Color",
+        NodeKind::Time { .. } => "Time",
+        NodeKind::PropGrid { .. } => "PropGrid",
+        NodeKind::Badge { .. } => "Badge",
+        NodeKind::Crumbs { .. } => "Crumbs",
+        NodeKind::Pager { .. } => "Pager",
+        NodeKind::Rating { .. } => "Rating",
     }
 }
 
