@@ -2234,6 +2234,13 @@ impl PyWindow {
         Ok(())
     }
 
+    /// Следит за CSS-файлом и перезагружает его на лету.
+    fn css_hot(&mut self, path: &str) -> PyResult<()> {
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        tree.css_watch(path);
+        Ok(())
+    }
+
     /// Добавляет список; `ch(index)` при выборе пункта.
     #[pyo3(signature = (items, *, pr=None, sel=None, ch=None, pd=0.0, gp=0.0, w=None, h=None))]
     fn lst(

@@ -4,6 +4,8 @@ use std::rc::Rc;
 
 use crate::render::types::{Color, Rect};
 
+mod css;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct NodeId(usize);
 
@@ -790,32 +792,22 @@ impl Tree {
         self.nodes[id.0].style.elev = Some(elev);
     }
 
-    /// Разбирает подмножество CSS и применяет стили ко всем узлам.
+    /// Разбирает CSS с каскадом и применяет стили ко всем узлам.
     pub fn apply_css(&mut self, css: &str) {
-        let rules = parse_css(css);
-        let count = self.nodes.len();
-        for i in 0..count {
-            for rule in &rules {
-                if sel_matches(&self.nodes[i], &rule.sel) {
-                    match rule.state {
-                        State::Base => {
-                            for (k, v) in &rule.decls {
-                                apply_decl(&mut self.nodes[i], k, v);
-                            }
-                        }
-                        State::Focus => {
-                            for (k, v) in &rule.decls {
-                                apply_style_decl(&mut self.nodes[i].style_focus, k, v);
-                            }
-                        }
-                        State::Hover => {
-                            for (k, v) in &rule.decls {
-                                apply_style_decl(&mut self.nodes[i].style_hover, k, v);
-                            }
-                        }
-                    }
-                }
-            }
+        css::add_source(self, css);
+        self.dirty = true;
+    }
+
+    /// Включает слежение за CSS-файлом и горячую перезагрузку.
+    pub fn css_watch(&mut self, path: &str) {
+        css::watch(self, path);
+        self.dirty = true;
+    }
+
+    /// Перечитывает CSS-файл, если он изменился на диске.
+    pub fn poll_css(&mut self) {
+        if css::poll(self) {
+            self.dirty = true;
         }
     }
 
@@ -2319,25 +2311,6 @@ fn anchor_axis(
     }
 }
 
-enum Sel {
-    Any,
-    Type(String),
-    Class(String),
-}
-
-#[derive(Clone, Copy)]
-enum State {
-    Base,
-    Focus,
-    Hover,
-}
-
-struct Rule {
-    sel: Sel,
-    state: State,
-    decls: Vec<(String, String)>,
-}
-
 pub fn kind_tag(kind: &NodeKind) -> &'static str {
     match kind {
         NodeKind::Container => "container",
@@ -2385,74 +2358,6 @@ pub fn kind_tag(kind: &NodeKind) -> &'static str {
         NodeKind::Term { .. } => "term",
         NodeKind::Dock { .. } => "dock",
         NodeKind::Drop { .. } => "drop",
-    }
-}
-
-fn sel_matches(node: &Node, sel: &Sel) -> bool {
-    match sel {
-        Sel::Any => true,
-        Sel::Type(t) => kind_tag(&node.kind) == t,
-        Sel::Class(c) => node.class_name.as_deref() == Some(c.as_str()),
-    }
-}
-
-fn parse_css(css: &str) -> Vec<Rule> {
-    let mut out = Vec::new();
-    let cleaned = strip_comments(css);
-    let mut rest = cleaned.as_str();
-    while let Some(open) = rest.find('{') {
-        let selector = rest[..open].trim().to_string();
-        let after = &rest[open + 1..];
-        let close = match after.find('}') {
-            Some(c) => c,
-            None => break,
-        };
-        let body = &after[..close];
-        rest = &after[close + 1..];
-        if selector.is_empty() {
-            continue;
-        }
-        let (sel, state) = parse_head(&selector);
-        let mut decls = Vec::new();
-        for part in body.split(';') {
-            let part = part.trim();
-            if part.is_empty() {
-                continue;
-            }
-            if let Some(colon) = part.find(':') {
-                let key = part[..colon].trim().to_lowercase();
-                let value = part[colon + 1..].trim().to_string();
-                if !key.is_empty() && !value.is_empty() {
-                    decls.push((key, value));
-                }
-            }
-        }
-        out.push(Rule { sel, state, decls });
-    }
-    out
-}
-
-fn parse_selector(s: &str) -> Sel {
-    if s == "*" {
-        Sel::Any
-    } else if let Some(name) = s.strip_prefix('.') {
-        Sel::Class(name.to_string())
-    } else {
-        Sel::Type(s.to_lowercase())
-    }
-}
-
-fn parse_head(s: &str) -> (Sel, State) {
-    match s.split_once(':') {
-        Some((name, st)) => {
-            let state = match st.trim() {
-                "focus" => State::Focus,
-                "hover" => State::Hover,
-                _ => State::Base,
-            };
-            (parse_selector(name.trim()), state)
-        }
-        None => (parse_selector(s), State::Base),
     }
 }
 

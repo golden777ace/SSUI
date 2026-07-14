@@ -2130,6 +2130,7 @@ impl Renderer {
     }
 
     fn poll_dialog(&mut self) {
+        self.tree.poll_css();
         if self.dialog.is_some() {
             return;
         }
@@ -2855,11 +2856,12 @@ impl Renderer {
                         canvas.push_clip(r);
                         let color = style.text.unwrap_or(theme.content);
                         let split = r.x + r.width * 0.45;
-                        for (i, (k, v)) in rows.iter().enumerate() {
+                        let first = (scroll / LIST_ROW).floor().max(0.0) as usize;
+                        let span = (r.height / LIST_ROW).ceil() as usize + 2;
+                        let last = (first + span).min(rows.len());
+                        for i in first..last {
+                            let (k, v) = &rows[i];
                             let ry = r.y + i as f32 * LIST_ROW - scroll;
-                            if ry + LIST_ROW < r.y || ry > r.y + r.height {
-                                continue;
-                            }
                             if *selected == Some(i) {
                                 let hl = Rect::new(
                                     r.x + 3.0,
@@ -3365,11 +3367,12 @@ impl Renderer {
                         } else {
                             None
                         };
-                        for (i, item) in items.iter().enumerate() {
+                        let first = (*scroll / LIST_ROW).floor().max(0.0) as usize;
+                        let span = (r.height / LIST_ROW).ceil() as usize + 2;
+                        let last = (first + span).min(items.len());
+                        for i in first..last {
+                            let item = &items[i];
                             let iy = r.y - *scroll + LIST_ROW * i as f32;
-                            if iy + LIST_ROW <= r.y || iy >= r.y + r.height {
-                                continue;
-                            }
                             let row_rect = Rect::new(r.x, iy, r.width, LIST_ROW);
                             if *selected == Some(i) {
                                 canvas.fill_rounded_rect(row_rect, 0.0, theme.selection);
