@@ -8,8 +8,45 @@ use pyo3::wrap_pyfunction;
 use ssui_core::platform::{dpi, Window as CoreWindow};
 use ssui_core::tree::{
     Anim, AnimQueue, Axis, DialogData, DialogQueue, Ease, NodeId, NodeKind, NoteData,
-    NoteQueue, Props, TextState, Tree, TreeItem,
+    NoteQueue, Props, Shape, TextState, Tree, TreeItem,
 };
+
+type ShapeSpec = (String, Vec<f32>, String, String);
+
+fn hexa(s: &str) -> u32 {
+    let t = s.trim_start_matches('#');
+    match t.len() {
+        6 => u32::from_str_radix(t, 16)
+            .map(|v| (v << 8) | 0xFF)
+            .unwrap_or(0xFFFFFFFF),
+        8 => u32::from_str_radix(t, 16).unwrap_or(0xFFFFFFFF),
+        _ => 0xFFFFFFFF,
+    }
+}
+
+fn make_shapes(items: Vec<ShapeSpec>) -> Vec<Shape> {
+    items
+        .iter()
+        .map(|(k, a, c, t)| {
+            let kind = match k.as_str() {
+                "rect" => 0u8,
+                "circle" => 1,
+                "line" => 2,
+                _ => 3,
+            };
+            let mut args = [0.0f32; 6];
+            for (i, v) in a.iter().take(6).enumerate() {
+                args[i] = *v;
+            }
+            Shape {
+                kind,
+                args,
+                color: hexa(c),
+                text: utf16(t),
+            }
+        })
+        .collect()
+}
 
 #[pyclass(name = "N")]
 #[derive(Clone, Copy)]
@@ -24,6 +61,7 @@ thread_local! {
     static WIN_SETTINGS: RefCell<Vec<(u8, Py<PyAny>)>> = RefCell::new(Vec::new());
     static CHART_BINDINGS: RefCell<Vec<(NodeId, Py<PyAny>)>> = RefCell::new(Vec::new());
     static PROP_BINDINGS: RefCell<Vec<(NodeId, Py<PyAny>)>> = RefCell::new(Vec::new());
+    static CANVAS_BINDINGS: RefCell<Vec<(NodeId, Py<PyAny>)>> = RefCell::new(Vec::new());
 }
 
 #[pyclass(unsendable, name = "Ctx")]
@@ -746,6 +784,98 @@ impl PyWindow {
                 refresh_all(py, t, &texts, &values);
             });
         });
+        Ok(PyNode { id })
+    }
+
+    /// Терминал; `on(cmd)` при Enter, вывод — возврат строки из `on`.
+    #[pyo3(signature = (lines=Vec::new(), *, pr=None, prompt="$", on=None, pd=0.0, gp=0.0, w=None, h=None))]
+    fn term(
+        &mut self,
+        lines: Vec<String>,
+        pr: Option<PyNode>,
+        prompt: &str,
+        on: Option<PyObject>,
+        pd: f32,
+        gp: f32,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<PyNode> {
+        let h = h.or(Some(320.0));
+        let props = make_props("v", pd, gp, w, h);
+        let parent = self.parent_of(pr);
+        let texts = self.bindings.clone();
+        let values = self.value_bindings.clone();
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let id = tree.add_child(
+            parent,
+            NodeKind::Term {
+                lines: lines.iter().map(|s| utf16(s)).collect(),
+                input: TextState::new(),
+                prompt: utf16(prompt),
+                scroll: 0.0,
+            },
+            props,
+        );
+        tree.set_on_input(id, move |t, cmd| {
+            Python::with_gil(|py| {
+                if let Some(cb) = &on {
+                    match cb.bind(py).call1((cmd,)) {
+                        Ok(out) => {
+                            if let Ok(s) = out.extract::<String>() {
+                                for line in s.lines() {
+                                    t.term_push(id, utf16(line));
+                                }
+                            }
+                        }
+                        Err(e) => e.print(py),
+                    }
+                }
+                refresh_all(py, t, &texts, &values);
+            });
+        });
+        Ok(PyNode { id })
+    }
+
+    /// Очищает вывод терминала.
+    fn term_clear(&mut self, node: PyNode) -> PyResult<()> {
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        tree.term_clear(node.id);
+        Ok(())
+    }
+
+    /// Область рисования; фигуры — `(вид, [args], цвет, текст)`.
+    /// Виды: `rect` `[x,y,w,h,rad,stroke]`, `circle` `[cx,cy,r,stroke]`,
+    /// `line` `[x1,y1,x2,y2,w]`, `text` `[x,y,w,h]`.
+    #[pyo3(signature = (shapes=Vec::new(), *, pr=None, bind=None, pd=0.0, gp=0.0, w=None, h=None))]
+    fn cv(
+        &mut self,
+        py: Python,
+        shapes: Vec<ShapeSpec>,
+        pr: Option<PyNode>,
+        bind: Option<PyObject>,
+        pd: f32,
+        gp: f32,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<PyNode> {
+        let h = h.or(Some(280.0));
+        let props = make_props("v", pd, gp, w, h);
+        let initial = match &bind {
+            Some(f) => f.bind(py).call0()?.extract::<Vec<ShapeSpec>>()?,
+            None => shapes,
+        };
+        let parent = self.parent_of(pr);
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let id = tree.add_child(
+            parent,
+            NodeKind::Canvas {
+                shapes: make_shapes(initial),
+            },
+            props,
+        );
+        if let Some(f) = bind {
+            CANVAS_BINDINGS.with(|c| c.borrow_mut().push((id, f)));
+        }
         Ok(PyNode { id })
     }
 
@@ -2262,6 +2392,14 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
         for (id, f) in c.borrow().iter() {
             match f.bind(py).call0().and_then(|v| v.extract::<Vec<f32>>()) {
                 Ok(v) => t.set_chart_values(*id, v),
+                Err(e) => e.print(py),
+            }
+        }
+    });
+    CANVAS_BINDINGS.with(|c| {
+        for (id, f) in c.borrow().iter() {
+            match f.bind(py).call0().and_then(|v| v.extract::<Vec<ShapeSpec>>()) {
+                Ok(items) => t.set_canvas_shapes(*id, make_shapes(items)),
                 Err(e) => e.print(py),
             }
         }

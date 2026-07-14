@@ -26,6 +26,7 @@ use crate::theme::Theme;
 use crate::tree::{
     NodeId, NodeKind, Style, Tree, ACC_HEADER, BAR_ITEM, CAL_HEADER, CAL_WEEK, GROUP_HEADER,
     LIST_ROW, POPUP_ROW, SCROLLBAR_W, SPLIT_ARROW, SPLIT_W, TABLE_HEADER, TABLE_ROW, TAB_HEADER,
+    TERM_INPUT, TERM_ROW,
 };
 
 const MONTHS: [&str; 12] = [
@@ -461,6 +462,7 @@ impl Renderer {
                 && !self.tree.is_table(id)
                 && !self.tree.is_tree(id)
                 && !self.tree.is_propgrid(id)
+                && !self.tree.is_term(id)
                 && guard < 32
             {
                 match self.tree.parent(id) {
@@ -487,6 +489,19 @@ impl Renderer {
                 let next = (cur - (delta as f32 / 120.0) * LIST_ROW).clamp(0.0, max_scroll);
                 if (next - cur).abs() > 0.01 {
                     self.tree.set_list_scroll(id, next);
+                    return true;
+                }
+                return false;
+            }
+            if self.tree.is_term(id) {
+                let r = self.tree.get(id).rect;
+                let content = self.tree.term_len(id) as f32 * TERM_ROW;
+                let visible = (r.height - TERM_INPUT - 16.0).max(0.0);
+                let max_scroll = (content - visible).max(0.0);
+                let cur = self.tree.term_scroll(id);
+                let next = (cur - (delta as f32 / 120.0) * TERM_ROW).clamp(0.0, max_scroll);
+                if (next - cur).abs() > 0.01 {
+                    self.tree.set_term_scroll(id, next);
                     return true;
                 }
                 return false;
@@ -738,6 +753,7 @@ impl Renderer {
             Some(id) if self.tree.is_tabs(id) => CursorKind::Hand,
             Some(id) if self.tree.is_accordion(id) => CursorKind::Hand,
             Some(id) if self.tree.is_textbox(id) => CursorKind::IBeam,
+            Some(id) if self.tree.is_term(id) => CursorKind::IBeam,
             _ => CursorKind::Arrow,
         }
     }
@@ -1125,6 +1141,10 @@ impl Renderer {
                 self.set_slider_from_x(id, x);
                 return true;
             }
+            if self.tree.is_term(id) {
+                self.focused = Some(id);
+                return true;
+            }
             if self.tree.is_pager(id) {
                 let r = self.tree.get(id).rect;
                 let (page, total) = self.tree.pager_state(id);
@@ -1325,6 +1345,27 @@ impl Renderer {
     pub fn on_char(&mut self, ch: u16) -> bool {
         const BACKSPACE: u16 = 0x08;
         if let Some(id) = self.focused {
+            if self.tree.is_term(id) {
+                if ch == 0x0D {
+                    if let Some(cmd) = self.tree.term_take_input(id) {
+                        let echo: Vec<u16> = format!("$ {}", cmd).encode_utf16().collect();
+                        self.tree.term_push(id, echo);
+                        self.tree.fire_input_text(id, &cmd);
+                    }
+                    return true;
+                }
+                if let Some(st) = self.tree.term_input_mut(id) {
+                    if ch == BACKSPACE {
+                        st.backspace();
+                        return true;
+                    }
+                    if ch >= 0x20 {
+                        st.insert(&[ch]);
+                        return true;
+                    }
+                }
+                return false;
+            }
             let mut changed = false;
             if let Some(st) = self.tree.textbox_state_mut(id) {
                 if ch == BACKSPACE {
@@ -2783,6 +2824,136 @@ impl Renderer {
                             );
                         }
                     }
+                    NodeKind::Canvas { shapes } => {
+                        let r = node.rect;
+                        let rad = style.radius.unwrap_or(8.0);
+                        canvas.fill_rounded_rect(r, rad, style.fill.unwrap_or(theme.surface));
+                        canvas.push_clip(r);
+                        for s in shapes.iter() {
+                            let c = Color::hexa(s.color);
+                            let a = s.args;
+                            match s.kind {
+                                0 => {
+                                    let sr =
+                                        Rect::new(r.x + a[0], r.y + a[1], a[2], a[3]);
+                                    if a[5] > 0.0 {
+                                        canvas.stroke_rect(sr, a[5], c);
+                                    } else {
+                                        canvas.fill_rounded_rect(sr, a[4], c);
+                                    }
+                                }
+                                1 => {
+                                    let d = a[2] * 2.0;
+                                    let sr = Rect::new(
+                                        r.x + a[0] - a[2],
+                                        r.y + a[1] - a[2],
+                                        d,
+                                        d,
+                                    );
+                                    if a[3] > 0.0 {
+                                        canvas.stroke_rect(sr, a[3], c);
+                                    } else {
+                                        canvas.fill_rounded_rect(sr, a[2], c);
+                                    }
+                                }
+                                2 => {
+                                    let w = a[4].max(1.0);
+                                    let dx = a[2] - a[0];
+                                    let dy = a[3] - a[1];
+                                    let len = (dx * dx + dy * dy).sqrt().max(1.0);
+                                    let steps =
+                                        (len / (w * 0.4).max(1.0)).ceil().max(1.0) as usize;
+                                    for i in 0..=steps {
+                                        let t = i as f32 / steps as f32;
+                                        let px = r.x + a[0] + dx * t - w / 2.0;
+                                        let py = r.y + a[1] + dy * t - w / 2.0;
+                                        canvas.fill_rounded_rect(
+                                            Rect::new(px, py, w, w),
+                                            w / 2.0,
+                                            c,
+                                        );
+                                    }
+                                }
+                                _ => {
+                                    let tr = Rect::new(
+                                        r.x + a[0],
+                                        r.y + a[1],
+                                        a[2].max(1.0),
+                                        a[3].max(1.0),
+                                    );
+                                    canvas.draw_text(&s.text, format_left, tr, c);
+                                }
+                            }
+                        }
+                        canvas.pop_clip();
+                    }
+                    NodeKind::Term {
+                        lines,
+                        input,
+                        prompt,
+                        scroll,
+                    } => {
+                        let r = node.rect;
+                        let rad = style.radius.unwrap_or(8.0);
+                        let bg = style.fill.unwrap_or(theme.surface);
+                        canvas.fill_rounded_rect(r, rad, bg);
+                        canvas.push_clip(r);
+                        let color = style.text.unwrap_or(theme.content);
+                        let view = (r.height - TERM_INPUT - 16.0).max(0.0);
+                        for (i, line) in lines.iter().enumerate() {
+                            let ly = r.y + 8.0 + i as f32 * TERM_ROW - scroll;
+                            if ly + TERM_ROW < r.y || ly > r.y + view + 8.0 {
+                                continue;
+                            }
+                            canvas.draw_text(
+                                line,
+                                format_left,
+                                Rect::new(r.x + 12.0, ly, (r.width - 24.0).max(0.0), TERM_ROW),
+                                color,
+                            );
+                        }
+                        let iy = r.y + r.height - TERM_INPUT - 6.0;
+                        let ir = Rect::new(r.x + 8.0, iy, (r.width - 16.0).max(0.0), TERM_INPUT);
+                        canvas.fill_rounded_rect(ir, 6.0, theme.track);
+                        canvas.draw_text(
+                            prompt,
+                            format_left,
+                            Rect::new(ir.x + 8.0, ir.y, 24.0, ir.height),
+                            theme.accent,
+                        );
+                        canvas.draw_text(
+                            &input.text,
+                            format_left,
+                            Rect::new(ir.x + 32.0, ir.y, (ir.width - 44.0).max(0.0), ir.height),
+                            color,
+                        );
+                        if focused == Some(id) {
+                            let cx = ir.x
+                                + 32.0
+                                + x_at_index(
+                                    &self.dwrite,
+                                    format_left,
+                                    &input.text,
+                                    input.caret,
+                                );
+                            canvas.fill_rounded_rect(
+                                Rect::new(cx, ir.y + 6.0, 2.0, ir.height - 12.0),
+                                1.0,
+                                color,
+                            );
+                        }
+                        let content = lines.len() as f32 * TERM_ROW;
+                        draw_scrollbar(
+                            &canvas,
+                            r,
+                            content,
+                            view,
+                            *scroll,
+                            theme.track,
+                            theme.content,
+                        );
+                        canvas.pop_clip();
+                    }
                     NodeKind::Spinner { phase } => {
                         let r = node.rect;
                         let d = r.width.min(r.height).min(48.0);
@@ -3507,6 +3678,8 @@ fn kind_name(kind: &NodeKind) -> &'static str {
         NodeKind::Crumbs { .. } => "Crumbs",
         NodeKind::Pager { .. } => "Pager",
         NodeKind::Rating { .. } => "Rating",
+        NodeKind::Canvas { .. } => "Canvas",
+        NodeKind::Term { .. } => "Term",
     }
 }
 

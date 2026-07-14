@@ -363,6 +363,15 @@ pub enum NodeKind {
         value: usize,
         max: usize,
     },
+    Canvas {
+        shapes: Vec<Shape>,
+    },
+    Term {
+        lines: Vec<Vec<u16>>,
+        input: TextState,
+        prompt: Vec<u16>,
+        scroll: f32,
+    },
 }
 
 #[derive(Clone)]
@@ -371,6 +380,14 @@ pub struct TreeItem {
     pub label: Vec<u16>,
     pub open: bool,
     pub leaf: bool,
+}
+
+#[derive(Clone)]
+pub struct Shape {
+    pub kind: u8,
+    pub args: [f32; 6],
+    pub color: u32,
+    pub text: Vec<u16>,
 }
 
 /// Толщина разделителя в пикселях.
@@ -398,6 +415,10 @@ pub const ACC_HEADER: f32 = 40.0;
 /// Высота строки списка и ширина полосы прокрутки.
 pub const LIST_ROW: f32 = 32.0;
 pub const SCROLLBAR_W: f32 = 10.0;
+
+/// Высота строки терминала и его поля ввода.
+pub const TERM_ROW: f32 = 22.0;
+pub const TERM_INPUT: f32 = 30.0;
 
 /// Высота полосы вкладок в пикселях.
 pub const TAB_HEADER: f32 = 40.0;
@@ -802,6 +823,83 @@ impl Tree {
         }
     }
 
+    /// Является ли узел областью рисования.
+    pub fn is_canvas(&self, id: NodeId) -> bool {
+        matches!(self.nodes[id.0].kind, NodeKind::Canvas { .. })
+    }
+
+    /// Задаёт фигуры области рисования.
+    pub fn set_canvas_shapes(&mut self, id: NodeId, data: Vec<Shape>) {
+        if let NodeKind::Canvas { shapes } = &mut self.nodes[id.0].kind {
+            *shapes = data;
+        }
+    }
+
+    /// Является ли узел терминалом.
+    pub fn is_term(&self, id: NodeId) -> bool {
+        matches!(self.nodes[id.0].kind, NodeKind::Term { .. })
+    }
+
+    /// Число строк вывода терминала.
+    pub fn term_len(&self, id: NodeId) -> usize {
+        if let NodeKind::Term { lines, .. } = &self.nodes[id.0].kind {
+            lines.len()
+        } else {
+            0
+        }
+    }
+
+    /// Добавляет строку в вывод терминала.
+    pub fn term_push(&mut self, id: NodeId, line: Vec<u16>) {
+        if let NodeKind::Term { lines, .. } = &mut self.nodes[id.0].kind {
+            lines.push(line);
+        }
+    }
+
+    /// Очищает вывод терминала.
+    pub fn term_clear(&mut self, id: NodeId) {
+        if let NodeKind::Term { lines, scroll, .. } = &mut self.nodes[id.0].kind {
+            lines.clear();
+            *scroll = 0.0;
+        }
+    }
+
+    /// Возвращает состояние ввода терминала.
+    pub fn term_input_mut(&mut self, id: NodeId) -> Option<&mut TextState> {
+        if let NodeKind::Term { input, .. } = &mut self.nodes[id.0].kind {
+            Some(input)
+        } else {
+            None
+        }
+    }
+
+    /// Забирает введённую строку терминала.
+    pub fn term_take_input(&mut self, id: NodeId) -> Option<String> {
+        if let NodeKind::Term { input, .. } = &mut self.nodes[id.0].kind {
+            let text = String::from_utf16_lossy(&input.text);
+            *input = TextState::new();
+            Some(text)
+        } else {
+            None
+        }
+    }
+
+    /// Возвращает прокрутку терминала.
+    pub fn term_scroll(&self, id: NodeId) -> f32 {
+        if let NodeKind::Term { scroll, .. } = &self.nodes[id.0].kind {
+            *scroll
+        } else {
+            0.0
+        }
+    }
+
+    /// Задаёт прокрутку терминала.
+    pub fn set_term_scroll(&mut self, id: NodeId, value: f32) {
+        if let NodeKind::Term { scroll, .. } = &mut self.nodes[id.0].kind {
+            *scroll = value;
+        }
+    }
+
     /// Назначает обработчик клика для узла.
     pub fn set_on_click<F: FnMut(&mut Tree) + 'static>(&mut self, id: NodeId, f: F) {
         self.nodes[id.0].on_click = Some(Box::new(f));
@@ -810,6 +908,14 @@ impl Tree {
     /// Назначает обработчик изменения значения (ползунок).
     pub fn set_on_change<F: FnMut(&mut Tree, f32) + 'static>(&mut self, id: NodeId, f: F) {
         self.nodes[id.0].on_change = Some(Box::new(f));
+    }
+
+    /// Вызывает обработчик ввода с произвольным текстом.
+    pub fn fire_input_text(&mut self, id: NodeId, text: &str) {
+        if let Some(mut cb) = self.nodes[id.0].on_input.take() {
+            cb(self, text);
+            self.nodes[id.0].on_input = Some(cb);
+        }
     }
 
     fn take_on_click(&mut self, id: NodeId) -> Option<Box<dyn FnMut(&mut Tree)>> {
@@ -2106,6 +2212,8 @@ fn kind_tag(kind: &NodeKind) -> &'static str {
         NodeKind::Crumbs { .. } => "crumbs",
         NodeKind::Pager { .. } => "pager",
         NodeKind::Rating { .. } => "rating",
+        NodeKind::Canvas { .. } => "canvas",
+        NodeKind::Term { .. } => "term",
     }
 }
 

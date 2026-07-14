@@ -226,7 +226,7 @@ Spinner, Gauge, Tooltip, Toast.
 - ✅ Tab Widget — вкладки (`tab`).
 - ✅ Accordion — раскрывающиеся секции (`acc`).
 - ✅ Stack Widget — одна страница из многих (`stk`).
-- 🔄 Canvas — область рисования (примитивы есть, публичного API нет).
+- ✅ Canvas — область рисования (`cv`: rect, circle, line, text).
 - ⏳ Dock Widget, Drop Area.
 
 ### Отображение
@@ -282,4 +282,5 @@ Spinner, Gauge, Tooltip, Toast.
 - ⏳ Date Picker, DateTime Picker.
 
 ### Мультимедиа и встраивание
-- ⏳ WebView, Video Player, Audio Player, Terminal, Map View.
+- ✅ Terminal — консоль с вводом команд (`term`).
+- ⏳ WebView, Video Player, Audio Player, Map View.

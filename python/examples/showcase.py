@@ -28,7 +28,7 @@ TREE = [
 
 
 def main():
-    win = ssui.W("SSUI Showcase", 1060, 760, thm="drk",
+    win = ssui.W("SSUI Showcase", 1600, 1000, thm="drk",
                  glass=True, tint=0.15, blur=True)
     fx = win.fx()
     dlg = win.dlg()
@@ -61,6 +61,33 @@ def main():
     inbox = ssui.sgnl(3)
     pageno = ssui.sgnl(0)
     stars = ssui.sgnl(4)
+    cvx = ssui.sgnl(0.5)
+    cvr = ssui.sgnl(0.4)
+    cmds = ssui.sgnl(0)
+
+    def run_cmd(cmd):
+        c = cmd.strip()
+        if c == "help":
+            return "help — список команд\nver — версия\necho <текст>\nclear — очистка"
+        if c == "ver":
+            return "SSUI 0.14 · Rust + Direct2D"
+        if c.startswith("echo "):
+            return c[5:]
+        if not c:
+            return ""
+        return f"неизвестная команда: {c}"
+
+    def scene(cx, rr):
+        px = 20.0 + cx * 320.0
+        rad = 20.0 + rr * 60.0
+        return [
+            ("rect", [16.0, 16.0, 360.0, 200.0, 12.0, 2.0], "#4B5563", ""),
+            ("line", [16.0, 216.0, 376.0, 216.0, 3.0], "#3B82F6", ""),
+            ("circle", [px, 120.0, rad, 0.0], "#22C55E", ""),
+            ("circle", [px, 120.0, rad + 8.0, 2.0], "#EEF3FF", ""),
+            ("text", [20.0, 230.0, 360.0, 28.0], "#EEF3FF",
+             f"x={int(cx * 100)}%  r={int(rad)}px"),
+        ]
 
     win.tint(op)
     win.blur(blurv)
@@ -258,6 +285,27 @@ def main():
                     win.dl(knob(), lb="MIX", ch=lambda v: knob.st(v), h=140.0)
                     win.lb(bind=lambda: f"Микс: {int(knob() * 100)}%", h=24.0)
                     win.sl(knob(), ch=lambda v: knob.st(v), h=36.0)
+                with win.bx(pd=12.0, gp=8.0, w=420.0):
+                    win.lb("Терминал (Enter — выполнить)", h=26.0)
+                    tm_out = win.term(["SSUI shell. Введите help."],
+                                      prompt="$",
+                                      on=lambda c: (cmds.st(cmds() + 1),
+                                                    run_cmd(c))[1],
+                                      h=320.0)
+                    win.lb(bind=lambda: f"Команд выполнено: {cmds()}", h=24.0)
+                with win.bx(pd=12.0, gp=8.0, w=400.0):
+                    win.lb("Область рисования", h=26.0)
+                    win.cv(bind=lambda: scene(cvx(), cvr()), h=280.0)
+                    win.lb("Позиция", h=24.0)
+                    win.sl(cvx(), ch=lambda v: cvx.st(v), h=36.0)
+                    win.lb("Радиус", h=24.0)
+                    win.sl(cvr(), ch=lambda v: cvr.st(v), h=36.0)
+                    with win.bx(ax="h", gp=8.0, h=48.0) as cvrow:
+                        win.cls(cvrow, "clear")
+                        win.bt("Влево", h=40.0,
+                               clk=lambda: fx(cvx, 0.0, dur=0.5))
+                        win.bt("Вправо", h=40.0,
+                               clk=lambda: fx(cvx, 1.0, dur=0.5))
                 with win.bx(pd=12.0, gp=8.0, w=320.0):
                     win.lb("Диаграмма", h=26.0)
                     win.cht(DATA, bind=lambda: [v * lvl() for v in DATA],
