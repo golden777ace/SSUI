@@ -251,6 +251,8 @@ def main():
                             ["Егор", "DevOps", "Отошёл"],
                         ],
                         ch=lambda i: row.st(i),
+                        hl=1.0,
+                        vl=1.0,
                         h=400.0,
                     )
                 with win.bx(pd=12.0, gp=8.0, w=280.0):

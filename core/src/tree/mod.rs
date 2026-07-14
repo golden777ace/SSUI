@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::rc::Rc;
 
 use crate::render::types::{Color, Rect};
@@ -241,6 +242,8 @@ pub enum NodeKind {
         rows: Vec<Vec<Vec<u16>>>,
         selected: Option<usize>,
         scroll: f32,
+        hline: f32,
+        vline: f32,
     },
     Image {
         path: String,
@@ -525,6 +528,8 @@ pub struct Tree {
     menu_items: Vec<Vec<u16>>,
     pending_dialog: DialogQueue,
     pending_notes: NoteQueue,
+    pending_theme: Rc<RefCell<Option<usize>>>,
+    ghosts: HashSet<usize>,
     on_dialog: Option<Box<dyn FnMut(&mut Tree, usize)>>,
     tint: f32,
     blur_mode: u32,
@@ -564,6 +569,8 @@ impl Tree {
             menu_items: Vec::new(),
             pending_dialog: Rc::new(RefCell::new(None)),
             pending_notes: Rc::new(RefCell::new(Vec::new())),
+            pending_theme: Rc::new(RefCell::new(None)),
+            ghosts: HashSet::new(),
             on_dialog: None,
             tint: 0.0,
             blur_mode: 0,
@@ -583,6 +590,29 @@ impl Tree {
     /// Возвращает индекс стартовой темы.
     pub fn theme(&self) -> usize {
         self.theme
+    }
+
+    /// Возвращает очередь смены темы для внешнего управления.
+    pub fn theme_queue(&self) -> Rc<RefCell<Option<usize>>> {
+        self.pending_theme.clone()
+    }
+
+    /// Забирает запрошенную тему.
+    pub fn take_pending_theme(&mut self) -> Option<usize> {
+        let t = self.pending_theme.borrow_mut().take();
+        if let Some(i) = t {
+            self.theme = i.min(3);
+        }
+        t
+    }
+
+    /// Возвращает значение ползунка (0..1).
+    pub fn slider_value(&self, id: NodeId) -> f32 {
+        if let NodeKind::Slider { value } = &self.nodes[id.0].kind {
+            *value
+        } else {
+            0.0
+        }
     }
 
     /// Задаёт альфа-канал фона окна (0..1).
@@ -1936,13 +1966,22 @@ impl Tree {
     }
 
     fn hit_walk(&self, id: NodeId, x: f32, y: f32, hit: &mut Option<NodeId>) {
-        if contains(self.nodes[id.0].rect, x, y) {
+        if contains(self.nodes[id.0].rect, x, y) && !self.ghosts.contains(&id.0) {
             *hit = Some(id);
         }
         let count = self.nodes[id.0].children.len();
         for i in 0..count {
             let child = self.nodes[id.0].children[i];
             self.hit_walk(child, x, y, hit);
+        }
+    }
+
+    /// Делает узел прозрачным для мыши (клики проходят насквозь).
+    pub fn set_ghost(&mut self, id: NodeId, on: bool) {
+        if on {
+            self.ghosts.insert(id.0);
+        } else {
+            self.ghosts.remove(&id.0);
         }
     }
 

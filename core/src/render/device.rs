@@ -76,6 +76,57 @@ fn first_weekday(y: i32, m: u32) -> u32 {
     (h + 5).rem_euclid(7) as u32
 }
 
+fn wrapped_ranges(
+    dwrite: &IDWriteFactory,
+    format: &IDWriteTextFormat,
+    text: &[u16],
+    width: f32,
+    start: usize,
+    end: usize,
+) -> Vec<Rect> {
+    if text.is_empty() || end <= start {
+        return Vec::new();
+    }
+    unsafe {
+        let layout = match dwrite.CreateTextLayout(text, format, width, 4096.0) {
+            Ok(l) => l,
+            Err(_) => return Vec::new(),
+        };
+        let mut count: u32 = 0;
+        let _ = layout.HitTestTextRange(
+            start as u32,
+            (end - start) as u32,
+            0.0,
+            0.0,
+            None,
+            &mut count,
+        );
+        if count == 0 {
+            return Vec::new();
+        }
+        let mut metrics = vec![DWRITE_HIT_TEST_METRICS::default(); count as usize];
+        let mut actual: u32 = 0;
+        if layout
+            .HitTestTextRange(
+                start as u32,
+                (end - start) as u32,
+                0.0,
+                0.0,
+                Some(&mut metrics),
+                &mut actual,
+            )
+            .is_err()
+        {
+            return Vec::new();
+        }
+        metrics
+            .iter()
+            .take(actual as usize)
+            .map(|m| Rect::new(m.left, m.top, m.width, m.height))
+            .collect()
+    }
+}
+
 fn hsv_rgb(h: f32, s: f32, v: f32) -> (f32, f32, f32) {
     let h = h.clamp(0.0, 1.0) * 6.0;
     let c = v * s;
@@ -466,6 +517,21 @@ impl Renderer {
 
     /// Прокручивает таблицу под курсором колесом мыши.
     pub fn on_wheel(&mut self, delta: i32) -> bool {
+        if let Some(hot) = self.hot {
+            let step = (delta as f32 / 120.0) * 0.05;
+            if self.tree.is_slider(hot) {
+                let v = (self.tree.slider_value(hot) + step).clamp(0.0, 1.0);
+                self.tree.set_slider_value(hot, v);
+                self.tree.fire_change(hot, v);
+                return true;
+            }
+            if self.tree.is_dial(hot) {
+                let v = (self.tree.dial_value(hot) + step).clamp(0.0, 1.0);
+                self.tree.set_dial_value(hot, v);
+                self.tree.fire_change(hot, v);
+                return true;
+            }
+        }
         if let Some(mut id) = self.hot {
             let mut guard = 0;
             while !self.tree.is_scroll(id)
@@ -862,6 +928,12 @@ impl Renderer {
         }
         let mut dirty = false;
         let hit = self.tree.hit_test(x, y);
+        if self.hot != hit {
+            self.hover_since = hit
+                .filter(|&h| self.tree.tip(h).is_some())
+                .map(|h| (h, Instant::now()));
+            dirty = true;
+        }
         self.hot = hit;
         if hit.map_or(false, |h| self.tree.is_table(h)) {
             dirty = true;
@@ -1704,7 +1776,7 @@ impl Renderer {
                             KEY_C => {
                                 let (a, b) = st.sel_range();
                                 if a != b {
-                                    let sel: Vec<u16> = st.text[a..b].to_vec();
+                                    let sel = to_crlf(&st.text[a..b]);
                                     set_clipboard_text(&sel);
                                 }
                                 handled = true;
@@ -1712,7 +1784,7 @@ impl Renderer {
                             KEY_X => {
                                 let (a, b) = st.sel_range();
                                 if a != b {
-                                    let sel: Vec<u16> = st.text[a..b].to_vec();
+                                    let sel = to_crlf(&st.text[a..b]);
                                     set_clipboard_text(&sel);
                                     st.backspace();
                                     changed = true;
@@ -1721,8 +1793,11 @@ impl Renderer {
                             }
                             KEY_V => {
                                 let clip = get_clipboard_text();
-                                let filtered: Vec<u16> =
-                                    clip.into_iter().filter(|&c| c >= 0x20).collect();
+                                let filtered: Vec<u16> = clip
+                                    .into_iter()
+                                    .filter(|&c| c != 0x0D)
+                                    .filter(|&c| c >= 0x20 || (multi && c == 0x0A))
+                                    .collect();
                                 if !filtered.is_empty() {
                                     st.insert(&filtered);
                                     changed = true;
@@ -1761,11 +1836,6 @@ impl Renderer {
             }
         }
 
-        if vk == VK_SPACE && self.focused.is_none() {
-            self.theme_index = (self.theme_index + 1) % 4;
-            self.theme = theme_from_index(self.theme_index);
-            return true;
-        }
         false
     }
 
@@ -2004,6 +2074,10 @@ impl Renderer {
     }
 
     pub fn render(&mut self) {
+        if let Some(i) = self.tree.take_pending_theme() {
+            self.theme_index = i;
+            self.theme = theme_from_index(i);
+        }
         self.poll_dialog();
         self.poll_toast();
         self.poll_notes();
@@ -3272,6 +3346,28 @@ impl Renderer {
                             );
                             canvas.push_clip(text_rect);
                             let tcolor = style.text.unwrap_or(theme.content);
+                            let (sa, sb) = state.sel_range();
+                            if sa != sb {
+                                for hr in wrapped_ranges(
+                                    dwrite,
+                                    format_wrap,
+                                    &state.text,
+                                    text_rect.width,
+                                    sa,
+                                    sb,
+                                ) {
+                                    canvas.fill_rounded_rect(
+                                        Rect::new(
+                                            text_rect.x + hr.x,
+                                            text_rect.y + hr.y,
+                                            hr.width,
+                                            hr.height,
+                                        ),
+                                        2.0,
+                                        theme.selection,
+                                    );
+                                }
+                            }
                             if !state.text.is_empty() {
                                 canvas.draw_text(&state.text, format_wrap, text_rect, tcolor);
                             }
@@ -3384,6 +3480,8 @@ impl Renderer {
                         rows,
                         selected,
                         scroll,
+                        hline,
+                        vline,
                     } => {
                         let r = node.rect;
                         canvas.push_clip(r);
@@ -3422,6 +3520,23 @@ impl Renderer {
                                     TABLE_ROW,
                                 );
                                 canvas.draw_text(cell, format_left, cr, theme.content);
+                            }
+                            if *hline > 0.0 {
+                                canvas.fill_rounded_rect(
+                                    Rect::new(r.x, ry + TABLE_ROW - *hline, r.width, *hline),
+                                    0.0,
+                                    theme.track,
+                                );
+                            }
+                        }
+                        if *vline > 0.0 {
+                            for c in 1..ncol {
+                                let cx = r.x + col_w * c as f32;
+                                canvas.fill_rounded_rect(
+                                    Rect::new(cx, r.y, *vline, r.height),
+                                    0.0,
+                                    theme.track,
+                                );
                             }
                         }
                         let header = Rect::new(r.x, r.y, r.width, TABLE_HEADER);
@@ -3952,6 +4067,17 @@ fn wrapped_index(
         }
     }
     text.len()
+}
+
+fn to_crlf(text: &[u16]) -> Vec<u16> {
+    let mut out = Vec::with_capacity(text.len() + 8);
+    for &c in text {
+        if c == 0x0A {
+            out.push(0x0D);
+        }
+        out.push(c);
+    }
+    out
 }
 
 fn set_clipboard_text(text: &[u16]) {

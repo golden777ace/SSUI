@@ -130,6 +130,19 @@ impl Fx {
     }
 }
 
+#[pyclass(unsendable, name = "Thm")]
+struct Thm {
+    queue: Rc<RefCell<Option<usize>>>,
+}
+
+#[pymethods]
+impl Thm {
+    /// Меняет тему окна: `wht`, `lit`, `drk`, `blk`.
+    fn __call__(&self, name: &str) {
+        *self.queue.borrow_mut() = Some(theme_index(name));
+    }
+}
+
 #[pyclass(unsendable, name = "Note")]
 struct Note {
     queue: NoteQueue,
@@ -280,6 +293,7 @@ struct PyWindow {
     anim_queue: AnimQueue,
     dialog_queue: DialogQueue,
     note_queue: NoteQueue,
+    theme_queue: Rc<RefCell<Option<usize>>>,
     glass: bool,
     tint: f32,
     blur: bool,
@@ -296,6 +310,7 @@ impl PyWindow {
         let anim_queue = tree.anim_queue();
         let dialog_queue = tree.dialog_queue();
         let note_queue = tree.note_queue();
+        let theme_queue = tree.theme_queue();
         Self {
             tree: Some(tree),
             title: ttl.to_string(),
@@ -308,6 +323,7 @@ impl PyWindow {
             anim_queue,
             dialog_queue,
             note_queue,
+            theme_queue,
             glass,
             tint,
             blur,
@@ -317,6 +333,27 @@ impl PyWindow {
     /// Возвращает корневой узел окна.
     fn rt(&self) -> PyNode {
         PyNode { id: self.root }
+    }
+
+    /// Смена темы из кода: `thm("drk")`.
+    fn thm(&self) -> Thm {
+        Thm {
+            queue: self.theme_queue.clone(),
+        }
+    }
+
+    /// Делает узел прозрачным для мыши; клики проходят насквозь.
+    #[pyo3(signature = (node, on=true))]
+    fn ghost(&mut self, node: PyNode, on: bool) -> PyResult<()> {
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        tree.set_ghost(node.id, on);
+        Ok(())
+    }
+
+    /// Привязывает числовой колбэк к узлу (значение или страница стопки).
+    fn bindv(&mut self, node: PyNode, f: PyObject) -> PyResult<()> {
+        self.value_bindings.borrow_mut().push((node.id, f));
+        Ok(())
     }
 
     /// Уведомления: `nt(title, text)` и `nt.snack(text)`.
@@ -2242,14 +2279,16 @@ impl PyWindow {
         Ok(tree.list_selected(n.id).map_or(-1, |i| i as i64))
     }
 
-    /// Добавляет таблицу; `ch(row)` при выборе строки.
-    #[pyo3(signature = (columns, rows, *, pr=None, ch=None, pd=0.0, gp=0.0, w=None, h=None))]
+    /// Добавляет таблицу; `hl`/`vl` — толщина разделителей строк и столбцов.
+    #[pyo3(signature = (columns, rows, *, pr=None, ch=None, hl=0.0, vl=0.0, pd=0.0, gp=0.0, w=None, h=None))]
     fn tbl(
         &mut self,
         columns: Vec<String>,
         rows: Vec<Vec<String>>,
         pr: Option<PyNode>,
         ch: Option<PyObject>,
+        hl: f32,
+        vl: f32,
         pd: f32,
         gp: f32,
         w: Option<f32>,
@@ -2272,6 +2311,8 @@ impl PyWindow {
                 rows: rws,
                 selected: None,
                 scroll: 0.0,
+                hline: hl,
+                vline: vl,
             },
             props,
         );
@@ -2457,6 +2498,7 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
                 t.set_gauge_value(*id, v);
                 t.set_meter_value(*id, v);
                 t.set_dial_value(*id, v);
+                t.set_stack_page(*id, v.max(0.0) as usize);
                 t.set_image_fit(*id, v as u8);
                 if t.is_stack(*id) {
                     t.set_stack_page(*id, v.max(0.0) as usize);
