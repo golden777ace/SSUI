@@ -2236,8 +2236,11 @@ impl PyWindow {
 
     /// Следит за CSS-файлом и перезагружает его на лету.
     fn css_hot(&mut self, path: &str) -> PyResult<()> {
+        let full = std::fs::canonicalize(path)
+            .map_err(|e| PyRuntimeError::new_err(format!("{path}: {e}")))?;
+        let full = full.to_string_lossy().to_string();
         let tree = self.tree.as_mut().ok_or_else(consumed)?;
-        tree.css_watch(path);
+        tree.css_watch(&full);
         Ok(())
     }
 

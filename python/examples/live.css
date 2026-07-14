@@ -1,0 +1,16 @@
+.live {
+    background: #ffff00cc;
+    radius: 4;
+    padding: 14;
+    gap: 8;
+    color: #ff00ff;
+}
+
+.live > label {
+    color: #ff00ff;
+}
+
+.live button:hover {
+    background: #ff00ff;
+    color: #ff00ff;
+}

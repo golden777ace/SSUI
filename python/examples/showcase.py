@@ -4,6 +4,8 @@
 Вкладка «Окно» — живая регулировка тона и размытия фона.
 """
 
+from pathlib import Path
+
 import ssui
 
 CSS = """
@@ -11,7 +13,15 @@ frame { background: #1c2440cc; radius: 16; }
 .clear { background: #00000000; }
 tabs   { background: #1c2440cc; color: #eef3ff; }
 label  { color: #eef3ff; }
+
+.demo { background: #101a33cc; radius: 14; color: #f59e0b; }
+.demo > label { color: #eef3ff; }
+.demo .hint, .demo .warn { color: #22c55e; }
+.demo button:hover { background: #3b82f6; color: #ffffff; }
+.demo > .row > button:focus { background: #a855f7; }
 """
+
+LIVE = str(Path(__file__).with_name("live.css"))
 
 DATA = [10.2, 1.1, 1.0, 0.9, 0.8, 0.7, 0.6]
 
@@ -136,7 +146,7 @@ def main():
                                         on=lambda: act.st("отменено")))
 
         with win.tab(["Виджеты", "Ввод", "Раскладка", "Данные",
-                      "Выбор", "Док", "Секции", "Панели", "Окно"],
+                      "Выбор", "Док", "Секции", "Панели", "Окно", "CSS"],
                      h=600.0) as tabs:
 
             # --- Виджеты ---
@@ -453,6 +463,39 @@ def main():
                         win.bt("50%", h=40.0, clk=lambda: fx(vol, 0.5, dur=0.4))
                         win.bt("100%", h=40.0, clk=lambda: fx(vol, 1.0, dur=0.4))
 
+        # --- CSS ---
+        with win.bx(pr=tabs, ax="h", pd=8.0, gp=12.0) as p6:
+            win.cls(p6, "clear")
+            with win.bx(pd=14.0, gp=8.0) as demo:
+                win.cls(demo, "demo")
+                win.lb("Каскад: комбинаторы и специфичность", h=26.0)
+                win.lb("Прямой потомок: .demo > label", h=24.0)
+                with win.bx(pd=0.0, gp=6.0) as nest:
+                    win.cls(nest, "clear")
+                    h1 = win.lb("Класс сильнее типа: .demo .hint", h=24.0)
+                    win.cls(h1, "hint")
+                    w1 = win.lb("Группа селекторов через запятую", h=24.0)
+                    win.cls(w1, "warn")
+                    win.ch("Наследование color от .demo", chk=True, h=30.0)
+                    win.lnk("Ссылка тоже наследует цвет",
+                            clk=lambda: act.st("css-ссылка"))
+                with win.bx(ax="h", gp=8.0, h=52.0) as crow:
+                    win.cls(crow, "row")
+                    win.bt("hover", h=44.0, clk=lambda: act.st("hover-кнопка"))
+                    win.bt("focus", h=44.0, clk=lambda: act.st("focus-кнопка"))
+                    win.bt("сброс", h=44.0, clk=lambda: act.st("—"))
+            with win.bx(pd=14.0, gp=8.0) as hot:
+                win.cls(hot, "demo")
+                win.lb("Горячая перезагрузка", h=26.0)
+                win.lb(f"Файл: {LIVE}", h=24.0)
+                win.lb("Сохрани файл — стили применятся сразу.", h=24.0)
+                win.sep()
+                with win.bx(pd=12.0, gp=8.0) as card:
+                    win.cls(card, "live")
+                    win.lb("Живая карточка", h=26.0)
+                    win.bt("Кнопка", h=44.0, clk=lambda: act.st("live-кнопка"))
+                    win.sl(0.5, ch=lambda v: lvl.st(v), h=36.0)
+
     bar = win.stb(pr=win.rt(), h=32.0, bind=lambda: (
         f"{act()} · громкость {int(vol() * 100)}% · "
         f"диапазон {int(rlo() * 100)}–{int(rhi() * 100)}%"
@@ -464,6 +507,7 @@ def main():
     win.pin(fab, r=22.0, b=22.0)
 
     win.css(CSS)
+    win.css_hot(LIVE)
     win.go()
 
 
