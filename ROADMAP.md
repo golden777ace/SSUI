@@ -227,7 +227,8 @@ Spinner, Gauge, Tooltip, Toast.
 - ✅ Accordion — раскрывающиеся секции (`acc`).
 - ✅ Stack Widget — одна страница из многих (`stk`).
 - ✅ Canvas — область рисования (`cv`: rect, circle, line, text).
-- ⏳ Dock Widget, Drop Area.
+- ✅ Dock Widget — сворачиваемая панель у края (`dock`).
+- ✅ Drop Area — приём файлов из проводника (`drop`).
 
 ### Отображение
 - ✅ Label — текст (`lb`).

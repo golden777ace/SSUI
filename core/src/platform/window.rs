@@ -10,6 +10,9 @@ use windows::Win32::UI::Input::Ime::{
     COMPOSITIONFORM, GCS_RESULTSTR,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
+use windows::Win32::UI::Shell::{
+    DragAcceptFiles, DragFinish, DragQueryFileW, DragQueryPoint, HDROP,
+};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::render::{CursorKind, Renderer};
@@ -94,6 +97,7 @@ impl Window {
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
 
             let _ = SetTimer(Some(hwnd), 1, 16, None);
+            DragAcceptFiles(hwnd, true);
             let _ = ShowWindow(hwnd, SW_SHOW);
             let _ = UpdateWindow(hwnd);
             if blur {
@@ -316,6 +320,31 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                     return LRESULT(1);
                 }
                 DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
+
+            WM_DROPFILES => {
+                if let Some(state) = state_ptr(hwnd).as_mut() {
+                    let hdrop = HDROP(wparam.0 as *mut c_void);
+                    let count = DragQueryFileW(hdrop, 0xFFFF_FFFF, None);
+                    let mut paths: Vec<String> = Vec::new();
+                    for i in 0..count {
+                        let len = DragQueryFileW(hdrop, i, None) as usize;
+                        let mut buf = vec![0u16; len + 1];
+                        DragQueryFileW(hdrop, i, Some(&mut buf));
+                        buf.truncate(len);
+                        paths.push(String::from_utf16_lossy(&buf));
+                    }
+                    let mut pt = POINT::default();
+                    let _ = DragQueryPoint(hdrop, &mut pt);
+                    DragFinish(hdrop);
+                    if state
+                        .renderer
+                        .on_drop(pt.x as f32, pt.y as f32, &paths.join("\n"))
+                    {
+                        let _ = InvalidateRect(Some(hwnd), None, false);
+                    }
+                }
+                LRESULT(0)
             }
 
             WM_ERASEBKGND => LRESULT(1),

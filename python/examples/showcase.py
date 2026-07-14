@@ -13,7 +13,7 @@ tabs   { background: #1c2440cc; color: #eef3ff; }
 label  { color: #eef3ff; }
 """
 
-DATA = [0.4, 0.9, 0.6, 1.0, 0.7, 0.3, 0.85]
+DATA = [10.2, 1.1, 1.0, 0.9, 0.8, 0.7, 0.6]
 
 TREE = [
     (0, "Проект", False),
@@ -64,6 +64,7 @@ def main():
     cvx = ssui.sgnl(0.5)
     cvr = ssui.sgnl(0.4)
     cmds = ssui.sgnl(0)
+    files = ssui.sgnl("файлов нет")
 
     def run_cmd(cmd):
         c = cmd.strip()
@@ -135,7 +136,8 @@ def main():
                                         on=lambda: act.st("отменено")))
 
         with win.tab(["Виджеты", "Ввод", "Раскладка", "Данные",
-                      "Выбор", "Секции", "Панели", "Окно"], h=600.0) as tabs:
+                      "Выбор", "Док", "Секции", "Панели", "Окно"],
+                     h=600.0) as tabs:
 
             # --- Виджеты ---
             with win.bx(pr=tabs, ax="h", gp=16.0, pd=8.0) as p1:
@@ -357,6 +359,25 @@ def main():
                         "Строка не выбрана" if prow() < 0
                         else f"Строка #{prow()}"
                     ), h=26.0)
+
+            # --- Док ---
+            with win.bx(pr=tabs, ax="h", pd=8.0, gp=12.0) as p7:
+                win.cls(p7, "clear")
+                with win.dock("Инструменты", side="l", size=260.0, gp=8.0):
+                    win.lb("Панель слева", h=26.0)
+                    win.bt("Действие", h=40.0,
+                           clk=lambda: act.st("док-кнопка"))
+                    win.sl(vol(), ch=lambda v: vol.st(v), h=36.0)
+                    win.lb("Клик по шапке — свернуть", h=24.0)
+                with win.bx(pd=12.0, gp=10.0):
+                    win.lb("Приём файлов", h=26.0)
+                    win.drop("Перетащите файлы сюда",
+                             on=lambda ps: files.st(
+                                 f"{len(ps)} шт · {ps[0].split(chr(92))[-1]}"),
+                             h=180.0)
+                    win.lb(bind=lambda: f"Принято: {files()}", h=26.0)
+                    win.bt("Сброс", h=40.0,
+                           clk=lambda: files.st("файлов нет"))
 
             # --- Секции ---
             with win.bx(pr=tabs, ax="h", pd=8.0, gp=16.0) as pacc:

@@ -372,6 +372,15 @@ pub enum NodeKind {
         prompt: Vec<u16>,
         scroll: f32,
     },
+    Dock {
+        title: Vec<u16>,
+        side: u8,
+        size: f32,
+        open: bool,
+    },
+    Drop {
+        label: Vec<u16>,
+    },
 }
 
 #[derive(Clone)]
@@ -411,6 +420,9 @@ pub const GROUP_HEADER: f32 = 30.0;
 
 /// Высота заголовка секции аккордеона в пикселях.
 pub const ACC_HEADER: f32 = 40.0;
+
+/// Высота заголовка док-панели в пикселях.
+pub const DOCK_HEADER: f32 = 32.0;
 
 /// Высота строки списка и ширина полосы прокрутки.
 pub const LIST_ROW: f32 = 32.0;
@@ -898,6 +910,41 @@ impl Tree {
         if let NodeKind::Term { scroll, .. } = &mut self.nodes[id.0].kind {
             *scroll = value;
         }
+    }
+
+    /// Является ли узел док-панелью.
+    pub fn is_dock(&self, id: NodeId) -> bool {
+        matches!(self.nodes[id.0].kind, NodeKind::Dock { .. })
+    }
+
+    /// Раскрыта ли док-панель.
+    pub fn dock_open(&self, id: NodeId) -> bool {
+        matches!(&self.nodes[id.0].kind, NodeKind::Dock { open, .. } if *open)
+    }
+
+    /// Сворачивает или раскрывает док-панель.
+    pub fn toggle_dock(&mut self, id: NodeId) {
+        let (open, size, side) = match &mut self.nodes[id.0].kind {
+            NodeKind::Dock {
+                open, size, side, ..
+            } => {
+                *open = !*open;
+                (*open, *size, *side)
+            }
+            _ => return,
+        };
+        let main = if open { size } else { DOCK_HEADER };
+        if side == 0 || side == 1 {
+            self.nodes[id.0].props.width = Some(main);
+        } else {
+            self.nodes[id.0].props.height = Some(main);
+        }
+        self.dirty = true;
+    }
+
+    /// Является ли узел зоной приёма файлов.
+    pub fn is_drop(&self, id: NodeId) -> bool {
+        matches!(self.nodes[id.0].kind, NodeKind::Drop { .. })
     }
 
     /// Назначает обработчик клика для узла.
@@ -1942,6 +1989,16 @@ impl Tree {
             return;
         }
 
+        let dock_closed =
+            matches!(&self.nodes[id.0].kind, NodeKind::Dock { open, .. } if !*open);
+        if dock_closed {
+            let off = Rect::new(-1.0e6, -1.0e6, 0.0, 0.0);
+            for &c in &children {
+                self.layout_node(c, off);
+            }
+            return;
+        }
+
         if let NodeKind::Stack { page } = &self.nodes[id.0].kind {
             let page = *page;
             let off = Rect::new(-1.0e6, -1.0e6, 0.0, 0.0);
@@ -2026,7 +2083,14 @@ impl Tree {
         }
 
         let is_group = matches!(self.nodes[id.0].kind, NodeKind::Group { .. });
-        let head = if is_group { GROUP_HEADER } else { 0.0 };
+        let is_dock = matches!(self.nodes[id.0].kind, NodeKind::Dock { .. });
+        let head = if is_group {
+            GROUP_HEADER
+        } else if is_dock {
+            DOCK_HEADER
+        } else {
+            0.0
+        };
         let pad = props.padding;
         let inner = Rect::new(
             rect.x + pad,
@@ -2214,6 +2278,8 @@ fn kind_tag(kind: &NodeKind) -> &'static str {
         NodeKind::Rating { .. } => "rating",
         NodeKind::Canvas { .. } => "canvas",
         NodeKind::Term { .. } => "term",
+        NodeKind::Dock { .. } => "dock",
+        NodeKind::Drop { .. } => "drop",
     }
 }
 

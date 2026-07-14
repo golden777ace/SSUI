@@ -787,6 +787,83 @@ impl PyWindow {
         Ok(PyNode { id })
     }
 
+    /// Док-панель с заголовком; клик по шапке сворачивает.
+    #[pyo3(signature = (ttl="", *, pr=None, side="l", size=260.0, open=true, ax="v", pd=10.0, gp=8.0))]
+    fn dock(
+        &mut self,
+        ttl: &str,
+        pr: Option<PyNode>,
+        side: &str,
+        size: f32,
+        open: bool,
+        ax: &str,
+        pd: f32,
+        gp: f32,
+    ) -> PyResult<Ctx> {
+        let code = match side {
+            "r" => 1u8,
+            "t" => 2,
+            "b" => 3,
+            _ => 0,
+        };
+        let main = if open { size } else { 32.0 };
+        let (w, h) = if code == 0 || code == 1 {
+            (Some(main), None)
+        } else {
+            (None, Some(main))
+        };
+        let props = make_props(ax, pd, gp, w, h);
+        let parent = self.parent_of(pr);
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let id = tree.add_child(
+            parent,
+            NodeKind::Dock {
+                title: utf16(ttl),
+                side: code,
+                size,
+                open,
+            },
+            props,
+        );
+        Ok(Ctx {
+            stack: self.stack.clone(),
+            node: id,
+        })
+    }
+
+    /// Зона приёма файлов; `on(paths)` при перетаскивании из проводника.
+    #[pyo3(signature = (txt="Перетащите файлы сюда", *, pr=None, on=None, pd=0.0, gp=0.0, w=None, h=None))]
+    fn drop(
+        &mut self,
+        txt: &str,
+        pr: Option<PyNode>,
+        on: Option<PyObject>,
+        pd: f32,
+        gp: f32,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<PyNode> {
+        let h = h.or(Some(160.0));
+        let props = make_props("v", pd, gp, w, h);
+        let parent = self.parent_of(pr);
+        let texts = self.bindings.clone();
+        let values = self.value_bindings.clone();
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let id = tree.add_child(parent, NodeKind::Drop { label: utf16(txt) }, props);
+        tree.set_on_input(id, move |t, text| {
+            let list: Vec<&str> = text.split('\n').filter(|s| !s.is_empty()).collect();
+            Python::with_gil(|py| {
+                if let Some(cb) = &on {
+                    if let Err(e) = cb.bind(py).call1((list,)) {
+                        e.print(py);
+                    }
+                }
+                refresh_all(py, t, &texts, &values);
+            });
+        });
+        Ok(PyNode { id })
+    }
+
     /// Терминал; `on(cmd)` при Enter, вывод — возврат строки из `on`.
     #[pyo3(signature = (lines=Vec::new(), *, pr=None, prompt="$", on=None, pd=0.0, gp=0.0, w=None, h=None))]
     fn term(

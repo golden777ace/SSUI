@@ -24,9 +24,9 @@ use super::canvas::Canvas;
 use super::types::{Color, Rect};
 use crate::theme::Theme;
 use crate::tree::{
-    NodeId, NodeKind, Style, Tree, ACC_HEADER, BAR_ITEM, CAL_HEADER, CAL_WEEK, GROUP_HEADER,
-    LIST_ROW, POPUP_ROW, SCROLLBAR_W, SPLIT_ARROW, SPLIT_W, TABLE_HEADER, TABLE_ROW, TAB_HEADER,
-    TERM_INPUT, TERM_ROW,
+    NodeId, NodeKind, Style, Tree, ACC_HEADER, BAR_ITEM, CAL_HEADER, CAL_WEEK, DOCK_HEADER,
+    GROUP_HEADER, LIST_ROW, POPUP_ROW, SCROLLBAR_W, SPLIT_ARROW, SPLIT_W, TABLE_HEADER, TABLE_ROW,
+    TAB_HEADER, TERM_INPUT, TERM_ROW,
 };
 
 const MONTHS: [&str; 12] = [
@@ -451,6 +451,17 @@ impl Renderer {
     /// Гасить ли размытие при перемещении окна.
     pub fn drag_smooth(&self) -> bool {
         self.tree.drag_smooth()
+    }
+
+    /// Передаёт перетащенные файлы в зону приёма под точкой.
+    pub fn on_drop(&mut self, x: f32, y: f32, paths: &str) -> bool {
+        if let Some(id) = self.tree.hit_test(x, y) {
+            if self.tree.is_drop(id) {
+                self.tree.fire_input_text(id, paths);
+                return true;
+            }
+        }
+        false
     }
 
     /// Прокручивает таблицу под курсором колесом мыши.
@@ -1140,6 +1151,14 @@ impl Renderer {
                 self.dragging = Some(id);
                 self.set_slider_from_x(id, x);
                 return true;
+            }
+            if self.tree.is_dock(id) {
+                let r = self.tree.get(id).rect;
+                if y <= r.y + DOCK_HEADER {
+                    self.tree.toggle_dock(id);
+                    self.focused = Some(id);
+                    return true;
+                }
             }
             if self.tree.is_term(id) {
                 self.focused = Some(id);
@@ -2954,6 +2973,72 @@ impl Renderer {
                         );
                         canvas.pop_clip();
                     }
+                    NodeKind::Dock { title, open, .. } => {
+                        let r = node.rect;
+                        let rad = style.radius.unwrap_or(10.0);
+                        canvas.fill_rounded_rect(r, rad, style.fill.unwrap_or(theme.surface));
+                        let head = Rect::new(r.x, r.y, r.width, DOCK_HEADER);
+                        canvas.fill_rounded_rect(head, rad, theme.track);
+                        let color = style.text.unwrap_or(theme.content);
+                        let arrow: Vec<u16> = if *open {
+                            "\u{25BE}".encode_utf16().collect()
+                        } else {
+                            "\u{25B8}".encode_utf16().collect()
+                        };
+                        canvas.draw_text(
+                            &arrow,
+                            format,
+                            Rect::new(r.x + 4.0, r.y, 24.0, DOCK_HEADER),
+                            color,
+                        );
+                        if *open {
+                            canvas.draw_text(
+                                title,
+                                format_left,
+                                Rect::new(r.x + 30.0, r.y, (r.width - 40.0).max(0.0), DOCK_HEADER),
+                                color,
+                            );
+                        }
+                    }
+                    NodeKind::Drop { label } => {
+                        let r = node.rect;
+                        canvas.fill_rounded_rect(
+                            r,
+                            style.radius.unwrap_or(10.0),
+                            style.fill.unwrap_or(theme.surface),
+                        );
+                        let col = style.fill.map(|_| theme.accent).unwrap_or(theme.accent);
+                        let dash: f32 = 10.0;
+                        let step = dash * 2.0;
+                        let mut x0 = r.x + 6.0;
+                        while x0 < r.x + r.width - 8.0 {
+                            let w = dash.min(r.x + r.width - 8.0 - x0);
+                            canvas.fill_rounded_rect(Rect::new(x0, r.y + 6.0, w, 2.0), 1.0, col);
+                            canvas.fill_rounded_rect(
+                                Rect::new(x0, r.y + r.height - 8.0, w, 2.0),
+                                1.0,
+                                col,
+                            );
+                            x0 += step;
+                        }
+                        let mut y0 = r.y + 6.0;
+                        while y0 < r.y + r.height - 8.0 {
+                            let hh = dash.min(r.y + r.height - 8.0 - y0);
+                            canvas.fill_rounded_rect(Rect::new(r.x + 6.0, y0, 2.0, hh), 1.0, col);
+                            canvas.fill_rounded_rect(
+                                Rect::new(r.x + r.width - 8.0, y0, 2.0, hh),
+                                1.0,
+                                col,
+                            );
+                            y0 += step;
+                        }
+                        canvas.draw_text(
+                            label,
+                            format,
+                            r,
+                            style.text.unwrap_or(theme.content),
+                        );
+                    }
                     NodeKind::Spinner { phase } => {
                         let r = node.rect;
                         let d = r.width.min(r.height).min(48.0);
@@ -3680,6 +3765,8 @@ fn kind_name(kind: &NodeKind) -> &'static str {
         NodeKind::Rating { .. } => "Rating",
         NodeKind::Canvas { .. } => "Canvas",
         NodeKind::Term { .. } => "Term",
+        NodeKind::Dock { .. } => "Dock",
+        NodeKind::Drop { .. } => "Drop",
     }
 }
 
