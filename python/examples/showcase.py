@@ -78,7 +78,16 @@ def main():
     padv = ssui.sgnl(10.0)
     gapv = ssui.sgnl(6.0)
     query = ssui.sgnl("")
+    online = ssui.sgnl(False)
     items30 = [f"Элемент {i}" for i in range(1, 31)]
+    TEAM = [
+        ["Анна", "Дизайнер", "Онлайн"],
+        ["Борис", "Бэкенд", "Отошёл"],
+        ["Вера", "Фронтенд", "Онлайн"],
+        ["Глеб", "QA", "Не в сети"],
+        ["Дина", "PM", "Онлайн"],
+        ["Егор", "DevOps", "Отошёл"],
+    ]
 
     def run_cmd(cmd):
         c = cmd.strip()
@@ -296,16 +305,13 @@ def main():
                         "Строка не выбрана" if row() < 0
                         else f"Выбрана строка #{row()+1}"
                     ), h=26.0)
-                    win.tbl(
+                    with win.bx(ax="h", gp=8.0, pd=0.0, h=44.0) as trow:
+                        win.cls(trow, "clear")
+                        win.lb("Онлайн только", w=150.0, h=36.0)
+                        win.sw("", on=False, clk=lambda v: online.st(v), h=36.0)
+                    team_tbl = win.tbl(
                         ["Имя", "Роль", "Статус"],
-                        [
-                            ["Анна", "Дизайнер", "Онлайн"],
-                            ["Борис", "Бэкенд", "Отошёл"],
-                            ["Вера", "Фронтенд", "Онлайн"],
-                            ["Глеб", "QA", "Не в сети"],
-                            ["Дина", "PM", "Онлайн"],
-                            ["Егор", "DevOps", "Отошёл"],
-                        ],
+                        [],
                         ch=lambda i: row.st(i),
                         hl=1.0,
                         vl=1.0,
@@ -555,6 +561,9 @@ def main():
                  clk=lambda: fx(vol, 1.0, dur=0.5))
     win.pin(fab, r=22.0, b=22.0)
 
+    win.bindt(team_tbl, lambda: [
+        r for r in TEAM if not online() or r[2] == "Онлайн"
+    ])
     win.css(CSS)
     win.css_hot(LIVE)
     win.go()
