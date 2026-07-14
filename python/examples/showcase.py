@@ -75,6 +75,10 @@ def main():
     cvr = ssui.sgnl(0.4)
     cmds = ssui.sgnl(0)
     files = ssui.sgnl("файлов нет")
+    padv = ssui.sgnl(10.0)
+    gapv = ssui.sgnl(6.0)
+    query = ssui.sgnl("")
+    items30 = [f"Элемент {i}" for i in range(1, 31)]
 
     def run_cmd(cmd):
         c = cmd.strip()
@@ -145,7 +149,7 @@ def main():
                    clk=lambda: nt.snack("Элемент удалён", action="Отменить",
                                         on=lambda: act.st("отменено")))
 
-        with win.tab(["Виджеты", "Ввод", "Раскладка", "Данные",
+        with win.tab(["Виджеты", "Ввод", "Раскладка", "Данные", "Данные 2",
                       "Выбор", "Док", "Секции", "Панели", "Окно", "CSS"],
                      h=600.0) as tabs:
 
@@ -235,6 +239,42 @@ def main():
                     win.grow(b, 2.0)
                     win.grow(c, 1.0)
 
+                win.lb("gr — сетка · pk — упаковка · pl — абсолют", h=24.0)
+                with win.bx(ax="h", gp=12.0, pd=0.0, h=64.0) as ctl:
+                    win.cls(ctl, "clear")
+                    win.lb(bind=lambda: f"padding: {int(padv())}", w=150.0, h=28.0)
+                    win.sl(0.25, ch=lambda v: padv.st(v * 40.0), h=32.0)
+                    win.lb(bind=lambda: f"gap: {int(gapv())}", w=110.0, h=28.0)
+                    win.sl(0.2, ch=lambda v: gapv.st(v * 30.0), h=32.0)
+                with win.bx(ax="h", gp=12.0, pd=0.0, h=260.0) as lrow:
+                    win.cls(lrow, "clear")
+                    with win.bx(pd=10.0, gp=6.0) as gbox:
+                        for i in range(8):
+                            cell = win.bt(f"{i}", clk=lambda: act.st("сетка"))
+                            win.gr(cell, i // 3, i % 3)
+                        wide = win.bt("cs=2", clk=lambda: act.st("сетка cs=2"))
+                        win.gr(wide, 2, 1, cs=2)
+                    win.bindb(gbox, lambda: (padv(), gapv()))
+                    with win.bx(pd=10.0, gp=6.0) as pbox:
+                        head = win.lb("top · fill=x", h=28.0)
+                        win.pk(head, "t", fill="x")
+                        left = win.bt("left", w=90.0)
+                        win.pk(left, "l", fill="y")
+                        right = win.bt("right", w=90.0)
+                        win.pk(right, "r", fill="y")
+                        mid = win.bt("exp", clk=lambda: act.st("упаковка"))
+                        win.pk(mid, "t", fill="both", exp=True)
+                        foot = win.lb("bottom", h=28.0)
+                        win.pk(foot, "b", fill="x")
+                    win.bindb(pbox, lambda: (padv(), gapv()))
+                    with win.bx(pd=10.0):
+                        chip = win.bt("pl 20,20", clk=lambda: act.st("абсолют"))
+                        win.pl(chip, x=20.0, y=20.0, w=130.0, h=44.0)
+                        mid2 = win.bt("pl центр", clk=lambda: act.st("абсолют"))
+                        win.pl(mid2, w=150.0, h=44.0)
+                        corner = win.bt("pl угол", clk=lambda: act.st("абсолют"))
+                        win.pl(corner, r=16.0, b=16.0, w=120.0, h=44.0)
+
             # --- Данные ---
             with win.bx(pr=tabs, ax="h", pd=8.0, gp=12.0) as p4:
                 win.cls(p4, "clear")
@@ -243,8 +283,14 @@ def main():
                         "Пункт не выбран" if pick() < 0
                         else f"Пункт #{pick()+1}"
                     ), h=26.0)
-                    win.lst([f"Элемент {i}" for i in range(1, 31)],
-                            ch=lambda i: pick.st(i), h=400.0)
+                    with win.bx(ax="h", gp=8.0, pd=0.0, h=44.0) as frow:
+                        win.cls(frow, "clear")
+                        win.lb("Фильтр:", w=80.0, h=36.0)
+                        win.tx("", sig=query, ph="поиск…", h=40.0)
+                    dyn = win.lst([], ch=lambda i: pick.st(i), h=360.0)
+                    win.bindl(dyn, lambda: [
+                        s for s in items30 if query().lower() in s.lower()
+                    ])
                 with win.bx(pd=12.0, gp=8.0):
                     win.lb(bind=lambda: (
                         "Строка не выбрана" if row() < 0
@@ -299,6 +345,9 @@ def main():
                     win.dl(knob(), lb="MIX", ch=lambda v: knob.st(v), h=140.0)
                     win.lb(bind=lambda: f"Микс: {int(knob() * 100)}%", h=24.0)
                     win.sl(knob(), ch=lambda v: knob.st(v), h=36.0)
+            # --- Данные 2 ---
+            with win.bx(pr=tabs, ax="h", pd=8.0, gp=12.0) as p8:
+                win.cls(p8, "clear")
                 with win.bx(pd=12.0, gp=8.0, w=420.0):
                     win.lb("Терминал (Enter — выполнить)", h=26.0)
                     tm_out = win.term(["SSUI shell. Введите help."],

@@ -57,6 +57,9 @@ thread_local! {
     static CHART_BINDINGS: RefCell<Vec<(NodeId, Py<PyAny>)>> = RefCell::new(Vec::new());
     static PROP_BINDINGS: RefCell<Vec<(NodeId, Py<PyAny>)>> = RefCell::new(Vec::new());
     static CANVAS_BINDINGS: RefCell<Vec<(NodeId, Py<PyAny>)>> = RefCell::new(Vec::new());
+    static BOX_BINDINGS: RefCell<Vec<(NodeId, Py<PyAny>)>> = RefCell::new(Vec::new());
+    static LIST_BINDINGS: RefCell<Vec<(NodeId, Py<PyAny>)>> = RefCell::new(Vec::new());
+    static TABLE_BINDINGS: RefCell<Vec<(NodeId, Py<PyAny>)>> = RefCell::new(Vec::new());
 }
 
 #[pyclass(unsendable, name = "Ctx")]
@@ -348,6 +351,24 @@ impl PyWindow {
     /// Привязывает числовой колбэк к узлу (значение или страница стопки).
     fn bindv(&mut self, node: PyNode, f: PyObject) -> PyResult<()> {
         self.value_bindings.borrow_mut().push((node.id, f));
+        Ok(())
+    }
+
+    /// Привязывает `(padding, gap)` контейнера к колбэку.
+    fn bindb(&mut self, node: PyNode, f: PyObject) -> PyResult<()> {
+        BOX_BINDINGS.with(|c| c.borrow_mut().push((node.id, f)));
+        Ok(())
+    }
+
+    /// Привязывает пункты списка к колбэку, возвращающему список строк.
+    fn bindl(&mut self, node: PyNode, f: PyObject) -> PyResult<()> {
+        LIST_BINDINGS.with(|c| c.borrow_mut().push((node.id, f)));
+        Ok(())
+    }
+
+    /// Привязывает строки таблицы к колбэку, возвращающему список рядов.
+    fn bindt(&mut self, node: PyNode, f: PyObject) -> PyResult<()> {
+        TABLE_BINDINGS.with(|c| c.borrow_mut().push((node.id, f)));
         Ok(())
     }
 
@@ -2218,6 +2239,39 @@ impl PyWindow {
         Ok(())
     }
 
+    /// Размещает узел абсолютно: `x`, `y`, `r`, `b`, `w`, `h`.
+    #[pyo3(signature = (n, *, x=None, y=None, r=None, b=None, w=None, h=None))]
+    fn pl(
+        &mut self,
+        n: PyNode,
+        x: Option<f32>,
+        y: Option<f32>,
+        r: Option<f32>,
+        b: Option<f32>,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) -> PyResult<()> {
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        tree.set_place(n.id, x, y, r, b, w, h);
+        Ok(())
+    }
+
+    /// Ставит узел в ячейку сетки: строка, столбец, растяжки.
+    #[pyo3(signature = (n, r=0, c=0, *, rs=1, cs=1))]
+    fn gr(&mut self, n: PyNode, r: u8, c: u8, rs: u8, cs: u8) -> PyResult<()> {
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        tree.set_grid(n.id, r, c, rs, cs);
+        Ok(())
+    }
+
+    /// Прижимает узел к стороне: `t`/`b`/`l`/`r`, `fill`, `exp`.
+    #[pyo3(signature = (n, side="t", *, fill=None, exp=false))]
+    fn pk(&mut self, n: PyNode, side: &str, fill: Option<&str>, exp: bool) -> PyResult<()> {
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        tree.set_pack(n.id, side_code(side), fill_mask(fill), exp);
+        Ok(())
+    }
+
     /// Применяет CSS-подмножество из строки.
     fn css(&mut self, text: &str) -> PyResult<()> {
         let tree = self.tree.as_mut().ok_or_else(consumed)?;
@@ -2458,6 +2512,24 @@ fn cross_code(s: &str) -> u8 {
     }
 }
 
+fn side_code(s: &str) -> u8 {
+    match s {
+        "b" => 1,
+        "l" => 2,
+        "r" => 3,
+        _ => 0,
+    }
+}
+
+fn fill_mask(s: Option<&str>) -> u8 {
+    match s {
+        Some("x") => 1,
+        Some("y") => 2,
+        Some("both") | Some("xy") => 3,
+        _ => 0,
+    }
+}
+
 fn parse_axis(s: &str) -> Axis {
     match s {
         "h" => Axis::Horizontal,
@@ -2528,6 +2600,43 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
             Err(e) => e.print(py),
         }
     }
+    BOX_BINDINGS.with(|c| {
+        for (id, f) in c.borrow().iter() {
+            match f.bind(py).call0().and_then(|v| v.extract::<(f32, f32)>()) {
+                Ok((pd, gp)) => t.set_box(*id, pd, gp),
+                Err(e) => e.print(py),
+            }
+        }
+    });
+    LIST_BINDINGS.with(|c| {
+        for (id, f) in c.borrow().iter() {
+            match f.bind(py).call0().and_then(|v| v.extract::<Vec<String>>()) {
+                Ok(rows) => {
+                    let data = rows.iter().map(|s| utf16(s)).collect();
+                    t.set_list_items(*id, data);
+                }
+                Err(e) => e.print(py),
+            }
+        }
+    });
+    TABLE_BINDINGS.with(|c| {
+        for (id, f) in c.borrow().iter() {
+            match f
+                .bind(py)
+                .call0()
+                .and_then(|v| v.extract::<Vec<Vec<String>>>())
+            {
+                Ok(rows) => {
+                    let data = rows
+                        .iter()
+                        .map(|r| r.iter().map(|c| utf16(c)).collect())
+                        .collect();
+                    t.set_table_rows(*id, data);
+                }
+                Err(e) => e.print(py),
+            }
+        }
+    });
     CHART_BINDINGS.with(|c| {
         for (id, f) in c.borrow().iter() {
             match f.bind(py).call0().and_then(|v| v.extract::<Vec<f32>>()) {

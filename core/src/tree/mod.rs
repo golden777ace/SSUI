@@ -30,6 +30,14 @@ pub struct Props {
     pub t: Option<f32>,
     pub r: Option<f32>,
     pub b: Option<f32>,
+    pub mode: u8,
+    pub row: u8,
+    pub col: u8,
+    pub rspan: u8,
+    pub cspan: u8,
+    pub side: u8,
+    pub fill: u8,
+    pub expand: bool,
 }
 
 impl Default for Props {
@@ -48,6 +56,14 @@ impl Default for Props {
             t: None,
             r: None,
             b: None,
+            mode: 0,
+            row: 0,
+            col: 0,
+            rspan: 1,
+            cspan: 1,
+            side: 0,
+            fill: 0,
+            expand: false,
         }
     }
 }
@@ -792,6 +808,71 @@ impl Tree {
         self.nodes[id.0].style.elev = Some(elev);
     }
 
+    /// Размещает узел абсолютно внутри родителя.
+    pub fn set_place(
+        &mut self,
+        id: NodeId,
+        l: Option<f32>,
+        t: Option<f32>,
+        r: Option<f32>,
+        b: Option<f32>,
+        w: Option<f32>,
+        h: Option<f32>,
+    ) {
+        let p = &mut self.nodes[id.0].props;
+        p.abs = true;
+        p.l = l;
+        p.t = t;
+        p.r = r;
+        p.b = b;
+        if w.is_some() {
+            p.width = w;
+        }
+        if h.is_some() {
+            p.height = h;
+        }
+        self.dirty = true;
+    }
+
+    /// Ставит узел в ячейку сетки родителя.
+    pub fn set_grid(&mut self, id: NodeId, row: u8, col: u8, rspan: u8, cspan: u8) {
+        {
+            let p = &mut self.nodes[id.0].props;
+            p.abs = false;
+            p.row = row;
+            p.col = col;
+            p.rspan = rspan.max(1);
+            p.cspan = cspan.max(1);
+        }
+        if let Some(parent) = self.nodes[id.0].parent {
+            self.nodes[parent.0].props.mode = 1;
+        }
+        self.dirty = true;
+    }
+
+    /// Прижимает узел к стороне родителя (упаковка).
+    pub fn set_pack(&mut self, id: NodeId, side: u8, fill: u8, expand: bool) {
+        {
+            let p = &mut self.nodes[id.0].props;
+            p.abs = false;
+            p.side = side;
+            p.fill = fill;
+            p.expand = expand;
+        }
+        if let Some(parent) = self.nodes[id.0].parent {
+            self.nodes[parent.0].props.mode = 2;
+        }
+        self.dirty = true;
+    }
+
+    /// Задаёт отступ и зазор контейнера.
+    pub fn set_box(&mut self, id: NodeId, pad: f32, gap: f32) {
+        let p = &mut self.nodes[id.0].props;
+        p.padding = pad;
+        p.gap = gap;
+        self.dirty = true;
+    }
+
     /// Разбирает CSS с каскадом и применяет стили ко всем узлам.
     pub fn apply_css(&mut self, css: &str) {
         css::add_source(self, css);
@@ -1305,6 +1386,22 @@ impl Tree {
     pub fn set_table_selected(&mut self, id: NodeId, index: Option<usize>) {
         if let NodeKind::Table { selected, .. } = &mut self.nodes[id.0].kind {
             *selected = index;
+        }
+    }
+
+    /// Заменяет строки таблицы, сохраняя выбор в пределах длины.
+    pub fn set_table_rows(&mut self, id: NodeId, data: Vec<Vec<Vec<u16>>>) {
+        if let NodeKind::Table {
+            rows, selected, ..
+        } = &mut self.nodes[id.0].kind
+        {
+            if let Some(s) = selected {
+                if *s >= data.len() {
+                    *selected = None;
+                }
+            }
+            *rows = data;
+            self.dirty = true;
         }
     }
 
@@ -1903,6 +2000,22 @@ impl Tree {
         }
     }
 
+    /// Заменяет пункты списка, сохраняя выбор в пределах длины.
+    pub fn set_list_items(&mut self, id: NodeId, data: Vec<Vec<u16>>) {
+        if let NodeKind::List {
+            items, selected, ..
+        } = &mut self.nodes[id.0].kind
+        {
+            if let Some(s) = selected {
+                if *s >= data.len() {
+                    *selected = None;
+                }
+            }
+            *items = data;
+            self.dirty = true;
+        }
+    }
+
     /// Возвращает прокрутку списка в пикселях.
     pub fn list_scroll(&self, id: NodeId) -> f32 {
         if let NodeKind::List { scroll, .. } = &self.nodes[id.0].kind {
@@ -2209,6 +2322,14 @@ impl Tree {
             .copied()
             .filter(|c| !self.nodes[c.0].props.abs)
             .collect();
+        if props.mode == 1 {
+            self.layout_grid(&flow, inner, props);
+            return;
+        }
+        if props.mode == 2 {
+            self.layout_pack(&flow, inner, props);
+            return;
+        }
         let n = flow.len();
         let total_gap = props.gap * n.saturating_sub(1) as f32;
         let vertical = matches!(props.axis, Axis::Vertical);
@@ -2272,6 +2393,123 @@ impl Tree {
         }
     }
 
+    fn layout_grid(&mut self, flow: &[NodeId], inner: Rect, props: Props) {
+        let mut cols = 1usize;
+        let mut rows = 1usize;
+        for &c in flow {
+            let cp = self.nodes[c.0].props;
+            cols = cols.max(cp.col as usize + cp.cspan.max(1) as usize);
+            rows = rows.max(cp.row as usize + cp.rspan.max(1) as usize);
+        }
+        let gap = props.gap;
+        let cw = ((inner.width - gap * (cols - 1) as f32) / cols as f32).max(0.0);
+        let rh = ((inner.height - gap * (rows - 1) as f32) / rows as f32).max(0.0);
+        for &c in flow {
+            let cp = self.nodes[c.0].props;
+            let cs = cp.cspan.max(1) as f32;
+            let rs = cp.rspan.max(1) as f32;
+            let x = inner.x + (cw + gap) * cp.col as f32;
+            let y = inner.y + (rh + gap) * cp.row as f32;
+            let w = (cw * cs + gap * (cs - 1.0)).max(0.0);
+            let h = (rh * rs + gap * (rs - 1.0)).max(0.0);
+            let w = cp.width.unwrap_or(w).min(w);
+            let h = cp.height.unwrap_or(h).min(h);
+            self.layout_node(c, Rect::new(x, y, w, h));
+        }
+    }
+
+    fn layout_pack(&mut self, flow: &[NodeId], inner: Rect, props: Props) {
+        let gap = props.gap;
+        let mut need_v = 0.0f32;
+        let mut need_h = 0.0f32;
+        let mut exp_v = 0usize;
+        let mut exp_h = 0usize;
+        for &c in flow {
+            let cp = self.nodes[c.0].props;
+            if cp.side >= 2 {
+                need_h += cp.width.unwrap_or(0.0) + gap;
+                if cp.expand {
+                    exp_h += 1;
+                }
+            } else {
+                need_v += cp.height.unwrap_or(0.0) + gap;
+                if cp.expand {
+                    exp_v += 1;
+                }
+            }
+        }
+        let free_v = (inner.height - need_v).max(0.0);
+        let free_h = (inner.width - need_h).max(0.0);
+        let add_v = if exp_v > 0 {
+            free_v / exp_v as f32
+        } else {
+            0.0
+        };
+        let add_h = if exp_h > 0 {
+            free_h / exp_h as f32
+        } else {
+            0.0
+        };
+        let mut cav = inner;
+        for &c in flow {
+            let cp = self.nodes[c.0].props;
+            let rect = match cp.side {
+                1 => {
+                    let mut h = cp.height.unwrap_or(0.0);
+                    if cp.expand {
+                        h += add_v;
+                    }
+                    let h = h.min(cav.height);
+                    let out = Rect::new(cav.x, cav.y + cav.height - h, cav.width, h);
+                    cav = Rect::new(cav.x, cav.y, cav.width, (cav.height - h - gap).max(0.0));
+                    out
+                }
+                2 => {
+                    let mut w = cp.width.unwrap_or(0.0);
+                    if cp.expand {
+                        w += add_h;
+                    }
+                    let w = w.min(cav.width);
+                    let out = Rect::new(cav.x, cav.y, w, cav.height);
+                    cav = Rect::new(
+                        cav.x + w + gap,
+                        cav.y,
+                        (cav.width - w - gap).max(0.0),
+                        cav.height,
+                    );
+                    out
+                }
+                3 => {
+                    let mut w = cp.width.unwrap_or(0.0);
+                    if cp.expand {
+                        w += add_h;
+                    }
+                    let w = w.min(cav.width);
+                    let out = Rect::new(cav.x + cav.width - w, cav.y, w, cav.height);
+                    cav = Rect::new(cav.x, cav.y, (cav.width - w - gap).max(0.0), cav.height);
+                    out
+                }
+                _ => {
+                    let mut h = cp.height.unwrap_or(0.0);
+                    if cp.expand {
+                        h += add_v;
+                    }
+                    let h = h.min(cav.height);
+                    let out = Rect::new(cav.x, cav.y, cav.width, h);
+                    cav = Rect::new(
+                        cav.x,
+                        cav.y + h + gap,
+                        cav.width,
+                        (cav.height - h - gap).max(0.0),
+                    );
+                    out
+                }
+            };
+            let rect = pack_fill(rect, cp);
+            self.layout_node(c, rect);
+        }
+    }
+
     /// Обходит дерево в глубину, вызывая `visit(id, node)` для каждого узла.
     pub fn for_each<F: FnMut(NodeId, &Node)>(&self, mut visit: F) {
         self.walk(self.root, &mut visit);
@@ -2291,6 +2529,25 @@ impl Default for Tree {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn pack_fill(rect: Rect, cp: Props) -> Rect {
+    let mut out = rect;
+    let fill_x = cp.fill == 1 || cp.fill == 3;
+    let fill_y = cp.fill == 2 || cp.fill == 3;
+    if !fill_x {
+        if let Some(w) = cp.width {
+            let w = w.min(out.width);
+            out = Rect::new(out.x + (out.width - w) / 2.0, out.y, w, out.height);
+        }
+    }
+    if !fill_y {
+        if let Some(h) = cp.height {
+            let h = h.min(out.height);
+            out = Rect::new(out.x, out.y + (out.height - h) / 2.0, out.width, h);
+        }
+    }
+    out
 }
 
 fn anchor_axis(
