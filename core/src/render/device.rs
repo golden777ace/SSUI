@@ -1158,6 +1158,7 @@ impl Renderer {
 
         self.text_selecting = false;
         self.focus_ring = false;
+        self.tree.raise_front(x, y);
         let hit = self.tree.hit_test(x, y);
         let new_focus = hit.filter(|&id| self.tree.is_textbox(id) || self.tree.is_slider(id));
         self.focused = new_focus;

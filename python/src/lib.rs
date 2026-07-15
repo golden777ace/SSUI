@@ -61,6 +61,7 @@ thread_local! {
     static BOX_BINDINGS: RefCell<Vec<(NodeId, Py<PyAny>)>> = RefCell::new(Vec::new());
     static LIST_BINDINGS: RefCell<Vec<(NodeId, Py<PyAny>)>> = RefCell::new(Vec::new());
     static TABLE_BINDINGS: RefCell<Vec<(NodeId, Py<PyAny>)>> = RefCell::new(Vec::new());
+    static DEPTH_BINDINGS: RefCell<Vec<(NodeId, Py<PyAny>)>> = RefCell::new(Vec::new());
     static TRACK: RefCell<Option<Vec<u32>>> = RefCell::new(None);
     static DIRTY: RefCell<HashSet<u32>> = RefCell::new(HashSet::new());
     static DEPS: RefCell<HashMap<usize, Vec<u32>>> = RefCell::new(HashMap::new());
@@ -414,6 +415,14 @@ impl PyWindow {
         Ok(())
     }
 
+    /// Поднимает узел поверх соседей при нажатии внутри него.
+    #[pyo3(signature = (node, on=true))]
+    fn front(&mut self, node: PyNode, on: bool) -> PyResult<()> {
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        tree.set_front(node.id, on);
+        Ok(())
+    }
+
     /// Привязывает числовой колбэк к узлу (значение или страница стопки).
     fn bindv(&mut self, node: PyNode, f: PyObject) -> PyResult<()> {
         self.value_bindings.borrow_mut().push((node.id, f));
@@ -435,6 +444,12 @@ impl PyWindow {
     /// Привязывает строки таблицы к колбэку, возвращающему список рядов.
     fn bindt(&mut self, node: PyNode, f: PyObject) -> PyResult<()> {
         TABLE_BINDINGS.with(|c| c.borrow_mut().push((node.id, f)));
+        Ok(())
+    }
+
+    /// Привязывает глубину `z` узла к колбэку, возвращающему число.
+    fn bindz(&mut self, node: PyNode, f: PyObject) -> PyResult<()> {
+        DEPTH_BINDINGS.with(|c| c.borrow_mut().push((node.id, f)));
         Ok(())
     }
 
@@ -2338,6 +2353,14 @@ impl PyWindow {
         Ok(())
     }
 
+    /// Задаёт глубину узла: больше `z` — ближе к зрителю (`dep(node, 2)`).
+    #[pyo3(signature = (n, z=0))]
+    fn dep(&mut self, n: PyNode, z: i32) -> PyResult<()> {
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        tree.set_depth(n.id, z);
+        Ok(())
+    }
+
     /// Применяет CSS-подмножество из строки.
     fn css(&mut self, text: &str) -> PyResult<()> {
         let tree = self.tree.as_mut().ok_or_else(consumed)?;
@@ -2675,6 +2698,15 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
             Err(e) => e.print(py),
         }
     }
+    DEPTH_BINDINGS.with(|c| {
+        for (id, f) in c.borrow().iter() {
+            let Some(r) = run_binding(py, f) else { continue };
+            match r.extract::<f32>() {
+                Ok(v) => t.set_depth(*id, v as i32),
+                Err(e) => e.print(py),
+            }
+        }
+    });
     BOX_BINDINGS.with(|c| {
         for (id, f) in c.borrow().iter() {
             let Some(r) = run_binding(py, f) else { continue };

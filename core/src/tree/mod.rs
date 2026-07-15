@@ -38,6 +38,7 @@ pub struct Props {
     pub side: u8,
     pub fill: u8,
     pub expand: bool,
+    pub z: i32,
 }
 
 impl Default for Props {
@@ -64,6 +65,7 @@ impl Default for Props {
             side: 0,
             fill: 0,
             expand: false,
+            z: 0,
         }
     }
 }
@@ -582,6 +584,7 @@ pub struct Tree {
     pending_notes: NoteQueue,
     pending_theme: Rc<RefCell<Option<usize>>>,
     ghosts: HashSet<usize>,
+    fronts: HashSet<usize>,
     placeholders: HashMap<usize, Vec<u16>>,
     on_dialog: Option<Box<dyn FnMut(&mut Tree, usize)>>,
     tint: f32,
@@ -624,6 +627,7 @@ impl Tree {
             pending_notes: Rc::new(RefCell::new(Vec::new())),
             pending_theme: Rc::new(RefCell::new(None)),
             ghosts: HashSet::new(),
+            fronts: HashSet::new(),
             placeholders: HashMap::new(),
             on_dialog: None,
             tint: 0.0,
@@ -871,6 +875,11 @@ impl Tree {
         p.padding = pad;
         p.gap = gap;
         self.dirty = true;
+    }
+
+    /// Задаёт глубину узла: больше `z` — ближе к зрителю.
+    pub fn set_depth(&mut self, id: NodeId, z: i32) {
+        self.nodes[id.0].props.z = z;
     }
 
     /// Разбирает CSS с каскадом и применяет стили ко всем узлам.
@@ -2116,10 +2125,16 @@ impl Tree {
         if contains(self.nodes[id.0].rect, x, y) && !self.ghosts.contains(&id.0) {
             *hit = Some(id);
         }
-        let count = self.nodes[id.0].children.len();
-        for i in 0..count {
-            let child = self.nodes[id.0].children[i];
-            self.hit_walk(child, x, y, hit);
+        if self.layered(id) {
+            for child in self.depth_order(id) {
+                self.hit_walk(child, x, y, hit);
+            }
+        } else {
+            let count = self.nodes[id.0].children.len();
+            for i in 0..count {
+                let child = self.nodes[id.0].children[i];
+                self.hit_walk(child, x, y, hit);
+            }
         }
     }
 
@@ -2129,6 +2144,54 @@ impl Tree {
             self.ghosts.insert(id.0);
         } else {
             self.ghosts.remove(&id.0);
+        }
+    }
+
+    /// Поднимать ли узел поверх соседей при нажатии внутри него.
+    pub fn set_front(&mut self, id: NodeId, on: bool) {
+        if on {
+            self.fronts.insert(id.0);
+        } else {
+            self.fronts.remove(&id.0);
+        }
+    }
+
+    /// Поднимает верхний front-узел под точкой поверх соседей.
+    pub fn raise_front(&mut self, x: f32, y: f32) -> bool {
+        if self.fronts.is_empty() {
+            return false;
+        }
+        let mut target: Option<NodeId> = None;
+        let mut top_z = i32::MIN;
+        for &i in self.fronts.iter() {
+            let n = &self.nodes[i];
+            if n.rect.x <= OFF_LIMIT || !contains(n.rect, x, y) {
+                continue;
+            }
+            if target.is_none() || n.props.z >= top_z {
+                top_z = n.props.z;
+                target = Some(NodeId(i));
+            }
+        }
+        let id = match target {
+            Some(id) => id,
+            None => return false,
+        };
+        let parent = match self.nodes[id.0].parent {
+            Some(p) => p,
+            None => return false,
+        };
+        let mut max_other = i32::MIN;
+        for &c in &self.nodes[parent.0].children {
+            if c != id {
+                max_other = max_other.max(self.nodes[c.0].props.z);
+            }
+        }
+        if self.nodes[id.0].props.z <= max_other {
+            self.nodes[id.0].props.z = max_other.saturating_add(1);
+            true
+        } else {
+            false
         }
     }
 
@@ -2517,11 +2580,30 @@ impl Tree {
 
     fn walk<F: FnMut(NodeId, &Node)>(&self, id: NodeId, visit: &mut F) {
         visit(id, &self.nodes[id.0]);
-        let count = self.nodes[id.0].children.len();
-        for i in 0..count {
-            let child = self.nodes[id.0].children[i];
-            self.walk(child, visit);
+        if self.layered(id) {
+            for child in self.depth_order(id) {
+                self.walk(child, visit);
+            }
+        } else {
+            let count = self.nodes[id.0].children.len();
+            for i in 0..count {
+                let child = self.nodes[id.0].children[i];
+                self.walk(child, visit);
+            }
         }
+    }
+
+    fn layered(&self, id: NodeId) -> bool {
+        self.nodes[id.0]
+            .children
+            .iter()
+            .any(|c| self.nodes[c.0].props.z != 0)
+    }
+
+    fn depth_order(&self, id: NodeId) -> Vec<NodeId> {
+        let mut order = self.nodes[id.0].children.clone();
+        order.sort_by_key(|c| self.nodes[c.0].props.z);
+        order
     }
 }
 

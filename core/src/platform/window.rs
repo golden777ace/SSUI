@@ -91,6 +91,9 @@ impl Window {
             let init_mode: u32 = if blur { 3 } else { 0 };
             let init_tint: u32 = 0x40101418;
             let mut renderer = Renderer::new(hwnd, tree, glass, tint, width, height)?;
+            let mut rc = RECT::default();
+            let _ = GetClientRect(hwnd, &mut rc);
+            renderer.resize((rc.right - rc.left) as u32, (rc.bottom - rc.top) as u32);
             renderer.set_blur(init_mode, init_tint);
             let state = Box::new(WindowState {
                 renderer,
