@@ -2623,12 +2623,13 @@ impl Renderer {
                             }
                         }
                         let color = style.text.unwrap_or(theme.content);
-                        for (row, &i) in vis.iter().enumerate() {
+                        let first = (scroll / LIST_ROW).floor().max(0.0) as usize;
+                        let span = (r.height / LIST_ROW).ceil() as usize + 2;
+                        let last = (first + span).min(vis.len());
+                        for row in first..last {
+                            let i = vis[row];
                             let it = &items[i];
                             let ry = r.y + row as f32 * LIST_ROW - scroll;
-                            if ry + LIST_ROW < r.y || ry > r.y + r.height {
-                                continue;
-                            }
                             if *selected == Some(i) {
                                 let hl = Rect::new(
                                     r.x + 3.0,
@@ -3576,11 +3577,13 @@ impl Renderer {
                         } else {
                             None
                         };
-                        for (ri, row) in rows.iter().enumerate() {
+                        let vis_h = (r.y + r.height - top).max(0.0);
+                        let first = (*scroll / TABLE_ROW).floor().max(0.0) as usize;
+                        let span = (vis_h / TABLE_ROW).ceil() as usize + 2;
+                        let last = (first + span).min(rows.len());
+                        for ri in first..last {
+                            let row = &rows[ri];
                             let ry = top - *scroll + TABLE_ROW * ri as f32;
-                            if ry + TABLE_ROW <= top || ry >= r.y + r.height {
-                                continue;
-                            }
                             let row_rect = Rect::new(r.x, ry, r.width, TABLE_ROW);
                             if *selected == Some(ri) {
                                 canvas.fill_rounded_rect(row_rect, 0.0, theme.selection);
