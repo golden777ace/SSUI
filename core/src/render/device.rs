@@ -226,6 +226,9 @@ pub struct Renderer {
     glass: bool,
     wic: Option<IWICImagingFactory>,
     img_cache: HashMap<String, Option<ID2D1Bitmap>>,
+    grad_cache: std::cell::RefCell<HashMap<(u32, u32), ID2D1LinearGradientBrush>>,
+    layout_cache: std::cell::RefCell<HashMap<super::canvas::TextKey, IDWriteTextLayout>>,
+    frame_latency: Option<HANDLE>,
     _dcomp: Option<IDCompositionDevice>,
     _dcomp_target: Option<IDCompositionTarget>,
     _dcomp_visual: Option<IDCompositionVisual>,
@@ -297,11 +300,25 @@ impl Renderer {
                     Scaling: DXGI_SCALING_NONE,
                     SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
                     AlphaMode: DXGI_ALPHA_MODE_IGNORE,
-                    Flags: 0,
+                    Flags: DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT.0 as u32,
                 };
                 factory.CreateSwapChainForHwnd(&device, hwnd, &desc, None, None)?
             };
             let _ = factory.MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
+
+            let frame_latency = if glass {
+                None
+            } else if let Ok(sc2) = swap_chain.cast::<IDXGISwapChain2>() {
+                let _ = sc2.SetMaximumFrameLatency(1);
+                let h = sc2.GetFrameLatencyWaitableObject();
+                if h.0.is_null() {
+                    None
+                } else {
+                    Some(h)
+                }
+            } else {
+                None
+            };
 
             let (dcomp, dcomp_target, dcomp_visual) = if glass {
                 let dcomp: IDCompositionDevice = DCompositionCreateDevice(&dxgi_device)?;
@@ -320,6 +337,11 @@ impl Renderer {
             let d2d_device = d2d_factory.CreateDevice(&dxgi_device)?;
             let context = d2d_device.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)?;
             context.SetDpi(96.0, 96.0);
+            context.SetTextAntialiasMode(if glass {
+                D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE
+            } else {
+                D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE
+            });
             let rt: ID2D1RenderTarget = context.cast()?;
 
             let dwrite: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
@@ -360,9 +382,7 @@ impl Renderer {
             let _ = text_format_wrap.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
             let _ = text_format_wrap.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
 
-            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-            let wic: Option<IWICImagingFactory> =
-                CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).ok();
+            let wic: Option<IWICImagingFactory> = None;
 
             let theme_index = tree.theme();
             let theme = theme_from_index(theme_index);
@@ -408,6 +428,9 @@ impl Renderer {
                 glass,
                 wic,
                 img_cache: HashMap::new(),
+                grad_cache: std::cell::RefCell::new(HashMap::new()),
+                layout_cache: std::cell::RefCell::new(HashMap::new()),
+                frame_latency,
                 _dcomp: dcomp,
                 _dcomp_target: dcomp_target,
                 _dcomp_visual: dcomp_visual,
@@ -451,12 +474,19 @@ impl Renderer {
         }
         self.width = width as f32;
         self.height = height as f32;
+        self.grad_cache.borrow_mut().clear();
+        self.layout_cache.borrow_mut().clear();
         unsafe {
             self.context.SetTarget(None);
             self.target = None;
+            let flags = if self.frame_latency.is_some() {
+                DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT
+            } else {
+                DXGI_SWAP_CHAIN_FLAG(0)
+            };
             if self
                 .swap_chain
-                .ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, DXGI_SWAP_CHAIN_FLAG(0))
+                .ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, flags)
                 .is_err()
             {
                 return;
@@ -2045,10 +2075,6 @@ impl Renderer {
 
     /// Пересчитывает раскладку и перерисовывает окно из дерева элементов.
     fn preload_images(&mut self) {
-        let wic = match &self.wic {
-            Some(w) => w.clone(),
-            None => return,
-        };
         let mut paths: Vec<String> = Vec::new();
         self.tree.for_each(|_, node| {
             if let NodeKind::Image { path, .. } = &node.kind {
@@ -2062,6 +2088,19 @@ impl Renderer {
                 }
             }
         });
+        if paths.is_empty() {
+            return;
+        }
+        if self.wic.is_none() {
+            self.wic = unsafe {
+                let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+                CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).ok()
+            };
+        }
+        let wic = match &self.wic {
+            Some(w) => w.clone(),
+            None => return,
+        };
         for p in paths {
             if self.img_cache.contains_key(&p) {
                 continue;
@@ -2164,16 +2203,23 @@ impl Renderer {
         let hot = self.hot;
         let mouse = self.mouse;
         let theme = self.theme;
+        if let Some(h) = self.frame_latency {
+            unsafe {
+                windows::Win32::System::Threading::WaitForSingleObject(h, 1000);
+            }
+        }
         unsafe {
             self.rt.BeginDraw();
         }
         {
-            let canvas = Canvas::new(&self.rt);
+            let canvas = Canvas::new(&self.rt, &self.grad_cache, &self.layout_cache, &self.dwrite);
             let format = &self.text_format;
             let format_left = &self.text_format_left;
             let format_wrap = &self.text_format_wrap;
             let img_cache = &self.img_cache;
             let dwrite = &self.dwrite;
+            let view_w = self.width;
+            let view_h = self.height;
             let clear = if self.glass {
                 Color::rgba(
                     theme.background.r,
@@ -2187,6 +2233,15 @@ impl Renderer {
             canvas.clear(clear);
             self.tree.for_each(|id, node| {
                 if node.rect.x <= OFF_LIMIT || node.rect.y <= OFF_LIMIT {
+                    return;
+                }
+                let r = node.rect;
+                let m = 48.0;
+                if r.x + r.width < -m
+                    || r.y + r.height < -m
+                    || r.x > view_w + m
+                    || r.y > view_h + m
+                {
                     return;
                 }
                 let mut style = node.style;
@@ -3020,28 +3075,18 @@ impl Renderer {
                                         d,
                                     );
                                     if a[3] > 0.0 {
-                                        canvas.stroke_rect(sr, a[3], c);
+                                        canvas.stroke_ellipse(sr, a[3], c);
                                     } else {
-                                        canvas.fill_rounded_rect(sr, a[2], c);
+                                        canvas.fill_ellipse(sr, c);
                                     }
                                 }
                                 2 => {
                                     let w = a[4].max(1.0);
-                                    let dx = a[2] - a[0];
-                                    let dy = a[3] - a[1];
-                                    let len = (dx * dx + dy * dy).sqrt().max(1.0);
-                                    let steps =
-                                        (len / (w * 0.4).max(1.0)).ceil().max(1.0) as usize;
-                                    for i in 0..=steps {
-                                        let t = i as f32 / steps as f32;
-                                        let px = r.x + a[0] + dx * t - w / 2.0;
-                                        let py = r.y + a[1] + dy * t - w / 2.0;
-                                        canvas.fill_rounded_rect(
-                                            Rect::new(px, py, w, w),
-                                            w / 2.0,
-                                            c,
-                                        );
-                                    }
+                                    let x1 = r.x + a[0];
+                                    let y1 = r.y + a[1];
+                                    let x2 = r.x + a[2];
+                                    let y2 = r.y + a[3];
+                                    canvas.draw_line(x1, y1, x2, y2, w, c);
                                 }
                                 _ => {
                                     let tr = Rect::new(

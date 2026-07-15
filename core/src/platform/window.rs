@@ -24,6 +24,8 @@ struct WindowState {
     moving: bool,
     applied_mode: u32,
     applied_tint: u32,
+    ticking: bool,
+    idle: u32,
 }
 
 pub struct Window {
@@ -93,6 +95,8 @@ impl Window {
                 moving: false,
                 applied_mode: init_mode,
                 applied_tint: init_tint,
+                ticking: true,
+                idle: 0,
             });
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
 
@@ -138,12 +142,21 @@ unsafe fn state_ptr(hwnd: HWND) -> *mut WindowState {
     GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState
 }
 
+unsafe fn ensure_timer(hwnd: HWND, state: &mut WindowState) {
+    state.idle = 0;
+    if !state.ticking {
+        let _ = SetTimer(Some(hwnd), 1, 16, None);
+        state.ticking = true;
+    }
+}
+
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     unsafe {
         match msg {
             WM_PAINT => {
                 if let Some(state) = state_ptr(hwnd).as_mut() {
                     state.renderer.render();
+                    ensure_timer(hwnd, state);
                 }
                 let _ = ValidateRect(Some(hwnd), None);
                 LRESULT(0)
@@ -153,6 +166,13 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 if let Some(state) = state_ptr(hwnd).as_mut() {
                     if state.renderer.on_timer() {
                         let _ = InvalidateRect(Some(hwnd), None, false);
+                        state.idle = 0;
+                    } else {
+                        state.idle = state.idle.saturating_add(1);
+                        if state.idle > 8 {
+                            let _ = KillTimer(Some(hwnd), 1);
+                            state.ticking = false;
+                        }
                     }
                     if state.blur_on && !state.moving {
                         let mode = state.renderer.blur_mode();
