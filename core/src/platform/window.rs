@@ -3,7 +3,9 @@ use std::sync::Once;
 
 use windows::core::*;
 use windows::Win32::Foundation::*;
-use windows::Win32::Graphics::Gdi::{InvalidateRect, UpdateWindow, ValidateRect};
+use windows::Win32::Graphics::Gdi::{
+    CreateSolidBrush, DeleteObject, FillRect, InvalidateRect, UpdateWindow, ValidateRect, HDC,
+};
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryW};
 use windows::Win32::UI::Input::Ime::{
     ImmGetCompositionStringW, ImmGetContext, ImmReleaseContext, ImmSetCompositionWindow, CFS_POINT,
@@ -85,6 +87,7 @@ impl Window {
                 None,
             )?;
 
+            let _ = ShowWindow(hwnd, SW_SHOW);
             let init_mode: u32 = if blur { 3 } else { 0 };
             let init_tint: u32 = 0x40101418;
             let mut renderer = Renderer::new(hwnd, tree, glass, tint, width, height)?;
@@ -100,9 +103,9 @@ impl Window {
             });
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
 
-            let _ = SetTimer(Some(hwnd), 1, 16, None);
+            let _ = SetTimer(Some(hwnd), 1, 10, None);
             DragAcceptFiles(hwnd, true);
-            let _ = ShowWindow(hwnd, SW_SHOW);
+            let _ = InvalidateRect(Some(hwnd), None, false);
             let _ = UpdateWindow(hwnd);
             if blur {
                 set_accent(hwnd, init_mode, init_tint);
@@ -145,7 +148,7 @@ unsafe fn state_ptr(hwnd: HWND) -> *mut WindowState {
 unsafe fn ensure_timer(hwnd: HWND, state: &mut WindowState) {
     state.idle = 0;
     if !state.ticking {
-        let _ = SetTimer(Some(hwnd), 1, 16, None);
+        let _ = SetTimer(Some(hwnd), 1, 10, None);
         state.ticking = true;
     }
 }
@@ -367,7 +370,17 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 LRESULT(0)
             }
 
-            WM_ERASEBKGND => LRESULT(1),
+            WM_ERASEBKGND => {
+                if state_ptr(hwnd).is_null() {
+                    let hdc = HDC(wparam.0 as *mut c_void);
+                    let mut rc = RECT::default();
+                    let _ = GetClientRect(hwnd, &mut rc);
+                    let brush = CreateSolidBrush(COLORREF(0x00181410));
+                    let _ = FillRect(hdc, &rc, brush);
+                    let _ = DeleteObject(brush.into());
+                }
+                LRESULT(1)
+            }
 
             WM_DPICHANGED => {
                 let suggested = &*(lparam.0 as *const RECT);

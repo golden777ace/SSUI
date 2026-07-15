@@ -10,6 +10,9 @@ repository = "https://github.com/golden777ace/SSUI"
 [lib]
 name = "ssui_core"
 
+[dependencies]
+hashbrown = "0.14"
+
 [target.'cfg(windows)'.dependencies.windows]
 
 version = "0.62"

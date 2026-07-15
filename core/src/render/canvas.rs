@@ -5,8 +5,35 @@ use windows::core::Interface;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+
+use hashbrown::Equivalent;
 
 use super::types::{Color, Rect};
+
+pub type LayoutCache = hashbrown::HashMap<TextKey, IDWriteTextLayout>;
+
+struct KeyRef<'a> {
+    text: &'a [u16],
+    fmt: usize,
+    w: u32,
+    h: u32,
+}
+
+impl Hash for KeyRef<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.text.hash(state);
+        self.fmt.hash(state);
+        self.w.hash(state);
+        self.h.hash(state);
+    }
+}
+
+impl Equivalent<TextKey> for KeyRef<'_> {
+    fn equivalent(&self, k: &TextKey) -> bool {
+        self.fmt == k.fmt && self.w == k.w && self.h == k.h && self.text == k.text.as_slice()
+    }
+}
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct TextKey {
@@ -20,7 +47,7 @@ pub struct Canvas<'a> {
     rt: &'a ID2D1RenderTarget,
     brush: Option<ID2D1SolidColorBrush>,
     grad: &'a RefCell<HashMap<(u32, u32), ID2D1LinearGradientBrush>>,
-    layouts: &'a RefCell<HashMap<TextKey, IDWriteTextLayout>>,
+    layouts: &'a RefCell<LayoutCache>,
     dwrite: &'a IDWriteFactory,
 }
 
@@ -28,7 +55,7 @@ impl<'a> Canvas<'a> {
     pub fn new(
         rt: &'a ID2D1RenderTarget,
         grad: &'a RefCell<HashMap<(u32, u32), ID2D1LinearGradientBrush>>,
-        layouts: &'a RefCell<HashMap<TextKey, IDWriteTextLayout>>,
+        layouts: &'a RefCell<LayoutCache>,
         dwrite: &'a IDWriteFactory,
     ) -> Self {
         let c = Color::rgb(0.0, 0.0, 0.0).to_d2d();
@@ -188,15 +215,15 @@ impl<'a> Canvas<'a> {
         };
         let w = rect.width.max(1.0);
         let h = rect.height.max(1.0);
-        let key = TextKey {
-            text: text.to_vec(),
+        let kref = KeyRef {
+            text,
             fmt: format.as_raw() as usize,
             w: w.to_bits(),
             h: h.to_bits(),
         };
         let layout = {
             let mut cache = self.layouts.borrow_mut();
-            match cache.get(&key) {
+            match cache.get(&kref) {
                 Some(l) => l.clone(),
                 None => {
                     let made =
@@ -206,6 +233,12 @@ impl<'a> Canvas<'a> {
                             if cache.len() >= 8192 {
                                 cache.clear();
                             }
+                            let key = TextKey {
+                                text: text.to_vec(),
+                                fmt: kref.fmt,
+                                w: kref.w,
+                                h: kref.h,
+                            };
                             cache.insert(key, l.clone());
                             l
                         }

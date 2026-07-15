@@ -1,4 +1,5 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use pyo3::exceptions::PyRuntimeError;
@@ -60,6 +61,71 @@ thread_local! {
     static BOX_BINDINGS: RefCell<Vec<(NodeId, Py<PyAny>)>> = RefCell::new(Vec::new());
     static LIST_BINDINGS: RefCell<Vec<(NodeId, Py<PyAny>)>> = RefCell::new(Vec::new());
     static TABLE_BINDINGS: RefCell<Vec<(NodeId, Py<PyAny>)>> = RefCell::new(Vec::new());
+    static TRACK: RefCell<Option<Vec<u32>>> = RefCell::new(None);
+    static DIRTY: RefCell<HashSet<u32>> = RefCell::new(HashSet::new());
+    static DEPS: RefCell<HashMap<usize, Vec<u32>>> = RefCell::new(HashMap::new());
+    static SIG_SEQ: Cell<u32> = Cell::new(0);
+}
+
+fn next_sig_id() -> u32 {
+    SIG_SEQ.with(|c| {
+        let v = c.get().wrapping_add(1);
+        c.set(v);
+        v
+    })
+}
+
+fn mark_read(id: u32) {
+    TRACK.with(|t| {
+        if let Some(v) = t.borrow_mut().as_mut() {
+            if !v.contains(&id) {
+                v.push(id);
+            }
+        }
+    });
+}
+
+fn mark_dirty(id: u32) {
+    DIRTY.with(|s| {
+        s.borrow_mut().insert(id);
+    });
+}
+
+/// Вызывает биндинг с учётом подписок на сигналы.
+fn run_binding<'py>(py: Python<'py>, f: &Py<PyAny>) -> Option<Bound<'py, PyAny>> {
+    let key = f.as_ptr() as usize;
+    let skip = DEPS.with(|d| {
+        let d = d.borrow();
+        match d.get(&key) {
+            Some(deps) if !deps.is_empty() => DIRTY.with(|s| {
+                let s = s.borrow();
+                !deps.iter().any(|i| s.contains(i))
+            }),
+            _ => false,
+        }
+    });
+    if skip {
+        return None;
+    }
+    TRACK.with(|t| *t.borrow_mut() = Some(Vec::new()));
+    let r = f.bind(py).call0();
+    let read = TRACK.with(|t| t.borrow_mut().take()).unwrap_or_default();
+    DEPS.with(|d| {
+        let mut d = d.borrow_mut();
+        let e = d.entry(key).or_default();
+        for i in read {
+            if !e.contains(&i) {
+                e.push(i);
+            }
+        }
+    });
+    match r {
+        Ok(v) => Some(v),
+        Err(e) => {
+            e.print(py);
+            None
+        }
+    }
 }
 
 #[pyclass(unsendable, name = "Ctx")]
@@ -2440,6 +2506,7 @@ impl PyWindow {
 
 #[pyclass(name = "S")]
 struct Signal {
+    id: u32,
     value: PyObject,
 }
 
@@ -2447,21 +2514,27 @@ struct Signal {
 impl Signal {
     #[new]
     fn new(vl: PyObject) -> Self {
-        Self { value: vl }
+        Self {
+            id: next_sig_id(),
+            value: vl,
+        }
     }
 
     fn __call__(&self, py: Python) -> PyObject {
+        mark_read(self.id);
         self.value.clone_ref(py)
     }
 
     /// Возвращает текущее значение.
     fn gt(&self, py: Python) -> PyObject {
+        mark_read(self.id);
         self.value.clone_ref(py)
     }
 
     /// Устанавливает новое значение.
     fn st(&mut self, vl: PyObject) {
         self.value = vl;
+        mark_dirty(self.id);
     }
 }
 
@@ -2578,13 +2651,15 @@ fn utf16(s: &str) -> Vec<u16> {
 
 fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
     for (id, f) in texts.borrow().iter() {
-        match f.bind(py).call0().and_then(|v| v.extract::<String>()) {
+        let Some(r) = run_binding(py, f) else { continue };
+        match r.extract::<String>() {
             Ok(s) => t.set_label_text(*id, utf16(&s)),
             Err(e) => e.print(py),
         }
     }
     for (id, f) in values.borrow().iter() {
-        match f.bind(py).call0().and_then(|v| v.extract::<f32>()) {
+        let Some(r) = run_binding(py, f) else { continue };
+        match r.extract::<f32>() {
             Ok(v) => {
                 t.set_slider_value(*id, v);
                 t.set_progress_value(*id, v);
@@ -2602,7 +2677,8 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
     }
     BOX_BINDINGS.with(|c| {
         for (id, f) in c.borrow().iter() {
-            match f.bind(py).call0().and_then(|v| v.extract::<(f32, f32)>()) {
+            let Some(r) = run_binding(py, f) else { continue };
+            match r.extract::<(f32, f32)>() {
                 Ok((pd, gp)) => t.set_box(*id, pd, gp),
                 Err(e) => e.print(py),
             }
@@ -2610,7 +2686,8 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
     });
     LIST_BINDINGS.with(|c| {
         for (id, f) in c.borrow().iter() {
-            match f.bind(py).call0().and_then(|v| v.extract::<Vec<String>>()) {
+            let Some(r) = run_binding(py, f) else { continue };
+            match r.extract::<Vec<String>>() {
                 Ok(rows) => {
                     let data = rows.iter().map(|s| utf16(s)).collect();
                     t.set_list_items(*id, data);
@@ -2621,11 +2698,8 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
     });
     TABLE_BINDINGS.with(|c| {
         for (id, f) in c.borrow().iter() {
-            match f
-                .bind(py)
-                .call0()
-                .and_then(|v| v.extract::<Vec<Vec<String>>>())
-            {
+            let Some(r) = run_binding(py, f) else { continue };
+            match r.extract::<Vec<Vec<String>>>() {
                 Ok(rows) => {
                     let data = rows
                         .iter()
@@ -2639,7 +2713,8 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
     });
     CHART_BINDINGS.with(|c| {
         for (id, f) in c.borrow().iter() {
-            match f.bind(py).call0().and_then(|v| v.extract::<Vec<f32>>()) {
+            let Some(r) = run_binding(py, f) else { continue };
+            match r.extract::<Vec<f32>>() {
                 Ok(v) => t.set_chart_values(*id, v),
                 Err(e) => e.print(py),
             }
@@ -2647,7 +2722,8 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
     });
     CANVAS_BINDINGS.with(|c| {
         for (id, f) in c.borrow().iter() {
-            match f.bind(py).call0().and_then(|v| v.extract::<Vec<ShapeSpec>>()) {
+            let Some(r) = run_binding(py, f) else { continue };
+            match r.extract::<Vec<ShapeSpec>>() {
                 Ok(items) => t.set_canvas_shapes(*id, make_shapes(items)),
                 Err(e) => e.print(py),
             }
@@ -2655,11 +2731,8 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
     });
     PROP_BINDINGS.with(|c| {
         for (id, f) in c.borrow().iter() {
-            match f
-                .bind(py)
-                .call0()
-                .and_then(|v| v.extract::<Vec<(String, String)>>())
-            {
+            let Some(r) = run_binding(py, f) else { continue };
+            match r.extract::<Vec<(String, String)>>() {
                 Ok(rows) => {
                     let data = rows
                         .iter()
@@ -2673,7 +2746,8 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
     });
     WIN_SETTINGS.with(|s| {
         for (tag, f) in s.borrow().iter() {
-            let v = match f.bind(py).call0().and_then(|x| x.extract::<f32>()) {
+            let Some(r) = run_binding(py, f) else { continue };
+            let v = match r.extract::<f32>() {
                 Ok(v) => v,
                 Err(e) => {
                     e.print(py);
@@ -2699,6 +2773,7 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
             }
         }
     });
+    DIRTY.with(|s| s.borrow_mut().clear());
 }
 
 #[pymodule]
