@@ -157,6 +157,14 @@ fn inherit(tree: &mut Tree, expl_text: &[bool], expl_wrap: &[bool]) {
         if !expl_wrap[i] && tree.nodes[i].style.wrap.is_none() {
             tree.nodes[i].style.wrap = wrap;
         }
+        let font = tree.nodes[parent.0].style.font;
+        let size = tree.nodes[parent.0].style.size;
+        if tree.nodes[i].style.font.is_none() {
+            tree.nodes[i].style.font = font;
+        }
+        if tree.nodes[i].style.size.is_none() {
+            tree.nodes[i].style.size = size;
+        }
     }
 }
 

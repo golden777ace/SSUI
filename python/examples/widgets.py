@@ -29,9 +29,17 @@ def main():
     thm = win.thm()
     nt = win.nt()
     dlg = win.dlg()
+    fnt = win.fnt()
 
     page = ssui.sgnl(0)
     log = ssui.sgnl("—")
+
+    FONTS = ["Segoe UI", "Consolas", "Georgia", "Times New Roman"]
+    fam = ssui.sgnl("Segoe UI")
+    sz = ssui.sgnl(20)
+
+    def apply_font():
+        fnt(fam(), float(sz()))
 
     def show(i):
         return lambda: page.st(i)
@@ -223,6 +231,16 @@ def main():
             win.bt("drk", w=80.0, h=44.0, clk=lambda: thm("drk"))
             win.bt("blk", w=80.0, h=44.0, clk=lambda: thm("blk"))
             win.lb(bind=lambda: f"Событие: {log()}", h=40.0)
+
+        with win.bx(ax="h", gp=8.0, h=54.0) as fbar:
+                win.cls(fbar, "clear")
+                win.lb("Шрифт:", w=80.0, h=40.0)
+                win.dd(FONTS, sel=0, w=200.0, h=44.0,
+                       ch=lambda i: (fam.st(FONTS[i]), apply_font()))
+                win.lb("Размер:", w=80.0, h=40.0)
+                win.spin(20, min=10, max=48, step=1, w=170.0, h=44.0,
+                         ch=lambda v: (sz.st(int(v)), apply_font()))
+                win.lb(bind=lambda: f"{fam()} · {int(sz())} px", h=40.0)
 
         with win.scr(gp=8.0, pd=6.0) as area:
             win.cls(area, "clear")

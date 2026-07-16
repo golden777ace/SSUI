@@ -3,8 +3,55 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::render::types::{Color, Rect};
+use std::cell::Cell;
 
 mod css;
+
+fn utf16z(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+thread_local! {
+    static FONTS: RefCell<Vec<Vec<u16>>> = RefCell::new(vec![utf16z("Segoe UI")]);
+    static BASE_SIZE: Cell<f32> = Cell::new(20.0);
+}
+
+/// Задаёт базовый шрифт приложения: имя и размер.
+pub fn set_base_font(name: &str, size: f32) {
+    FONTS.with(|f| f.borrow_mut()[0] = utf16z(name));
+    BASE_SIZE.with(|s| s.set(size.max(1.0)));
+}
+
+/// Регистрирует семейство; возвращает его индекс.
+pub fn intern_font(name: &str) -> u16 {
+    let z = utf16z(name);
+    FONTS.with(|f| {
+        let mut v = f.borrow_mut();
+        if let Some(i) = v.iter().position(|e| *e == z) {
+            return i as u16;
+        }
+        v.push(z);
+        (v.len() - 1) as u16
+    })
+}
+
+/// UTF-16 имя семейства по индексу (с нулём).
+pub fn font_utf16(idx: u16) -> Vec<u16> {
+    FONTS.with(|f| {
+        let v = f.borrow();
+        v.get(idx as usize).cloned().unwrap_or_else(|| v[0].clone())
+    })
+}
+
+/// Базовое семейство приложения (UTF-16, с нулём).
+pub fn base_font() -> Vec<u16> {
+    FONTS.with(|f| f.borrow()[0].clone())
+}
+
+/// Базовый размер шрифта приложения.
+pub fn base_size() -> f32 {
+    BASE_SIZE.with(|s| s.get())
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct NodeId(usize);
@@ -79,6 +126,8 @@ pub struct Style {
     pub elev: Option<f32>,
     pub grad: Option<(Color, Color)>,
     pub grad_dir: u8,
+    pub font: Option<u16>,
+    pub size: Option<f32>,
 }
 
 #[derive(Clone)]
@@ -583,6 +632,7 @@ pub struct Tree {
     pending_dialog: DialogQueue,
     pending_notes: NoteQueue,
     pending_theme: Rc<RefCell<Option<usize>>>,
+    pending_font: Rc<RefCell<Option<(String, f32)>>>,
     ghosts: HashSet<usize>,
     fronts: HashSet<usize>,
     placeholders: HashMap<usize, Vec<u16>>,
@@ -626,6 +676,7 @@ impl Tree {
             pending_dialog: Rc::new(RefCell::new(None)),
             pending_notes: Rc::new(RefCell::new(Vec::new())),
             pending_theme: Rc::new(RefCell::new(None)),
+            pending_font: Rc::new(RefCell::new(None)),
             ghosts: HashSet::new(),
             fronts: HashSet::new(),
             placeholders: HashMap::new(),
@@ -662,6 +713,22 @@ impl Tree {
             self.theme = i.min(3);
         }
         t
+    }
+
+    /// Возвращает очередь смены шрифта для внешнего управления.
+    pub fn font_queue(&self) -> Rc<RefCell<Option<(String, f32)>>> {
+        self.pending_font.clone()
+    }
+
+    /// Забирает запрошенный шрифт и применяет как базовый; true — если менялся.
+    pub fn take_pending_font(&mut self) -> bool {
+        let f = self.pending_font.borrow_mut().take();
+        if let Some((name, size)) = f {
+            set_base_font(&name, size);
+            true
+        } else {
+            false
+        }
     }
 
     /// Возвращает значение ползунка (0..1).
@@ -805,6 +872,11 @@ impl Tree {
     /// Включает перенос строк для метки.
     pub fn set_wrap(&mut self, id: NodeId, on: bool) {
         self.nodes[id.0].style.wrap = Some(on);
+    }
+
+    /// Базовый шрифт приложения: семейство и размер.
+    pub fn set_font(&self, name: &str, size: f32) {
+        set_base_font(name, size);
     }
 
     /// Задаёт высоту тени (elevation) элемента.
@@ -2734,6 +2806,15 @@ fn apply_style_decl(style: &mut Style, key: &str, value: &str) {
         }
         "radius" => {
             style.radius = parse_num(value);
+        }
+        "font-size" => {
+            style.size = parse_num(value);
+        }
+        "font-family" | "font" => {
+            let name = value.trim().trim_matches('"').trim_matches('\'').trim();
+            if !name.is_empty() {
+                style.font = Some(intern_font(name));
+            }
         }
         "wrap" => {
             style.wrap = Some(value == "true" || value == "1" || value == "wrap");

@@ -195,6 +195,20 @@ impl Fx {
     }
 }
 
+#[pyclass(unsendable, name = "Fnt")]
+struct Fnt {
+    queue: Rc<RefCell<Option<(String, f32)>>>,
+}
+
+#[pymethods]
+impl Fnt {
+    /// Меняет базовый шрифт вживую: семейство и размер.
+    #[pyo3(signature = (family="Segoe UI", size=20.0))]
+    fn __call__(&self, family: &str, size: f32) {
+        *self.queue.borrow_mut() = Some((family.to_string(), size.max(1.0)));
+    }
+}
+
 #[pyclass(unsendable, name = "Thm")]
 struct Thm {
     queue: Rc<RefCell<Option<usize>>>,
@@ -359,6 +373,7 @@ struct PyWindow {
     dialog_queue: DialogQueue,
     note_queue: NoteQueue,
     theme_queue: Rc<RefCell<Option<usize>>>,
+    font_queue: Rc<RefCell<Option<(String, f32)>>>,
     glass: bool,
     tint: f32,
     blur: bool,
@@ -376,6 +391,7 @@ impl PyWindow {
         let dialog_queue = tree.dialog_queue();
         let note_queue = tree.note_queue();
         let theme_queue = tree.theme_queue();
+        let font_queue = tree.font_queue();
         Self {
             tree: Some(tree),
             title: ttl.to_string(),
@@ -389,6 +405,7 @@ impl PyWindow {
             dialog_queue,
             note_queue,
             theme_queue,
+            font_queue,
             glass,
             tint,
             blur,
@@ -404,6 +421,13 @@ impl PyWindow {
     fn thm(&self) -> Thm {
         Thm {
             queue: self.theme_queue.clone(),
+        }
+    }
+
+    /// Живая смена шрифта: `fnt(family, size)`.
+    fn fnt(&self) -> Fnt {
+        Fnt {
+            queue: self.font_queue.clone(),
         }
     }
 
@@ -499,6 +523,14 @@ impl PyWindow {
             texts: self.bindings.clone(),
             values: self.value_bindings.clone(),
         }
+    }
+
+    /// Базовый шрифт приложения: семейство и размер.
+    #[pyo3(signature = (family="Segoe UI", size=20.0))]
+    fn font(&mut self, family: &str, size: f32) -> PyResult<()> {
+        let tree = self.tree.as_ref().ok_or_else(consumed)?;
+        tree.set_font(family, size);
+        Ok(())
     }
 
     /// Привязывает прозрачность фона окна к сигналу 0..1.
@@ -2814,6 +2846,7 @@ fn ssui(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyNode>()?;
     m.add_class::<Ctx>()?;
     m.add_class::<Fx>()?;
+    m.add_class::<Fnt>()?;
     m.add_class::<Dlg>()?;
     m.add_class::<Signal>()?;
     m.add_function(wrap_pyfunction!(sgnl, m)?)?;

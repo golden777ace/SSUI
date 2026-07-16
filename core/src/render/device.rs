@@ -228,6 +228,7 @@ pub struct Renderer {
     img_cache: HashMap<String, Option<ID2D1Bitmap>>,
     grad_cache: std::cell::RefCell<HashMap<(u32, u32), ID2D1LinearGradientBrush>>,
     layout_cache: std::cell::RefCell<super::canvas::LayoutCache>,
+    fmt_cache: std::cell::RefCell<HashMap<(u16, u32, u8), IDWriteTextFormat>>,
     frame_latency: Option<HANDLE>,
     _dcomp: Option<IDCompositionDevice>,
     _dcomp_target: Option<IDCompositionTarget>,
@@ -345,37 +346,40 @@ impl Renderer {
             let rt: ID2D1RenderTarget = context.cast()?;
 
             let dwrite: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?;
+            let base_family = crate::tree::base_font();
+            let base_size = crate::tree::base_size();
+            let fam = windows::core::PCWSTR(base_family.as_ptr());
             let text_format = dwrite.CreateTextFormat(
-                w!("Segoe UI"),
+                fam,
                 None,
                 DWRITE_FONT_WEIGHT_SEMI_BOLD,
                 DWRITE_FONT_STYLE_NORMAL,
                 DWRITE_FONT_STRETCH_NORMAL,
-                24.0,
+                base_size * 1.2,
                 w!("en-us"),
             )?;
             let _ = text_format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
             let _ = text_format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 
             let text_format_left = dwrite.CreateTextFormat(
-                w!("Segoe UI"),
+                fam,
                 None,
                 DWRITE_FONT_WEIGHT_NORMAL,
                 DWRITE_FONT_STYLE_NORMAL,
                 DWRITE_FONT_STRETCH_NORMAL,
-                20.0,
+                base_size,
                 w!("en-us"),
             )?;
             let _ = text_format_left.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
             let _ = text_format_left.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 
             let text_format_wrap = dwrite.CreateTextFormat(
-                w!("Segoe UI"),
+                fam,
                 None,
                 DWRITE_FONT_WEIGHT_NORMAL,
                 DWRITE_FONT_STYLE_NORMAL,
                 DWRITE_FONT_STRETCH_NORMAL,
-                20.0,
+                base_size,
                 w!("en-us"),
             )?;
             let _ = text_format_wrap.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
@@ -430,6 +434,7 @@ impl Renderer {
                 img_cache: HashMap::new(),
                 grad_cache: std::cell::RefCell::new(HashMap::new()),
                 layout_cache: std::cell::RefCell::new(Default::default()),
+                fmt_cache: std::cell::RefCell::new(HashMap::new()),
                 frame_latency,
                 _dcomp: dcomp,
                 _dcomp_target: dcomp_target,
@@ -515,6 +520,57 @@ impl Renderer {
             }
             None => false,
         }
+    }
+
+    /// Пересобирает базовые форматы из текущего шрифта приложения.
+    fn rebuild_fonts(&mut self) {
+        let base = crate::tree::base_font();
+        let size = crate::tree::base_size();
+        let fam = windows::core::PCWSTR(base.as_ptr());
+        unsafe {
+            if let Ok(f) = self.dwrite.CreateTextFormat(
+                fam,
+                None,
+                DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                size * 1.2,
+                w!("en-us"),
+            ) {
+                let _ = f.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                let _ = f.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                self.text_format = f;
+            }
+            if let Ok(f) = self.dwrite.CreateTextFormat(
+                fam,
+                None,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                size,
+                w!("en-us"),
+            ) {
+                let _ = f.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                let _ = f.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                self.text_format_left = f;
+            }
+            if let Ok(f) = self.dwrite.CreateTextFormat(
+                fam,
+                None,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                size,
+                w!("en-us"),
+            ) {
+                let _ = f.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                let _ = f.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+                let _ = f.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+                self.text_format_wrap = f;
+            }
+        }
+        self.fmt_cache.borrow_mut().clear();
+        self.layout_cache.borrow_mut().clear();
     }
 
     /// Задаёт режим и тон фонового размытия.
@@ -2191,6 +2247,9 @@ impl Renderer {
             self.theme_index = i;
             self.theme = theme_from_index(i);
         }
+        if self.tree.take_pending_font() {
+            self.rebuild_fonts();
+        }
         self.poll_dialog();
         self.poll_toast();
         self.poll_notes();
@@ -2219,6 +2278,7 @@ impl Renderer {
             let format_wrap = &self.text_format_wrap;
             let img_cache = &self.img_cache;
             let dwrite = &self.dwrite;
+            let fmt_cache = &self.fmt_cache;
             let view_w = self.width;
             let view_h = self.height;
             let clear = if self.glass {
@@ -2253,6 +2313,16 @@ impl Renderer {
                 if hot == Some(id) && !is_button {
                     merge_style(&mut style, &node.style_hover);
                 }
+                let (cf, cl, cw);
+                let (format, format_left, format_wrap) =
+                    if style.font.is_some() || style.size.is_some() {
+                        cf = pick_format(dwrite, fmt_cache, style, 0, DWRITE_FONT_WEIGHT_SEMI_BOLD, 24.0);
+                        cl = pick_format(dwrite, fmt_cache, style, 1, DWRITE_FONT_WEIGHT_NORMAL, 20.0);
+                        cw = pick_format(dwrite, fmt_cache, style, 2, DWRITE_FONT_WEIGHT_NORMAL, 20.0);
+                        (&cf, &cl, &cw)
+                    } else {
+                        (format, format_left, format_wrap)
+                    };
                 match &node.kind {
                     NodeKind::Container => {}
                     NodeKind::Image { path, fit } => {
@@ -4085,6 +4155,69 @@ fn x_at_index(dwrite: &IDWriteFactory, format: &IDWriteTextFormat, text: &[u16],
         }
     }
     0.0
+}
+
+fn pick_format(
+    dwrite: &IDWriteFactory,
+    cache: &std::cell::RefCell<HashMap<(u16, u32, u8), IDWriteTextFormat>>,
+    style: crate::tree::Style,
+    slot: u8,
+    weight: DWRITE_FONT_WEIGHT,
+    default_size: f32,
+) -> IDWriteTextFormat {
+    let fam = style.font.unwrap_or(0);
+    let size = style.size.unwrap_or(default_size).max(1.0);
+    let key = (fam, size.to_bits(), slot);
+    if let Some(f) = cache.borrow().get(&key) {
+        return f.clone();
+    }
+    let name = crate::tree::font_utf16(fam);
+    let made = unsafe {
+        dwrite.CreateTextFormat(
+            windows::core::PCWSTR(name.as_ptr()),
+            None,
+            weight,
+            DWRITE_FONT_STYLE_NORMAL,
+            DWRITE_FONT_STRETCH_NORMAL,
+            size,
+            w!("en-us"),
+        )
+    };
+    let fmt = match made {
+        Ok(f) => f,
+        Err(_) => unsafe {
+            dwrite
+                .CreateTextFormat(
+                    w!("Segoe UI"),
+                    None,
+                    weight,
+                    DWRITE_FONT_STYLE_NORMAL,
+                    DWRITE_FONT_STRETCH_NORMAL,
+                    size,
+                    w!("en-us"),
+                )
+                .expect("segoe")
+        },
+    };
+    unsafe {
+        match slot {
+            0 => {
+                let _ = fmt.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                let _ = fmt.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            }
+            2 => {
+                let _ = fmt.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                let _ = fmt.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+                let _ = fmt.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
+            }
+            _ => {
+                let _ = fmt.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+                let _ = fmt.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            }
+        }
+    }
+    cache.borrow_mut().insert(key, fmt.clone());
+    fmt
 }
 
 fn text_width(dwrite: &IDWriteFactory, format: &IDWriteTextFormat, text: &[u16]) -> f32 {
