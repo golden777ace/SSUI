@@ -19,8 +19,11 @@ label  { color: #eef3ff; }
 .demo .hint, .demo .warn { color: #22c55e; }
 .demo button:hover { background: #3b82f6; color: #ffffff; }
 .demo > .row > button:focus { background: #a855f7; }
-"""
 
+.dza { background: #3B82F6; color: #FFFFFF; }
+.dzb { background: #2FBF71; color: #FFFFFF; }
+.dzc { background: #E5484D; color: #FFFFFF; }
+"""
 LIVE = str(Path(__file__).with_name("live.css"))
 
 DATA = [10.2, 1.1, 1.0, 0.9, 0.8, 0.7, 0.6]
@@ -159,7 +162,8 @@ def main():
                                         on=lambda: act.st("отменено")))
 
         with win.tab(["Виджеты", "Ввод", "Раскладка", "Данные", "Данные 2",
-                      "Выбор", "Док", "Секции", "Панели", "Окно", "CSS"],
+                      "Выбор", "Док", "Секции", "Панели", "Окно", "CSS",
+                      "Глубина"],
                      h=600.0) as tabs:
 
             # --- Виджеты ---
@@ -550,6 +554,26 @@ def main():
                     win.lb("Живая карточка", h=26.0)
                     win.bt("Кнопка", h=44.0, clk=lambda: act.st("live-кнопка"))
                     win.sl(0.5, ch=lambda v: lvl.st(v), h=36.0)
+
+        # --- Глубина ---
+        with win.bx(pr=tabs, pd=8.0, gp=12.0) as pdepth:
+            win.cls(pdepth, "clear")
+            win.lb("Клик по панели поднимает её наверх (front).", h=28.0)
+            with win.bx(rad=12.0, w=760.0, h=420.0):
+                dz_a = win.bt("Панель A", toast="Наверху: A")
+                dz_b = win.bt("Панель B", toast="Наверху: B")
+                dz_c = win.bt("Панель C", toast="Наверху: C")
+                win.pl(dz_a, x=60.0, y=50.0, w=280.0, h=200.0)
+                win.pl(dz_b, x=220.0, y=120.0, w=280.0, h=200.0)
+                win.pl(dz_c, x=380.0, y=190.0, w=280.0, h=200.0)
+                win.dep(dz_a, 0)
+                win.dep(dz_b, 1)
+                win.dep(dz_c, 2)
+                for _p in (dz_a, dz_b, dz_c):
+                    win.front(_p)
+                win.cls(dz_a, "dza")
+                win.cls(dz_b, "dzb")
+                win.cls(dz_c, "dzc")
 
     bar = win.stb(pr=win.rt(), h=32.0, bind=lambda: (
         f"{act()} · громкость {int(vol() * 100)}% · "
