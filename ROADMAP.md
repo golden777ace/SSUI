@@ -1,312 +1,183 @@
-# SSUI — Дорожная карта
+# SSUI
 
-Технический план развития библиотеки **Sergievskiy Sergey User Interface**.
+## Описание
 
-Документ живой: решения уточняются по мере разработки. Обновлено под текущий прогресс.
+GUI-библиотека для Windows на Rust (Direct3D 11 + Direct2D + DirectWrite)
+с публичным API на Python (PyO3, maturin).
 
----
-
-## 0. Текущее состояние (кратко)
-
-Нативное 2D-ядро на Rust работает и интерактивно. Поверх него — рабочий
-декларативный Python-API через PyO3. Готовы: окно + GPU-рендер, дерево элементов,
-линейная и constraint-раскладка с кэшем геометрии, 4 темы, широкий набор виджетов,
-мышь/клавиатура/IME, CSS-подмножество, сигналы, анимации, dev-инструменты,
-диалоги, меню, подсказки и уведомления, прозрачность, размытие фона, изображения.
-Следующий блок — **продолжение каталога виджетов**.
-
-Легенда: ✅ готово · 🔄 частично · ⏳ запланировано.
-
----
-
-## 1. Видение
-
-SSUI — GUI-библиотека для Windows, сочетающая **простоту использования** с
-**предельно широким набором настроек** и построенная на современном GPU-рендеринге.
-Ориентир по опыту разработчика — простота Tkinter; по качеству отрисовки — уровень Flutter/SwiftUI.
-
-### Принципы
-
-- **Скорость и экономия памяти — в архитектуре.** GPU-рендеринг, кэш геометрии,
-  data-oriented раскладка, аренные аллокаторы, без интерпретатора на горячем пути.
-  (Ассемблер осознанно не используется.)
-- **Всё — из примитивов.** Минимум блоков, из комбинаций собираются любые виджеты.
-- **Декларативность.** Пользователь описывает *что* показать, библиотека решает *как* и *когда* перерисовать.
-- **Полная кастомизация.** Тема даёт цвет по умолчанию; любой элемент можно переопределить.
-
----
-
-## 2. Зафиксированные технические решения
+## Технические решения
 
 | Вопрос | Решение |
 |--------|---------|
-| Язык ядра | **Rust** (C-ABI сохраняется) |
-| Платформа | **Windows only** (10/11) |
-| Рендеринг | **D3D11 + Direct2D + DirectWrite** (flip-model, high-DPI) |
-| Прозрачность | **DirectComposition** (premultiplied) + **DWM blur** |
-| Изображения | **WIC** (PNG/JPEG, кэш битмапов) |
-| Биндинги WinAPI | crate `windows` (**0.62**) |
-| Публичный API | **Python 3.11+ через PyO3** (maturin) |
-| Парадигма | **Retained-mode** |
-| Реактивность | **Сигналы (fine-grained)** ✅ |
-| Раскладка | **Линейная + constraint** (grow/align/pin), кэш геометрии ✅ |
-| Стилизация | **Токены/темы + CSS-подмножество** ✅, полный CSS ⏳ |
-| Темы | **4 сразу:** white, light, dark, black |
-| Ввод | Мышь + клавиатура + IME (экранные читалки — нет) |
+| Язык ядра | Rust |
+| Платформа | Windows only (10/11) |
+| Рендеринг | D3D11 + Direct2D + DirectWrite |
+| Прозрачность | DirectComposition + DWM blur |
+| Изображения | WIC (PNG/JPEG) |
+| Биндинги WinAPI | crate `windows` 0.62 |
+| Публичный API | Python 3.11+ через PyO3 (maturin) |
+| Парадигма | Retained-mode |
+| Реактивность | Сигналы (fine-grained) |
+| Раскладка | Линейная + constraint (grow/align/pin) |
+| Стилизация | Токены/темы + CSS-подмножество |
+| Темы | 4: white, light, dark, black |
 | Лицензия | MIT, соло-разработка |
 
----
+## Архитектура и файлы
 
-## 3. Архитектура и файлы
+- `core/` (crate `ssui-core`): `platform/` — окно, ввод, DPI; `render/` — D3D11, Canvas; `theme.rs` — темы; `tree/` — дерево, раскладка, CSS, анимации.
+- `python/` (crate `ssui`): `src/lib.rs` — биндинги PyO3; `examples/` — примеры.
 
-- `core/` — нативное ядро (crate `ssui-core`):
-  - `platform/` — Win32: окно, цикл сообщений, ввод, DPI, прозрачность/размытие (`window.rs`, `dpi.rs`).
-  - `render/` — устройство D3D11, `Canvas` над Direct2D/DirectWrite, типы (`device.rs`, `canvas.rs`, `types.rs`).
-  - `theme.rs` — 4 темы и семантические токены.
-  - `tree/` — дерево элементов, раскладка, состояние виджетов, CSS, анимации, колбэки (`mod.rs`).
-- `python/` — биндинги PyO3 (crate `ssui`, `src/lib.rs`) и примеры (`examples/showcase.py`).
+## Палитра
 
----
+| Тема | Фон | Силуэты | Содержимое |
+|------|-----|---------|------------|
+| white | `#FFFFFF` | `#F5F5F5` | `#AAAAAA` |
+| light | — | — | — |
+| dark | — | — | — |
+| black | `#000000` | `#1A1A1A` | `#424242` |
 
-## 4. Дизайн-система
+## Каталог виджетов
 
-Своя система, по духу ближе к Apple HIG. Слой **семантических токенов** (фон,
-поверхность, контент, граница/track, выделение, акцент и его состояния, on-accent).
-
-| Тема | Палитра |
-|------|---------|
-| **white** | фон `#FFFFFF`, силуэты `#F5F5F5`, содержимое `#AAAAAA` |
-| **light** | до 7 цветов |
-| **dark** | до 7 цветов |
-| **black** | фон `#000000`, силуэты `#1A1A1A`, содержимое `#424242` |
-
----
-
-## 5. Модель примитивов и композиции
-
-- **Примитивы рисования** (Canvas): скруглённый прямоугольник, текст, отсечение, градиент, битмап.
-- **Виджеты-примитивы:** `Frame`, `Text`, `Button`, `Slider`, `Image`.
-- **Композиты:** `Checkbox`, `ProgressBar`, `TextBox`, `Dropdown`, `Tabs`, `Table`, `SpinBox` и др.
-
----
-
-## 6. Дорожная карта по фазам
-
-### Фаза 0 — Фундамент ✅
-Win32-окно, цикл сообщений, D3D11-устройство, flip-model swap chain, очистка экрана, ресайз, high-DPI.
-
-### Фаза 1 — Canvas и примитивы рисования ✅
-Direct2D/DirectWrite поверх D3D: скруглённые прямоугольники, текст, отсечение, градиенты, тени, битмапы.
-
-### Фаза 2 — Дерево элементов и память ✅
-Модель узлов (`NodeId`, `Props`, `Style`), аренный `Vec`, обход в глубину, box-модель.
-
-### Фаза 3 — Раскладка ✅
-Линейная (направление, gap, padding, фиксированные и растяжимые размеры);
-constraint: flex-веса `grow`, выравнивание `align` (justify: st/cnt/end/btw, cross: str/st/cnt/end),
-абсолютные якоря `pin`; кэш геометрии между кадрами.
-
-### Фаза 4 — События и ввод ✅
-Hit-testing, мышь, клавиатура, фокус, навигация Tab/Shift+Tab, Enter/Space, колесо, **IME**.
-
-### Фаза 5 — Токены, темы, CSS ✅
-Слой токенов и 4 темы; парсер CSS-подмножества: селекторы типа/класса/`*`, `:hover`/`:focus`,
-фон, цвет, отступы, gap, размеры, радиус, перенос, тени, градиенты с направлением, альфа `#RRGGBBAA`.
-
-### Фаза 6 — Виджеты-примитивы и композиты ✅
-`Frame`, `Text`, `Button`, `Slider`; `Checkbox`, `ProgressBar`, `TextBox`, `Dropdown`, `Tabs`, `Table`.
-
-### Фаза 7 — Python-биндинги и декларативный API ✅
-PyO3-слой поверх ядра; сигналы (fine-grained); декларативная композиция из Python
-(`with`-контексты, краткие имена, колбэки).
-
-### Фаза 8 — Анимации ✅
-Кривые (lin/in/out/io), длительности, интерполяция значений, тикер кадров 60 Гц (`Fx`).
-
-### Фаза 9 — Dev-инструменты ✅
-Инспектор дерева и раскладки (F12). Горячая перезагрузка CSS — в фазе 15.
-
-### Фаза 10 — CSS, сложные виджеты, IME ✅
-CSS-подмножество; таблицы, вкладки, меню, диалоги; IME.
-
-### Фаза 11 — Прозрачность и стекло ✅
-Альфа в цветах, прозрачное окно (DirectComposition, premultiplied), размытие фона (DWM).
-Живые регуляторы фона из Python. **Ограничение:** максимум размытия — уровень `BLURBEHIND` (3);
-`ACRYLICBLURBEHIND` (4) исследован, но отключён из-за высокой стоимости при перемещении окна.
-
-### Фаза 12 — Изображения ✅
-Загрузка PNG/JPEG через WIC, кэш битмапов, отрисовка на Canvas,
-режимы вписывания (contain/cover/fill/center), иконки в кнопках и метках (`icon=`).
-
-### Фаза 13 — Constraint-раскладка ✅
-Flex-веса (`grow`), выравнивание по осям (`align`), абсолютные якоря (`pin`), кэш геометрии.
-
-### Фаза 14 — Расширение каталога виджетов ✅ (🔄 дополнительная часть)
-Основная часть закрыта: весь каталог реализован.
-Дополнительная часть: Date Picker, DateTime Picker, WebView, Video, Audio, Map View.
-
-### Фаза 15 — Полный CSS-каскад ✅
-Наследование (`color`, `wrap`), специфичность, комбинаторы (` `, `>`),
-группы через запятую, hot-reload стилей (`css_hot`).
-
-### Фаза 16 — Виртуализация ✅
-Ленивая отрисовка списков, таблиц, дерева и таблицы свойств.
-
-### Фаза 17 — Три раскладки ✅
-Отдельное размещение узла: `pl` (абсолют), `gr` (сетка), `pk` (упаковка).
-Режим контейнера выбирается автоматически по вызову у ребёнка.
-Живая настройка `padding`/`gap` через `bindb`.
-
-### Фаза 18 — Реактивные данные ✅
-Содержимое списков (`bindl`) и таблиц (`bindt`) из сигналов.
-Пункты обновляются на кадре без пересборки дерева; выбор клампится.
-Витрина: живой поиск по списку и фильтр «онлайн» по таблице.
-
-### Фаза 19 — 3D-интерфейсы и физика взаимодействий ✅
-Ось глубины `z` (`dep`, `bindz`); рендеринг и хит-тест по глубине;
-подъём панели кликом (`front`). Расталкивание — отложено.
-
----
-
-## Производительность
-
-- ✅ Кэш `IDWriteTextLayout` (draw_text).
-- ✅ Canvas: `DrawLine` / `DrawEllipse` вместо цепочек прямоугольников.
-- ✅ Кэш градиентных кистей.
-- ✅ Culling невидимых узлов при отрисовке.
-- ✅ Динамический таймер (0% CPU в простое).
-- ✅ Waitable swap chain, латентность 1 кадр.
-- ✅ ClearType для непрозрачных окон.
-- ✅ Ленивый WIC (старт без картинок дешевле).
-- ⏳ Точечный refresh по подписчикам — регрессирует бенч signal, отложено.
-- ⏳ `benchmarks/benchmark.py` в CI-прогон вручную.
-
----
-
-## 7. Инструменты и процессы
-
-- **Сборка:** cargo (ядро) + maturin/PyO3 (Python-колесо).
-- **Тесты:** `cargo test` + `pytest` + визуальная регрессия; единая витрина `showcase.py`.
-- **Качество:** `clippy` + `rustfmt`; `ruff` + `mypy`.
-- **CI:** GitHub Actions (Windows-раннеры).
-
----
-
-## 8. Уроки по `windows`-crate (0.62)
-
-Версия чувствительна к сигнатурам. Уже учтено в коде:
-
-- `HGLOBAL` — из `Foundation`, не из `System::Memory`.
-- `HitTestTextPosition` принимает `bool`, не `BOOL`.
-- `CreateWindowExW`: `hinstance` — `Option<HINSTANCE>` (передавать `Some(..)`).
-- `ValidateRect`/`InvalidateRect`: `hwnd` — `Option`, `bErase` — `bool`.
-- `ClearRenderTargetView` принимает `&[f32; 4]`.
-- `HMODULE → HINSTANCE` через `.into()`.
-- Буфер обмена: `System::DataExchange` + `System::Memory` + `System::Ole`.
-- **Градиент:** точка — не `D2D_POINT_2F` (его нет); поля вектора задаются через `Default` и `.X`/`.Y`.
-- **Прозрачность:** composition swap chain + `IDCompositionDevice`; окно с `WS_EX_NOREDIRECTIONBITMAP`.
-- **Размытие:** `SetWindowCompositionAttribute` грузится из `user32.dll` вручную (нет в crate).
-- **WIC:** `CoInitializeEx` + `CoCreateInstance(&CLSID_WICImagingFactory, ...)`; конвертация в `GUID_WICPixelFormat32bppPBGRA`.
-- **PyO3 0.23:** `PyObject` не реализует `Clone` — оборачивать колбэк в `Rc`.
-
----
-
-## 9. Известные грабли (не повторять)
-
-- Скрытые страницы уводятся за экран (x/y ≤ −100 000) — узлы с такими координатами
-  пропускаются при отрисовке; клэмп ползунка защищён `.max(r.x)`.
-- CSS применяется к **уже построенному** дереву: вызывать `win.css()` в конце.
-- Диалог из очереди забирается опросом `poll_dialog` в начале каждого кадра.
-- Дёргать методы окна из колбэка нельзя (`Already borrowed`) — состояние менять через сигналы.
-
----
-
-## 10. Лицензирование (заметка)
-
-Проект под MIT, автор — единственный правообладатель, поэтому будущие версии можно
-выпускать под другой лицензией. Уже опубликованные под MIT версии отозвать нельзя.
-При появлении сторонних контрибуций вводится CLA. Это не юридическая консультация.
-
----
-
-# Каталог виджетов
-
-Полный список планируемых виджетов. Легенда: ✅ есть · 🔄 частично · ⏳ план.
+Легенда: ✅ есть · ⏳ план.
 
 ### Окна и диалоги
-- ✅ Window — главное/независимое окно (`W`).
-- ✅ Dialog — модальный диалог (`dlg`).
-- ✅ Tooltip — подсказка при наведении (`tip=`).
-- ✅ Toast — самоисчезающее уведомление (`toast=`).
-- ✅ Message Box — окно с одной кнопкой (`dlg.msg`).
-- ✅ Alert — предупреждение (`dlg.alert`).
-- ✅ Notification — уведомление в углу (`nt`).
-- ✅ Snackbar — панель снизу с действием (`nt.snack`).
+- ✅ Window (`W`) · Dialog (`dlg`) · Tooltip (`tip=`) · Toast (`toast=`)
+- ✅ Message Box (`dlg.msg`) · Alert (`dlg.alert`) · Notification (`nt`) · Snackbar (`nt.snack`)
 
 ### Контейнеры
-- ✅ Panel / Frame — группировка (`fr`, `bx`).
-- ✅ GroupBox — рамка с заголовком (`grp`).
-- ✅ Scroll Area — прокручиваемая область (`scr`).
-- ✅ Splitter — перетаскиваемый разделитель (`spl`).
-- ✅ Tab Widget — вкладки (`tab`).
-- ✅ Accordion — раскрывающиеся секции (`acc`).
-- ✅ Stack Widget — одна страница из многих (`stk`).
-- ✅ Canvas — область рисования (`cv`: rect, circle, line, text).
-- ✅ Dock Widget — сворачиваемая панель у края (`dock`).
-- ✅ Drop Area — приём файлов из проводника (`drop`).
+- ✅ Frame/Box (`fr`, `bx`) · GroupBox (`grp`) · Scroll Area (`scr`) · Splitter (`spl`)
+- ✅ Tabs (`tab`) · Accordion (`acc`) · Stack (`stk`) · Canvas (`cv`) · Dock (`dock`) · Drop Area (`drop`)
 
 ### Отображение
-- ✅ Label — текст (`lb`).
-- ✅ Image — изображение (`img`).
-- ✅ Icon — пиктограмма (`icon=`).
-- ✅ Separator — разделитель (`sep`).
-- ✅ Progress Bar — прогресс (`pr`).
-- ✅ Spinner — индикатор загрузки (`spn`).
-- ✅ Gauge — круговой индикатор (`gg`).
-- ✅ Chart — столбчатая диаграмма (`cht`).
-- ✅ Meter — сегментная шкала (`mt`).
-- ✅ Status Bar — строка состояния (`stb`).
-- ✅ Badge — значок-счётчик (`bdg`).
+- ✅ Label (`lb`) · Image (`img`) · Icon (`icon=`) · Separator (`sep`) · Progress Bar (`pr`)
+- ✅ Spinner (`spn`) · Gauge (`gg`) · Chart (`cht`) · Meter (`mt`) · Status Bar (`stb`) · Badge (`bdg`)
 
 ### Кнопки и действия
-- ✅ Button — действие (`bt`).
-- ✅ Toggle Button — кнопка с двумя состояниями (`tgl`).
-- ✅ Drop-down Button — список (`dd`).
-- ✅ Link — кликабельная ссылка (`lnk`).
-- ✅ Split Button — действие + меню (`sbt`).
+- ✅ Button (`bt`) · Toggle Button (`tgl`) · Dropdown (`dd`) · Link (`lnk`) · Split Button (`sbt`)
 
 ### Ввод
-- ✅ Text Entry — однострочный ввод (`tx`).
-- ✅ Text Area — многострочный ввод (`ta`).
-- ✅ CheckBox — флажок (`ch`).
-- ✅ Radio Button — выбор одного из группы (`rd`).
-- ✅ Switch — переключатель (`sw`).
-- ✅ Slider — ползунок (`sl`).
-- ✅ SpinBox — числовое поле с −/+ (`spin`).
-- ✅ ComboBox — выбор из списка (`dd`).
-- ✅ Range Slider — диапазон двумя ползунками (`rsl`).
-- ✅ Dial/Knob — круговой регулятор (`dl`).
+- ✅ Text Entry (`tx`) · Text Area (`ta`) · CheckBox (`ch`) · Radio (`rd`) · Switch (`sw`)
+- ✅ Slider (`sl`) · SpinBox (`spin`) · Range Slider (`rsl`) · Dial/Knob (`dl`)
 
 ### Списки и данные
-- ✅ ListBox — список с выбором (`lst`).
-- ✅ Table / Data Grid — таблица (`tbl`).
-- ✅ Tree View — дерево (`tre`).
-- ✅ Property Grid — таблица свойств (`pg`).
+- ✅ ListBox (`lst`) · Table (`tbl`) · Tree View (`tre`) · Property Grid (`pg`)
 
 ### Меню и навигация
-- ✅ Menu / Context Menu — меню (`menu`).
-- ✅ Scroll Bar — полоса прокрутки (в списках, таблицах, областях).
-- ✅ Menu Bar — строка меню (`mb`).
-- ✅ Breadcrumbs — хлебные крошки (`crumb`).
-- ✅ Pagination — постраничная навигация (`pgn`).
-- ✅ Rating — оценка звёздами (`rat`).
+- ✅ Menu (`menu`) · Menu Bar (`mb`) · Breadcrumbs (`crumb`) · Pagination (`pgn`) · Rating (`rat`)
 
 ### Выбор значений
-- ✅ Calendar — выбор даты (`cal`).
-- ✅ Color Picker — палитра HSV (`clr`).
-- ✅ Time Picker — выбор времени (`tm`).
-- ⏳ Date Picker, DateTime Picker.
+- ✅ Calendar (`cal`) · Color Picker (`clr`) · Time Picker (`tm`)
+- ⏳ Date Picker, DateTime Picker
 
-### Мультимедиа и встраивание
-- ✅ Terminal — консоль с вводом команд (`term`).
-- ⏳ WebView, Video Player, Audio Player, Map View.
+### Мультимедиа
+- ✅ Terminal (`term`)
+- ⏳ WebView, Video Player, Audio Player, Map View
+
+## Параметры виджетов
+
+### Контейнеры
+- `bx(rad=12.0, *, pr=None, ax="v", pd=0.0, gp=0.0, w=None, h=None, elev=0.0)`
+- `fr(rad=12.0, *, pr=None, ax="v", pd=0.0, gp=0.0, w=None, h=None, elev=0.0)`
+- `grp(title="", *, pr=None, rad=12.0, ax="v", pd=12.0, gp=8.0, w=None, h=None)`
+- `scr(*, pr=None, pd=8.0, gp=8.0, w=None, h=None)`
+- `spl(*, pr=None, ratio=0.5, vertical=True, w=None, h=None)`
+- `tab(labels, *, pr=None, sel=0, ch=None, pd=0.0, gp=0.0, w=None, h=None)`
+- `acc(title="", *, pr=None, open=False, rad=10.0, pd=8.0, gp=8.0, w=None, h=None)`
+- `stk(*, pr=None, page=0, bind=None, w=None, h=None)`
+- `cv(shapes=[], *, pr=None, bind=None, pd=0.0, gp=0.0, w=None, h=None)`
+- `dock(ttl="", *, pr=None, side="l", size=260.0, open=True, ax="v", pd=10.0, gp=8.0)`
+- `drop(txt="Перетащите файлы сюда", *, pr=None, on=None, pd=0.0, gp=0.0, w=None, h=None)`
+
+### Отображение
+- `lb(txt="", *, pr=None, bind=None, icon=None, pd=0.0, gp=0.0, w=None, h=None, wrap=False)`
+- `img(src, *, pr=None, fit="contain", fit_bind=None, pd=0.0, gp=0.0, w=None, h=None)`
+- `sep(*, pr=None, vertical=False, pd=0.0, gp=0.0, w=None, h=None)`
+- `pr(vl=0.0, *, pr=None, bind=None, pd=0.0, gp=0.0, w=None, h=None)`
+- `spn(*, pr=None, pd=0.0, gp=0.0, w=None, h=None)`
+- `gg(value=0.0, *, pr=None, lb="", bind=None, pd=0.0, gp=0.0, w=None, h=None)`
+- `cht(data, *, pr=None, bind=None, pd=0.0, gp=0.0, w=None, h=None)`
+- `mt(vl=0.0, *, pr=None, bind=None, seg=10, pd=0.0, gp=0.0, w=None, h=None)`
+- `stb(txt="", *, pr=None, bind=None, pd=0.0, gp=0.0, w=None, h=None)`
+- `bdg(txt="", *, pr=None, dot=False, bind=None, pd=0.0, gp=0.0, w=None, h=None)`
+
+### Кнопки и действия
+- `bt(lb="", *, pr=None, rad=10.0, icon=None, tip=None, toast=None, pd=0.0, gp=0.0, w=None, h=None, clk=None, elev=0.0)`
+- `tgl(lb="", *, pr=None, on=False, clk=None, pd=0.0, gp=0.0, w=None, h=None)`
+- `dd(options, *, pr=None, sel=0, ch=None, pd=0.0, gp=0.0, w=None, h=None)`
+- `lnk(lb="", *, pr=None, clk=None, pd=0.0, gp=0.0, w=None, h=None)`
+- `sbt(lb, opts, *, pr=None, clk=None, ch=None, rad=10.0, pd=0.0, gp=0.0, w=None, h=None)`
+
+### Ввод
+- `tx(txt="", *, pr=None, sig=None, ph="", pd=0.0, gp=0.0, w=None, h=None)`
+- `ta(txt="", *, pr=None, sig=None, ph="", pd=0.0, gp=0.0, w=None, h=None)`
+- `ch(lb="", *, pr=None, chk=False, clk=None, pd=0.0, gp=0.0, w=None, h=None)`
+- `rd(lb="", *, pr=None, grp=0, on=False, clk=None, pd=0.0, gp=0.0, w=None, h=None)`
+- `sw(lb="", *, pr=None, on=False, clk=None, pd=0.0, gp=0.0, w=None, h=None)`
+- `sl(vl=0.5, *, pr=None, ch=None, pd=0.0, gp=0.0, w=None, h=None)`
+- `spin(value=0.0, *, pr=None, min=0.0, max=100.0, step=1.0, ch=None, pd=0.0, gp=6.0, w=None, h=None)`
+- `rsl(lo=0.25, hi=0.75, *, pr=None, ch=None, pd=0.0, gp=0.0, w=None, h=None)`
+- `dl(vl=0.5, *, pr=None, lb="", ch=None, bind=None, pd=0.0, gp=0.0, w=None, h=None)`
+
+### Списки и данные
+- `lst(items, *, pr=None, sel=None, ch=None, pd=0.0, gp=0.0, w=None, h=None)`
+- `tbl(columns, rows, *, pr=None, ch=None, hl=0.0, vl=0.0, pd=0.0, gp=0.0, w=None, h=None)`
+- `tre(items, *, pr=None, ch=None, pd=0.0, gp=0.0, w=None, h=None)`
+- `pg(rows, *, pr=None, bind=None, ch=None, pd=0.0, gp=0.0, w=None, h=None)`
+
+### Меню и навигация
+- `menu(items, *, on_select=None)`
+- `mb(menus, *, pr=None, on_select=None, pd=0.0, gp=0.0, w=None, h=None)`
+- `crumb(items, *, pr=None, ch=None, pd=0.0, gp=0.0, w=None, h=None)`
+- `pgn(total, *, pr=None, page=0, ch=None, pd=0.0, gp=0.0, w=None, h=None)`
+- `rat(vl=0, *, pr=None, max=5, ch=None, pd=0.0, gp=0.0, w=None, h=None)`
+
+### Выбор значений
+- `cal(year=2026, month=7, day=1, *, pr=None, ch=None, pd=0.0, gp=0.0, w=None, h=None)`
+- `clr(hue=0.58, sat=0.75, val=0.96, *, pr=None, ch=None, pd=0.0, gp=0.0, w=None, h=None)`
+- `tm(hour=12, minute=0, *, pr=None, ch=None, pd=0.0, gp=0.0, w=None, h=None)`
+
+### Терминал
+- `term(lines=[], *, pr=None, prompt="$", on=None, pd=0.0, gp=0.0, w=None, h=None)`
+
+### Диалоги и уведомления
+- `win.dlg()(title, message, buttons, *, on=None)`
+- `dlg.msg(title, message, *, ok="Ок", on=None)`
+- `dlg.alert(message, *, title="Внимание", ok="Ок", on=None)`
+- `win.nt()(title, text, *, secs=4.0, action="", on=None)`
+- `nt.snack(text, *, secs=4.0, action="", on=None)`
+
+### Управление окном и раскладкой
+- `win.thm()("wht"/"lit"/"drk"/"blk")`
+- `win.fx()(sig, to, *, frm=None, dur=0.3, ease="out")`
+- `win.tint(sig)`, `win.blur(sig)`, `win.blur_mode(sig)`, `win.drag_smooth(sig)`
+- `win.css(text)`, `win.css_hot(path)`
+- `win.grow(node, g)`, `win.align(node, *, justify="st", cross="str")`, `win.pin(node, *, l=None, t=None, r=None, b=None)`
+- `win.ghost(node, on=True)`, `win.front(node, on=True)`
+- `win.bindv/bindb/bindl/bindt/bindz(node, callback)`
+
+## Сокращения
+
+### Виджеты и контейнеры
+- W(Window); S(Signal); bx(box); fr(frame); grp(group); scr(scroll)
+- spl(splitter); tab(tabs); acc(accordion); stk(stack); cv(canvas)
+- dock(dock); drop(drop area); lb(label); img(image); sep(separator)
+- pr(progress); spn(spinner); gg(gauge); cht(chart); mt(meter)
+- stb(status bar); bdg(badge); bt(button); tgl(toggle); dd(dropdown)
+- lnk(link); sbt(split button); tx(text box); ta(text area); ch(checkbox)
+- rd(radio); sw(switch); sl(slider); spin(spinbox); rsl(range slider)
+- dl(dial); lst(list box); tbl(table); tre(tree view); pg(property grid)
+- mb(menu bar); crumb(breadcrumbs); pgn(pagination); rat(rating)
+- cal(calendar); clr(color); tm(time); term(terminal)
+
+### Управление узлом
+- tip(tooltip); cls(class); pl(place); gr(grid); pk(pack); dep(depth)
+- css(css); rt(root); thm(theme); fx(effects); dlg(dialog); nt(notification)
+
+### Параметры (общие для многих виджетов)
+- pr(parent) — не путать с методом `pr` (progress bar), различаются по контексту
+- pd(padding); gp(gap); w(width); h(height); ax(axis); rad(radius)
+- vl(value); lb(label — текст); clk(click callback)
+- ch(change callback) — не путать с методом `ch` (checkbox)
+- sel(selected); chk(checked); grp(group id) — не путать с методом `grp` (group box)
+- lo/hi(low/high — границы диапазона); ttl(title); txt(text); elev(elevation)

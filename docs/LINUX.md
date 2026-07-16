@@ -130,7 +130,7 @@ Python-API (`python/src/lib.rs`) не меняется вообще.
   poll_dialog, тултипы. Критерий: showcase.py работает целиком.
 - **L5 — Интеграции.** Clipboard (arboard), диалоги (portal),
   drag&drop, IME (Wayland text-input-v3; XIM ограниченно).
-- **L6 — Выпуск.** Wheels в CI, README/ROADMAP, чек-лист
+- **L6 — Выпуск.** Wheels в CI, README/DESC, чек-лист
   паритета, известные ограничения.
 
 ## 7. Честные ограничения
@@ -152,7 +152,7 @@ Python-API (`python/src/lib.rs`) не меняется вообще.
 - `python/src/lib.rs`
 - `core/src/tree/mod.rs` — по запросу (большой)
 
-## 9. Строки для ROADMAP.md
+## 9. Строки для DESC.md
 
 ```
 ## Linux
