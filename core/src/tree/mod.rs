@@ -624,6 +624,14 @@ pub type FocusQueue = Rc<RefCell<Option<(Option<NodeId>, Option<Vec<u16>>, bool)
 /// Прямоугольники узлов после раскладки, в координатах окна.
 pub type RectTable = Rc<RefCell<Vec<Rect>>>;
 
+use std::time::{Duration, Instant};
+
+struct Timer {
+    every: Duration,
+    last: Instant,
+    cb: Box<dyn FnMut(&mut Tree)>,
+}
+
 impl NodeId {
     /// Порядковый номер узла в дереве.
     pub fn index(self) -> usize {
@@ -662,6 +670,8 @@ pub struct Tree {
     pending_font: Rc<RefCell<Option<(String, f32)>>>,
     pending_focus: FocusQueue,
     rects: RectTable,
+    timers: Vec<Timer>,
+    img_dirty: bool,
     ghosts: HashSet<usize>,
     fronts: HashSet<usize>,
     placeholders: HashMap<usize, Vec<u16>>,
@@ -708,6 +718,8 @@ impl Tree {
             pending_font: Rc::new(RefCell::new(None)),
             pending_focus: Rc::new(RefCell::new(None)),
             rects: Rc::new(RefCell::new(Vec::new())),
+            timers: Vec::new(),
+            img_dirty: false,
             ghosts: HashSet::new(),
             fronts: HashSet::new(),
             placeholders: HashMap::new(),
@@ -838,9 +850,9 @@ impl Tree {
         self.pending.clone()
     }
 
-    /// Есть ли активные анимации.
+    /// Есть ли активные анимации или таймеры.
     pub fn has_anims(&self) -> bool {
-        !self.anims.is_empty() || !self.pending.borrow().is_empty()
+        !self.anims.is_empty() || !self.pending.borrow().is_empty() || !self.timers.is_empty()
     }
 
     /// Есть ли в дереве вращающийся спиннер.
@@ -1378,6 +1390,52 @@ impl Tree {
         if let NodeKind::Image { fit: f, .. } = &mut self.nodes[id.0].kind {
             *f = fit;
         }
+    }
+
+    /// Задаёт файл изображения; помечает кэш для дозагрузки.
+    pub fn set_image_path(&mut self, id: NodeId, src: &str) {
+        if let NodeKind::Image { path, .. } = &mut self.nodes[id.0].kind {
+            if path != src {
+                *path = src.to_string();
+                self.img_dirty = true;
+            }
+        }
+    }
+
+    /// Забирает флаг необходимости дозагрузки изображений.
+    pub fn take_img_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.img_dirty)
+    }
+
+    /// Добавляет периодический таймер с интервалом в миллисекундах.
+    pub fn add_timer<F: FnMut(&mut Tree) + 'static>(&mut self, ms: f32, f: F) {
+        self.timers.push(Timer {
+            every: Duration::from_secs_f32((ms.max(1.0)) / 1000.0),
+            last: Instant::now(),
+            cb: Box::new(f),
+        });
+    }
+
+    /// Есть ли активные таймеры.
+    pub fn has_timers(&self) -> bool {
+        !self.timers.is_empty()
+    }
+
+    /// Прогоняет созревшие таймеры.
+    pub fn tick_timers(&mut self) {
+        if self.timers.is_empty() {
+            return;
+        }
+        let mut list = std::mem::take(&mut self.timers);
+        let now = Instant::now();
+        for t in list.iter_mut() {
+            if now.duration_since(t.last) >= t.every {
+                t.last = now;
+                (t.cb)(self);
+            }
+        }
+        list.append(&mut self.timers);
+        self.timers = list;
     }
 
     /// Задаёт иконку узла из файла.

@@ -506,11 +506,20 @@ impl Renderer {
         let dt = (now - self.last_tick).as_secs_f32();
         self.last_tick = now;
         let anim = self.tree.tick(dt);
+        let timers = self.tree.has_timers();
+        if timers {
+            self.tree.tick_timers();
+        }
         let spin = self.tree.has_spinner();
         if spin {
             self.tree.spin(dt);
         }
-        anim || spin || self.toast.is_some() || !self.notes.is_empty() || self.tip_pending()
+        anim
+            || spin
+            || timers
+            || self.toast.is_some()
+            || !self.notes.is_empty()
+            || self.tip_pending()
     }
 
     fn tip_pending(&self) -> bool {
@@ -2292,6 +2301,9 @@ impl Renderer {
         self.poll_dialog();
         self.poll_toast();
         self.poll_notes();
+        if self.tree.take_img_dirty() {
+            self.preload_images();
+        }
         self.tree.layout(Rect::new(0.0, 0.0, self.width, self.height));
         self.tree.publish_rects();
         self.update_scroll();
@@ -4155,12 +4167,21 @@ fn theme_from_index(index: usize) -> Theme {
     }
 }
 
+/// Разбирает `путь|кадр` на файл и номер кадра.
+fn split_frame(spec: &str) -> (&str, u32) {
+    match spec.rsplit_once('|') {
+        Some((p, n)) => (p, n.parse().unwrap_or(0)),
+        None => (spec, 0),
+    }
+}
+
 fn load_bitmap(
     wic: &IWICImagingFactory,
     rt: &ID2D1RenderTarget,
-    path: &str,
+    spec: &str,
 ) -> Option<ID2D1Bitmap> {
     unsafe {
+        let (path, index) = split_frame(spec);
         let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
         let decoder = wic
             .CreateDecoderFromFilename(
@@ -4170,7 +4191,8 @@ fn load_bitmap(
                 WICDecodeMetadataCacheOnLoad,
             )
             .ok()?;
-        let frame = decoder.GetFrame(0).ok()?;
+        let total = decoder.GetFrameCount().unwrap_or(1);
+        let frame = decoder.GetFrame(index.min(total.saturating_sub(1))).ok()?;
         let conv = wic.CreateFormatConverter().ok()?;
         conv.Initialize(
             &frame,

@@ -14,6 +14,32 @@ thread_local! {
     static MEASURE_DW: RefCell<Option<IDWriteFactory>> = const { RefCell::new(None) };
 }
 
+/// Число кадров в файле изображения; для GIF — длина анимации.
+pub fn frame_count(path: &str) -> u32 {
+    use windows::Win32::Foundation::GENERIC_READ;
+    use windows::Win32::Graphics::Imaging::*;
+    use windows::Win32::System::Com::*;
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let wic: IWICImagingFactory =
+            match CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER) {
+                Ok(f) => f,
+                Err(_) => return 1,
+            };
+        let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+        let decoder = wic.CreateDecoderFromFilename(
+            windows::core::PCWSTR(wide.as_ptr()),
+            None,
+            GENERIC_READ,
+            WICDecodeMetadataCacheOnLoad,
+        );
+        match decoder {
+            Ok(d) => d.GetFrameCount().unwrap_or(1).max(1),
+            Err(_) => 1,
+        }
+    }
+}
+
 /// Ширина и высота строки в пикселях для семейства и размера шрифта.
 pub fn measure_text(text: &str, family: &str, size: f32) -> (f32, f32) {
     MEASURE_DW.with(|cell| {

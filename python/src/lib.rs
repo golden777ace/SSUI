@@ -69,6 +69,7 @@ struct Extra {
     table: BindVec,
     depth: BindVec,
     pos: BindVec,
+    src: BindVec,
 }
 
 impl Extra {
@@ -81,7 +82,8 @@ impl Extra {
             4 => &self.list,
             5 => &self.table,
             6 => &self.depth,
-            _ => &self.pos,
+            7 => &self.pos,
+            _ => &self.src,
         }
     }
 }
@@ -465,6 +467,11 @@ struct PyWindow {
     rect_table: RectTable,
     extra: Rc<Extra>,
     hwnd: Rc<Cell<isize>>,
+    icon: Option<String>,
+    caption: Option<u32>,
+    caption_text: Option<u32>,
+    border: Option<u32>,
+    dark: Option<bool>,
     on_close: Option<PyObject>,
     parent: Option<(AnimQueue, Bindings, Bindings)>,
     owner: isize,
@@ -541,6 +548,11 @@ impl PyWindow {
             rect_table,
             extra,
             hwnd: Rc::new(Cell::new(0)),
+            icon: None,
+            caption: None,
+            caption_text: None,
+            border: None,
+            dark: None,
             on_close: None,
             parent: None,
             owner: 0,
@@ -671,6 +683,12 @@ impl PyWindow {
         PyNode { id: self.root }
     }
 
+    /// Число кадров в файле изображения; для GIF — длина анимации.
+    #[staticmethod]
+    fn frames(path: &str) -> u32 {
+        ssui_core::render::frame_count(path)
+    }
+
     /// Ширина и высота строки в пикселях: `(w, h)`.
     #[staticmethod]
     #[pyo3(signature = (text, size=15.0, family="Segoe UI"))]
@@ -735,6 +753,50 @@ impl PyWindow {
     /// Привязывает глубину `z` узла к колбэку, возвращающему число.
     fn bindz(&mut self, node: PyNode, f: PyObject) -> PyResult<()> {
         self.extra.depth.borrow_mut().push((node.id, f));
+        Ok(())
+    }
+
+    /// Оформление рамки окна; вызывается до показа окна.
+    #[pyo3(signature = (*, icon=None, cap=None, cap_txt=None, brd=None, dark=None))]
+    fn frame(
+        &mut self,
+        icon: Option<String>,
+        cap: Option<&str>,
+        cap_txt: Option<&str>,
+        brd: Option<&str>,
+        dark: Option<bool>,
+    ) -> PyResult<()> {
+        if icon.is_some() {
+            self.icon = icon;
+        }
+        if let Some(c) = Self::colorref(cap) {
+            self.caption = Some(c);
+        }
+        if let Some(c) = Self::colorref(cap_txt) {
+            self.caption_text = Some(c);
+        }
+        if let Some(c) = Self::colorref(brd) {
+            self.border = Some(c);
+        }
+        if dark.is_some() {
+            self.dark = dark;
+        }
+        Ok(())
+    }
+
+    /// Вызывает колбэк каждые `ms` миллисекунд, не блокируя окно.
+    fn every(&mut self, ms: f32, f: PyObject) -> PyResult<()> {
+        let texts = self.bindings.clone();
+        let values = self.value_bindings.clone();
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        tree.add_timer(ms, move |t| {
+            Python::with_gil(|py| {
+                if let Err(e) = f.bind(py).call0() {
+                    e.print(py);
+                }
+                refresh_all(py, t, &texts, &values);
+            });
+        });
         Ok(())
     }
 
@@ -1129,13 +1191,15 @@ impl PyWindow {
         Ok(PyNode { id })
     }
 
-    /// Добавляет изображение; `fit`/`fit_bind` — режим вписывания.
-    #[pyo3(signature = (src, *, pr=None, fit="contain", fit_bind=None, pd=0.0, gp=0.0, w=None, h=None))]
+    /// Добавляет изображение; `src_bind` — путь из колбэка.
+    #[pyo3(signature = (src="", *, pr=None, src_bind=None, fit="contain", fit_bind=None, pd=0.0, gp=0.0, w=None, h=None))]
+    #[allow(clippy::too_many_arguments)]
     fn img(
         &mut self,
         py: Python,
         src: &str,
         pr: Option<PyNode>,
+        src_bind: Option<PyObject>,
         fit: &str,
         fit_bind: Option<PyObject>,
         pd: f32,
@@ -1148,18 +1212,18 @@ impl PyWindow {
             Some(f) => f.bind(py).call0()?.extract::<f32>()? as u8,
             None => fit_code(fit),
         };
+        let path = match &src_bind {
+            Some(f) => f.bind(py).call0()?.extract::<String>()?,
+            None => src.to_string(),
+        };
         let parent = self.parent_of(pr);
         let tree = self.tree.as_mut().ok_or_else(consumed)?;
-        let id = tree.add_child(
-            parent,
-            NodeKind::Image {
-                path: src.to_string(),
-                fit: code,
-            },
-            props,
-        );
+        let id = tree.add_child(parent, NodeKind::Image { path, fit: code }, props);
         if let Some(f) = fit_bind {
             self.value_bindings.borrow_mut().push((id, f));
+        }
+        if let Some(f) = src_bind {
+            self.extra.src.borrow_mut().push((id, f));
         }
         Ok(PyNode { id })
     }
@@ -2910,8 +2974,19 @@ impl PyWindow {
                 Some(self.owner)
             },
             modal: self.modal,
+            icon: self.icon.clone(),
+            caption: self.caption,
+            caption_text: self.caption_text,
+            border: self.border,
+            dark: self.dark,
             on_close: None,
         }
+    }
+
+    fn colorref(hex: Option<&str>) -> Option<u32> {
+        let s = hex?.trim_start_matches('#');
+        let v = u32::from_str_radix(&s[..6.min(s.len())], 16).ok()?;
+        Some(((v & 0xFF) << 16) | (v & 0xFF00) | ((v >> 16) & 0xFF))
     }
 
     fn parent_of(&self, pr: Option<PyNode>) -> NodeId {
@@ -3077,6 +3152,13 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
                 Ok((x, y, w, h)) => {
                     t.set_place(*id, Some(x), Some(y), None, None, Some(w), Some(h))
                 }
+                Err(e) => e.print(py),
+            }
+        }
+        for (id, f) in e.src.borrow().iter() {
+            let Some(r) = run_binding(py, f) else { continue };
+            match r.extract::<String>() {
+                Ok(p) => t.set_image_path(*id, &p),
                 Err(e) => e.print(py),
             }
         }

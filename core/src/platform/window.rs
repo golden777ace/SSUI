@@ -12,6 +12,10 @@ use windows::Win32::UI::Input::Ime::{
     ImmGetCompositionStringW, ImmGetContext, ImmReleaseContext, ImmSetCompositionWindow, CFS_POINT,
     COMPOSITIONFORM, GCS_RESULTSTR,
 };
+use windows::Win32::Graphics::Dwm::{
+    DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR,
+    DWMWA_USE_IMMERSIVE_DARK_MODE,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, ReleaseCapture, SetCapture};
 use windows::Win32::UI::Shell::{
     DragAcceptFiles, DragFinish, DragQueryFileW, DragQueryPoint, HDROP,
@@ -52,6 +56,11 @@ pub struct WindowOpts {
     pub closebox: bool,
     pub owner: Option<isize>,
     pub modal: bool,
+    pub icon: Option<String>,
+    pub caption: Option<u32>,
+    pub caption_text: Option<u32>,
+    pub border: Option<u32>,
+    pub dark: Option<bool>,
     pub on_close: Option<Box<dyn FnMut()>>,
 }
 
@@ -70,6 +79,11 @@ impl Default for WindowOpts {
             closebox: true,
             owner: None,
             modal: false,
+            icon: None,
+            caption: None,
+            caption_text: None,
+            border: None,
+            dark: None,
             on_close: None,
         }
     }
@@ -127,6 +141,11 @@ impl Window {
             closebox,
             owner,
             modal,
+            icon,
+            caption,
+            caption_text,
+            border,
+            dark,
             on_close,
         } = opts;
         unsafe {
@@ -230,6 +249,49 @@ impl Window {
 
             if modal && !owner_hwnd.0.is_null() {
                 let _ = EnableWindow(owner_hwnd, false);
+            }
+
+            if let Some(d) = dark {
+                let v: i32 = if d { 1 } else { 0 };
+                let _ = DwmSetWindowAttribute(
+                    hwnd,
+                    DWMWA_USE_IMMERSIVE_DARK_MODE,
+                    &v as *const i32 as *const c_void,
+                    4,
+                );
+            }
+            for (attr, val) in [
+                (DWMWA_CAPTION_COLOR, caption),
+                (DWMWA_TEXT_COLOR, caption_text),
+                (DWMWA_BORDER_COLOR, border),
+            ] {
+                if let Some(c) = val {
+                    let _ =
+                        DwmSetWindowAttribute(hwnd, attr, &c as *const u32 as *const c_void, 4);
+                }
+            }
+            if let Some(path) = &icon {
+                let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+                for (msg, cx, cy) in [
+                    (ICON_BIG, SM_CXICON, SM_CYICON),
+                    (ICON_SMALL, SM_CXSMICON, SM_CYSMICON),
+                ] {
+                    if let Ok(h) = LoadImageW(
+                        None,
+                        PCWSTR(wide.as_ptr()),
+                        IMAGE_ICON,
+                        GetSystemMetrics(cx),
+                        GetSystemMetrics(cy),
+                        LR_LOADFROMFILE,
+                    ) {
+                        SendMessageW(
+                            hwnd,
+                            WM_SETICON,
+                            Some(WPARAM(msg as usize)),
+                            Some(LPARAM(h.0 as isize)),
+                        );
+                    }
+                }
             }
 
             let _ = ShowWindow(hwnd, SW_SHOW);
