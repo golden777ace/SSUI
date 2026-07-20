@@ -215,11 +215,19 @@ class W:
         `txt` подменяет текст поля ввода, `sel` выделяет его целиком.
         Безопасно вызывать из колбэков: запрос кладётся в очередь.
         """
+
     @staticmethod
     def measure_text(
-        text: str, size: float = 15.0, family: str = "Segoe UI"
+            text: str, size: float = 15.0, family: str = "Segoe UI"
     ) -> tuple[float, float]:
         """Ширина и высота строки в пикселях: `(w, h)`."""
+
+    @staticmethod
+    def frames(path: str) -> int:
+        """Число кадров в файле изображения; для GIF — длина анимации.
+
+        Кадр выбирается суффиксом пути: `img(src_bind=lambda: f"{gif}|{i}")`.
+        """
 
     def ghost(self, node: Node, on: bool = True) -> None:
         """Делает узел прозрачным для мыши."""
@@ -285,6 +293,28 @@ class W:
         self, node: Node, f: Callable[[], tuple[float, float, float, float]]
     ) -> None:
         """Привязывает абсолютную позицию узла к колбэку `(x, y, w, h)`."""
+    def every(self, ms: float, f: Callable[[], None]) -> None:
+        """Вызывает колбэк каждые `ms` миллисекунд, не блокируя окно.
+
+        Регистрируется до показа окна. Пока есть хотя бы один таймер,
+        цикл отрисовки не засыпает.
+        """
+    def frame(
+        self,
+        *,
+        icon: Optional[str] = None,
+        cap: Optional[str] = None,
+        cap_txt: Optional[str] = None,
+        brd: Optional[str] = None,
+        dark: Optional[bool] = None,
+    ) -> None:
+        """Оформление рамки окна; вызывается до показа.
+
+        `icon` — путь к .ico для заголовка и панели задач.
+        `cap`/`cap_txt`/`brd` — цвета заголовка, его текста и рамки
+        в формате `#RRGGBB`. Требуют Windows 11.
+        `dark` — тёмный режим неклиентской области.
+        """
     def keys(self, node: Node, f: Callable[[int], None]) -> None:
         """Реакция поля ввода на клавиши: `1` — Enter, `0` — Esc или клик мимо."""
 
@@ -456,19 +486,28 @@ class W:
         wrap: bool = False,
     ) -> Node:
         """Текстовая метка."""
+
     def img(
-        self,
-        src: str,
-        *,
-        pr: Optional[Node] = None,
-        fit: str = "contain",
-        fit_bind: Optional[Callable[[], float]] = None,
-        pd: float = 0.0,
-        gp: float = 0.0,
-        w: Optional[float] = None,
-        h: Optional[float] = None,
+            self,
+            src: str = "",
+            *,
+            pr: Optional[Node] = None,
+            src_bind: Optional[Callable[[], str]] = None,
+            fit: str = "contain",
+            fit_bind: Optional[Callable[[], float]] = None,
+            pd: float = 0.0,
+            gp: float = 0.0,
+            w: Optional[float] = None,
+            h: Optional[float] = None,
     ) -> Node:
-        """Изображение (PNG/JPEG). fit: contain/cover/fill/center."""
+        """Изображение из файла.
+
+        `src` — путь к файлу; `src_bind` — путь из колбэка,
+        пересчитывается каждый кадр.
+        Кадр анимированного GIF выбирается суффиксом: `"logo.gif|3"`.
+        `fit`/`fit_bind` — режим вписывания:
+        `contain`, `cover`, `fill`, `none`.
+        """
     def sep(
         self,
         *,
