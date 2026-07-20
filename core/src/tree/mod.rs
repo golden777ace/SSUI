@@ -499,6 +499,20 @@ pub struct Shape {
     pub text: Vec<u16>,
 }
 
+fn near_segment(px: f32, py: f32, x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
+    let dx = x2 - x1;
+    let dy = y2 - y1;
+    let len2 = dx * dx + dy * dy;
+    let t = if len2 <= 0.0 {
+        0.0
+    } else {
+        (((px - x1) * dx + (py - y1) * dy) / len2).clamp(0.0, 1.0)
+    };
+    let cx = x1 + dx * t;
+    let cy = y1 + dy * t;
+    ((px - cx).powi(2) + (py - cy).powi(2)).sqrt()
+}
+
 /// Толщина разделителя в пикселях.
 pub const SPLIT_W: f32 = 8.0;
 
@@ -604,6 +618,19 @@ pub struct NoteData {
 
 pub type NoteQueue = Rc<RefCell<Vec<NoteData>>>;
 
+/// Запрос фокуса: узел, новый текст, выделить ли всё.
+pub type FocusQueue = Rc<RefCell<Option<(Option<NodeId>, Option<Vec<u16>>, bool)>>>;
+
+/// Прямоугольники узлов после раскладки, в координатах окна.
+pub type RectTable = Rc<RefCell<Vec<Rect>>>;
+
+impl NodeId {
+    /// Порядковый номер узла в дереве.
+    pub fn index(self) -> usize {
+        self.0
+    }
+}
+
 pub struct Node {
     pub parent: Option<NodeId>,
     pub children: Vec<NodeId>,
@@ -633,6 +660,8 @@ pub struct Tree {
     pending_notes: NoteQueue,
     pending_theme: Rc<RefCell<Option<usize>>>,
     pending_font: Rc<RefCell<Option<(String, f32)>>>,
+    pending_focus: FocusQueue,
+    rects: RectTable,
     ghosts: HashSet<usize>,
     fronts: HashSet<usize>,
     placeholders: HashMap<usize, Vec<u16>>,
@@ -677,6 +706,8 @@ impl Tree {
             pending_notes: Rc::new(RefCell::new(Vec::new())),
             pending_theme: Rc::new(RefCell::new(None)),
             pending_font: Rc::new(RefCell::new(None)),
+            pending_focus: Rc::new(RefCell::new(None)),
+            rects: Rc::new(RefCell::new(Vec::new())),
             ghosts: HashSet::new(),
             fronts: HashSet::new(),
             placeholders: HashMap::new(),
@@ -718,6 +749,28 @@ impl Tree {
     /// Возвращает очередь смены шрифта для внешнего управления.
     pub fn font_queue(&self) -> Rc<RefCell<Option<(String, f32)>>> {
         self.pending_font.clone()
+    }
+
+    /// Возвращает очередь фокуса для внешнего управления.
+    pub fn focus_queue(&self) -> FocusQueue {
+        self.pending_focus.clone()
+    }
+
+    /// Возвращает таблицу прямоугольников узлов.
+    pub fn rect_table(&self) -> RectTable {
+        self.rects.clone()
+    }
+
+    /// Обновляет таблицу прямоугольников после раскладки.
+    pub fn publish_rects(&self) {
+        let mut out = self.rects.borrow_mut();
+        out.clear();
+        out.extend(self.nodes.iter().map(|n| n.rect));
+    }
+
+    /// Забирает отложенный запрос фокуса.
+    pub fn take_pending_focus(&mut self) -> Option<(Option<NodeId>, Option<Vec<u16>>, bool)> {
+        self.pending_focus.borrow_mut().take()
     }
 
     /// Забирает запрошенный шрифт и применяет как базовый; true — если менялся.
@@ -1065,6 +1118,54 @@ impl Tree {
         if let NodeKind::Canvas { shapes } = &mut self.nodes[id.0].kind {
             *shapes = data;
         }
+    }
+
+    /// Индекс верхней фигуры под точкой; координаты — экранные.
+    pub fn canvas_hit(&self, id: NodeId, x: f32, y: f32) -> Option<usize> {
+        let node = &self.nodes[id.0];
+        let NodeKind::Canvas { shapes } = &node.kind else {
+            return None;
+        };
+        let lx = x - node.rect.x;
+        let ly = y - node.rect.y;
+        for (i, s) in shapes.iter().enumerate().rev() {
+            let a = s.args;
+            let hit = match s.kind {
+                0 | 3 => {
+                    lx >= a[0] && ly >= a[1] && lx <= a[0] + a[2] && ly <= a[1] + a[3]
+                }
+                1 => {
+                    let dx = lx - a[0];
+                    let dy = ly - a[1];
+                    (dx * dx + dy * dy).sqrt() <= a[2].max(1.0)
+                }
+                2 | 4 => {
+                    let tol = a[4].max(4.0);
+                    near_segment(lx, ly, a[0], a[1], a[2], a[3]) <= tol
+                }
+                _ => {
+                    let dx = lx - a[0];
+                    let dy = ly - a[1];
+                    let d = (dx * dx + dy * dy).sqrt();
+                    if d > a[2].max(1.0) {
+                        false
+                    } else {
+                        let mut ang = dy.atan2(dx).to_degrees() - a[3];
+                        while ang < 0.0 {
+                            ang += 360.0;
+                        }
+                        while ang >= 360.0 {
+                            ang -= 360.0;
+                        }
+                        ang <= a[4].abs()
+                    }
+                }
+            };
+            if hit {
+                return Some(i);
+            }
+        }
+        None
     }
 
     /// Является ли узел терминалом.

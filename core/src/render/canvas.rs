@@ -2,6 +2,7 @@ use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::DirectWrite::*;
 use windows::core::Interface;
+use windows::Win32::Graphics::Direct2D::{ID2D1Factory, ID2D1PathGeometry};
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -270,6 +271,98 @@ impl<'a> Canvas<'a> {
         unsafe {
             self.rt.PopAxisAlignedClip();
         }
+    }
+
+    fn path(&self, pts: &[(f32, f32)], closed: bool, filled: bool) -> Option<ID2D1PathGeometry> {
+        if pts.len() < 2 {
+            return None;
+        }
+        unsafe {
+            let factory: ID2D1Factory = self.rt.GetFactory().ok()?;
+            let geo = factory.CreatePathGeometry().ok()?;
+            let sink = geo.Open().ok()?;
+            let begin = if filled {
+                D2D1_FIGURE_BEGIN_FILLED
+            } else {
+                D2D1_FIGURE_BEGIN_HOLLOW
+            };
+            let mut e = D2D1_ELLIPSE::default();
+            e.point.X = pts[0].0;
+            e.point.Y = pts[0].1;
+            sink.BeginFigure(e.point, begin);
+            for (x, y) in &pts[1..] {
+                e.point.X = *x;
+                e.point.Y = *y;
+                sink.AddLine(e.point);
+            }
+            sink.EndFigure(if closed {
+                D2D1_FIGURE_END_CLOSED
+            } else {
+                D2D1_FIGURE_END_OPEN
+            });
+            let _ = sink.Close();
+            Some(geo)
+        }
+    }
+
+    /// Заливает произвольный многоугольник по списку вершин.
+    pub fn fill_polygon(&self, pts: &[(f32, f32)], color: Color) {
+        if let (Some(geo), Some(brush)) = (self.path(pts, true, true), self.solid(color)) {
+            unsafe { self.rt.FillGeometry(&geo, brush, None) };
+        }
+    }
+
+    /// Рисует ломаную по списку вершин заданной толщины.
+    pub fn stroke_polyline(&self, pts: &[(f32, f32)], width: f32, color: Color) {
+        if let (Some(geo), Some(brush)) = (self.path(pts, false, false), self.solid(color)) {
+            unsafe { self.rt.DrawGeometry(&geo, brush, width, None) };
+        }
+    }
+
+    /// Рисует стрелку из (x1,y1) в (x2,y2); `head` — длина наконечника.
+    pub fn draw_arrow(&self, x1: f32, y1: f32, x2: f32, y2: f32, width: f32, head: f32, color: Color) {
+        let dx = x2 - x1;
+        let dy = y2 - y1;
+        let len = (dx * dx + dy * dy).sqrt().max(0.001);
+        let (ux, uy) = (dx / len, dy / len);
+        let hl = if head > 0.0 { head } else { 12.0 };
+        let hw = hl * 0.5;
+        let bx = x2 - ux * hl;
+        let by = y2 - uy * hl;
+        self.draw_line(x1, y1, bx, by, width.max(1.0), color);
+        self.fill_polygon(
+            &[
+                (x2, y2),
+                (bx - uy * hw, by + ux * hw),
+                (bx + uy * hw, by - ux * hw),
+            ],
+            color,
+        );
+    }
+
+    fn arc_points(cx: f32, cy: f32, r: f32, start: f32, sweep: f32) -> Vec<(f32, f32)> {
+        let steps = ((sweep.abs() / 4.0).ceil() as usize).clamp(2, 180);
+        let a0 = start.to_radians();
+        let da = sweep.to_radians() / steps as f32;
+        (0..=steps)
+            .map(|i| {
+                let a = a0 + da * i as f32;
+                (cx + r * a.cos(), cy + r * a.sin())
+            })
+            .collect()
+    }
+
+    /// Рисует дугу: центр, радиус, начальный угол и разворот в градусах.
+    pub fn stroke_arc(&self, cx: f32, cy: f32, r: f32, start: f32, sweep: f32, width: f32, color: Color) {
+        let pts = Self::arc_points(cx, cy, r, start, sweep);
+        self.stroke_polyline(&pts, width.max(1.0), color);
+    }
+
+    /// Заливает сектор: центр, радиус, начальный угол и разворот в градусах.
+    pub fn fill_sector(&self, cx: f32, cy: f32, r: f32, start: f32, sweep: f32, color: Color) {
+        let mut pts = vec![(cx, cy)];
+        pts.extend(Self::arc_points(cx, cy, r, start, sweep));
+        self.fill_polygon(&pts, color);
     }
 
     /// Рисует битмап в прямоугольник по режиму `fit`.

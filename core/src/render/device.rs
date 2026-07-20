@@ -1153,6 +1153,14 @@ impl Renderer {
 
     /// Обрабатывает нажатие левой кнопки. Возвращает true, если нужна перерисовка.
     pub fn on_mouse_down(&mut self, x: f32, y: f32) -> bool {
+        if self.dialog.is_none() && self.open_menu.is_none() && self.popup.is_none() {
+            if let Some(prev) = self.focused {
+                if self.tree.is_textbox(prev) && self.tree.hit_test(x, y) != Some(prev) {
+                    self.focused = None;
+                    self.tree.fire_change(prev, 0.0);
+                }
+            }
+        }
         if self.dialog.is_some() {
             if let Some(i) = self.dialog_button_at(x, y) {
                 self.dialog = None;
@@ -1275,6 +1283,12 @@ impl Renderer {
                         self.tree.fire_change(id, i as f32);
                     }
                 }
+                self.focused = Some(id);
+                return true;
+            }
+            if self.tree.is_canvas(id) {
+                let i = self.tree.canvas_hit(id, x, y);
+                self.tree.fire_change(id, i.map_or(-1.0, |v| v as f32));
                 self.focused = Some(id);
                 return true;
             }
@@ -1754,11 +1768,20 @@ impl Renderer {
             self.open_menu = None;
             self.menu_hover = None;
             self.popup = None;
-            self.focused = None;
+            let was = self.focused.take();
+            if let Some(id) = was {
+                if self.tree.is_textbox(id) {
+                    self.tree.fire_change(id, 0.0);
+                }
+            }
             return true;
         }
 
         if let Some(id) = self.focused {
+            if vk == VK_RETURN && self.tree.is_textbox(id) && !self.tree.is_multiline(id) {
+                self.tree.fire_change(id, 1.0);
+                return true;
+            }
             if self.tree.is_dropdown(id) {
                 let n = self.tree.dropdown_len(id);
                 if self.open_dropdown == Some(id) {
@@ -2250,10 +2273,27 @@ impl Renderer {
         if self.tree.take_pending_font() {
             self.rebuild_fonts();
         }
+        if let Some((target, text, all)) = self.tree.take_pending_focus() {
+            self.focused = target;
+            if let Some(id) = target {
+                if self.tree.is_textbox(id) {
+                    if let Some(st) = self.tree.textbox_state_mut(id) {
+                        if let Some(t) = &text {
+                            st.select_all();
+                            st.insert(t);
+                        }
+                        if all {
+                            st.select_all();
+                        }
+                    }
+                }
+            }
+        }
         self.poll_dialog();
         self.poll_toast();
         self.poll_notes();
         self.tree.layout(Rect::new(0.0, 0.0, self.width, self.height));
+        self.tree.publish_rects();
         self.update_scroll();
         self.preload_images();
         let hovered = self.hovered;
@@ -3159,7 +3199,7 @@ impl Renderer {
                                     let y2 = r.y + a[3];
                                     canvas.draw_line(x1, y1, x2, y2, w, c);
                                 }
-                                _ => {
+                                3 => {
                                     let tr = Rect::new(
                                         r.x + a[0],
                                         r.y + a[1],
@@ -3167,6 +3207,38 @@ impl Renderer {
                                         a[3].max(1.0),
                                     );
                                     canvas.draw_text(&s.text, format_left, tr, c);
+                                }
+                                4 => {
+                                    canvas.draw_arrow(
+                                        r.x + a[0],
+                                        r.y + a[1],
+                                        r.x + a[2],
+                                        r.y + a[3],
+                                        a[4],
+                                        a[5],
+                                        c,
+                                    );
+                                }
+                                5 => {
+                                    canvas.stroke_arc(
+                                        r.x + a[0],
+                                        r.y + a[1],
+                                        a[2],
+                                        a[3],
+                                        a[4],
+                                        a[5].max(1.0),
+                                        c,
+                                    );
+                                }
+                                _ => {
+                                    canvas.fill_sector(
+                                        r.x + a[0],
+                                        r.y + a[1],
+                                        a[2],
+                                        a[3],
+                                        a[4],
+                                        c,
+                                    );
                                 }
                             }
                         }

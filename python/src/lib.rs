@@ -8,8 +8,8 @@ use pyo3::wrap_pyfunction;
 
 use ssui_core::platform::{dpi, Window as CoreWindow, WindowOpts};
 use ssui_core::tree::{
-    Anim, AnimQueue, Axis, DialogData, DialogQueue, Ease, NodeId, NodeKind, NoteData,
-    NoteQueue, Props, Shape, TextState, Tree, TreeItem,
+    Anim, AnimQueue, Axis, DialogData, DialogQueue, Ease, FocusQueue, NodeId, NodeKind,
+    NoteData, NoteQueue, Props, RectTable, Shape, TextState, Tree, TreeItem,
 };
 
 type ShapeSpec = (String, Vec<f32>, String, String);
@@ -28,6 +28,10 @@ fn make_shapes(items: Vec<ShapeSpec>) -> Vec<Shape> {
                 "rect" => 0u8,
                 "circle" => 1,
                 "line" => 2,
+                "text" => 3,
+                "arrow" => 4,
+                "arc" => 5,
+                "sector" => 6,
                 _ => 3,
             };
             let mut args = [0.0f32; 6];
@@ -64,6 +68,7 @@ struct Extra {
     list: BindVec,
     table: BindVec,
     depth: BindVec,
+    pos: BindVec,
 }
 
 impl Extra {
@@ -75,7 +80,8 @@ impl Extra {
             3 => &self.boxes,
             4 => &self.list,
             5 => &self.table,
-            _ => &self.depth,
+            6 => &self.depth,
+            _ => &self.pos,
         }
     }
 }
@@ -259,6 +265,23 @@ impl Fx {
     }
 }
 
+#[pyclass(unsendable, name = "Rct")]
+struct Rct {
+    table: RectTable,
+}
+
+#[pymethods]
+impl Rct {
+    /// Прямоугольник узла после раскладки: `(x, y, w, h)`.
+    fn __call__(&self, node: PyNode) -> (f32, f32, f32, f32) {
+        let t = self.table.borrow();
+        match t.get(node.id.index()) {
+            Some(r) => (r.x, r.y, r.width, r.height),
+            None => (0.0, 0.0, 0.0, 0.0),
+        }
+    }
+}
+
 #[pyclass(unsendable, name = "Fnt")]
 struct Fnt {
     queue: Rc<RefCell<Option<(String, f32)>>>,
@@ -438,6 +461,8 @@ struct PyWindow {
     note_queue: NoteQueue,
     theme_queue: Rc<RefCell<Option<usize>>>,
     font_queue: Rc<RefCell<Option<(String, f32)>>>,
+    focus_queue: FocusQueue,
+    rect_table: RectTable,
     extra: Rc<Extra>,
     hwnd: Rc<Cell<isize>>,
     on_close: Option<PyObject>,
@@ -489,6 +514,8 @@ impl PyWindow {
         let note_queue = tree.note_queue();
         let theme_queue = tree.theme_queue();
         let font_queue = tree.font_queue();
+        let focus_queue = tree.focus_queue();
+        let rect_table = tree.rect_table();
         let bindings: Bindings = Rc::new(RefCell::new(Vec::new()));
         let extra = Rc::new(Extra::default());
         EXTRAS.with(|m| {
@@ -510,6 +537,8 @@ impl PyWindow {
             note_queue,
             theme_queue,
             font_queue,
+            focus_queue,
+            rect_table,
             extra,
             hwnd: Rc::new(Cell::new(0)),
             on_close: None,
@@ -642,6 +671,13 @@ impl PyWindow {
         PyNode { id: self.root }
     }
 
+    /// Ширина и высота строки в пикселях: `(w, h)`.
+    #[staticmethod]
+    #[pyo3(signature = (text, size=15.0, family="Segoe UI"))]
+    fn measure_text(text: &str, size: f32, family: &str) -> (f32, f32) {
+        ssui_core::render::measure_text(text, family, size)
+    }
+
     /// Смена темы из кода: `thm("drk")`.
     fn thm(&self) -> Thm {
         Thm {
@@ -699,6 +735,43 @@ impl PyWindow {
     /// Привязывает глубину `z` узла к колбэку, возвращающему число.
     fn bindz(&mut self, node: PyNode, f: PyObject) -> PyResult<()> {
         self.extra.depth.borrow_mut().push((node.id, f));
+        Ok(())
+    }
+
+    /// Привязывает абсолютную позицию узла к колбэку `(x, y, w, h)`.
+    fn bindp(&mut self, node: PyNode, f: PyObject) -> PyResult<()> {
+        self.extra.pos.borrow_mut().push((node.id, f));
+        Ok(())
+    }
+
+    /// Доступ к прямоугольникам узлов: `rc = win.rects()`, затем `rc(node)`.
+    fn rects(&self) -> Rct {
+        Rct {
+            table: self.rect_table.clone(),
+        }
+    }
+
+    /// Ставит фокус на узел; `txt` подменяет текст, `sel` выделяет всё.
+    #[pyo3(signature = (node=None, *, txt=None, sel=true))]
+    fn focus(&self, node: Option<PyNode>, txt: Option<&str>, sel: bool) -> PyResult<()> {
+        let text = txt.map(utf16);
+        *self.focus_queue.borrow_mut() = Some((node.map(|n| n.id), text, sel));
+        Ok(())
+    }
+
+    /// Реакция поля ввода на клавиши: `cb(1)` — Enter, `cb(0)` — Esc.
+    fn keys(&mut self, node: PyNode, f: PyObject) -> PyResult<()> {
+        let texts = self.bindings.clone();
+        let values = self.value_bindings.clone();
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        tree.set_on_change(node.id, move |t, v| {
+            Python::with_gil(|py| {
+                if let Err(e) = f.bind(py).call1((v as i64,)) {
+                    e.print(py);
+                }
+                refresh_all(py, t, &texts, &values);
+            });
+        });
         Ok(())
     }
 
@@ -1314,13 +1387,15 @@ impl PyWindow {
     /// Область рисования; фигуры — `(вид, [args], цвет, текст)`.
     /// Виды: `rect` `[x,y,w,h,rad,stroke]`, `circle` `[cx,cy,r,stroke]`,
     /// `line` `[x1,y1,x2,y2,w]`, `text` `[x,y,w,h]`.
-    #[pyo3(signature = (shapes=Vec::new(), *, pr=None, bind=None, pd=0.0, gp=0.0, w=None, h=None))]
+    #[pyo3(signature = (shapes=Vec::new(), *, pr=None, bind=None, ch=None, pd=0.0, gp=0.0, w=None, h=None))]
+    #[allow(clippy::too_many_arguments)]
     fn cv(
         &mut self,
         py: Python,
         shapes: Vec<ShapeSpec>,
         pr: Option<PyNode>,
         bind: Option<PyObject>,
+        ch: Option<PyObject>,
         pd: f32,
         gp: f32,
         w: Option<f32>,
@@ -1333,6 +1408,8 @@ impl PyWindow {
             None => shapes,
         };
         let parent = self.parent_of(pr);
+        let texts = self.bindings.clone();
+        let values = self.value_bindings.clone();
         let tree = self.tree.as_mut().ok_or_else(consumed)?;
         let id = tree.add_child(
             parent,
@@ -1341,6 +1418,16 @@ impl PyWindow {
             },
             props,
         );
+        tree.set_on_change(id, move |t, v| {
+            Python::with_gil(|py| {
+                if let Some(cb) = &ch {
+                    if let Err(e) = cb.bind(py).call1((v as i64,)) {
+                        e.print(py);
+                    }
+                }
+                refresh_all(py, t, &texts, &values);
+            });
+        });
         if let Some(f) = bind {
             self.extra.canvas.borrow_mut().push((id, f));
         }
@@ -2982,6 +3069,18 @@ fn utf16(s: &str) -> Vec<u16> {
 
 fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
     let _guard = ExtraGuard::enter(texts);
+    let cur = CUR_EXTRA.with(|c| c.borrow().clone());
+    if let Some(e) = &cur {
+        for (id, f) in e.pos.borrow().iter() {
+            let Some(r) = run_binding(py, f) else { continue };
+            match r.extract::<(f32, f32, f32, f32)>() {
+                Ok((x, y, w, h)) => {
+                    t.set_place(*id, Some(x), Some(y), None, None, Some(w), Some(h))
+                }
+                Err(e) => e.print(py),
+            }
+        }
+    }
     for (id, f) in texts.borrow().iter() {
         let Some(r) = run_binding(py, f) else { continue };
         match r.extract::<String>() {
@@ -3118,12 +3217,13 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
 }
 
 #[pymodule]
-fn ssui(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _ssui(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyWindow>()?;
     m.add_class::<PyNode>()?;
     m.add_class::<Ctx>()?;
     m.add_class::<Fx>()?;
     m.add_class::<Fnt>()?;
+    m.add_class::<Rct>()?;
     m.add_class::<Dlg>()?;
     m.add_class::<Signal>()?;
     m.add_function(wrap_pyfunction!(sgnl, m)?)?;

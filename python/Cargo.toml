@@ -7,7 +7,7 @@ description = "Python-биндинги SSUI через PyO3."
 repository = "https://github.com/golden777ace/SSUI"
 
 [lib]
-name = "ssui"
+name = "_ssui"
 crate-type = ["cdylib"]
 
 [dependencies]

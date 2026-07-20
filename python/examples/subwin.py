@@ -7,10 +7,10 @@
 import ssui
 
 CSS = """
-frame { background: #1c2440cc; radius: 16; }
+frame { background: #1c244000; radius: 16; }
 .clear { background: #00000000; }
 label { color: #eef3ff; }
-.splash { background: #0d1424cc; radius: 20; }
+.splash { background: #0d142400; radius: 20; }
 .title { color: #3b82f6; }
 .ok { background: #2fbf71; color: #ffffff; }
 .no { background: #e5484d; color: #ffffff; }

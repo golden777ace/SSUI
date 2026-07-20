@@ -26,4 +26,6 @@ classifiers = [
 
 [tool.maturin]
 manifest-path = "python/Cargo.toml"
-module-name = "ssui"
+python-source = "python"
+module-name = "ssui._ssui"
+include = ["python/ssui/py.typed", "python/ssui/__init__.pyi"]
