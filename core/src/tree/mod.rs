@@ -671,6 +671,7 @@ pub struct Tree {
     pending_focus: FocusQueue,
     rects: RectTable,
     timers: Vec<Timer>,
+    insp: bool,
     img_dirty: bool,
     ghosts: HashSet<usize>,
     fronts: HashSet<usize>,
@@ -719,6 +720,7 @@ impl Tree {
             pending_focus: Rc::new(RefCell::new(None)),
             rects: Rc::new(RefCell::new(Vec::new())),
             timers: Vec::new(),
+            insp: false,
             img_dirty: false,
             ghosts: HashSet::new(),
             fronts: HashSet::new(),
@@ -1419,6 +1421,16 @@ impl Tree {
     /// Есть ли активные таймеры.
     pub fn has_timers(&self) -> bool {
         !self.timers.is_empty()
+    }
+
+    /// Разрешает вызов инспектора по F12.
+    pub fn set_inspect(&mut self, on: bool) {
+        self.insp = on;
+    }
+
+    /// Разрешён ли инспектор.
+    pub fn inspect(&self) -> bool {
+        self.insp
     }
 
     /// Прогоняет созревшие таймеры.

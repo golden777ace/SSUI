@@ -500,8 +500,8 @@ impl Renderer {
         }
     }
 
-    /// Продвигает анимации по таймеру; true, если нужна перерисовка.
-    pub fn on_timer(&mut self) -> bool {
+    /// Продвигает анимации, таймеры и спиннеры; true — нужна перерисовка.
+    pub fn pump(&mut self) -> bool {
         let now = Instant::now();
         let dt = (now - self.last_tick).as_secs_f32();
         self.last_tick = now;
@@ -520,6 +520,11 @@ impl Renderer {
             || self.toast.is_some()
             || !self.notes.is_empty()
             || self.tip_pending()
+    }
+
+    /// Продвигает анимации по таймеру; true, если нужна перерисовка.
+    pub fn on_timer(&mut self) -> bool {
+        self.pump()
     }
 
     fn tip_pending(&self) -> bool {
@@ -1762,6 +1767,9 @@ impl Renderer {
         const VK_ESCAPE: u32 = 0x1B;
 
         if vk == VK_F12 {
+            if !self.tree.inspect() {
+                return false;
+            }
             self.inspector = !self.inspector;
             return true;
         }
@@ -2301,6 +2309,7 @@ impl Renderer {
         self.poll_dialog();
         self.poll_toast();
         self.poll_notes();
+        self.pump();
         if self.tree.take_img_dirty() {
             self.preload_images();
         }

@@ -494,7 +494,7 @@ impl PyWindow {
     #[pyo3(signature = (
         ttl="SSUI", w=1280, h=720, thm="drk", glass=false, tint=0.0, blur=false,
         frameless=false, topmost=false, center=false, resizable=true,
-        minbox=true, maxbox=true, closebox=true
+        minbox=true, maxbox=true, closebox=true, insp=false
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -512,8 +512,10 @@ impl PyWindow {
         minbox: bool,
         maxbox: bool,
         closebox: bool,
+        insp: bool,
     ) -> Self {
         let mut tree = Tree::new();
+        tree.set_inspect(insp);
         tree.set_theme(theme_index(thm));
         let root = tree.root();
         let anim_queue = tree.anim_queue();
@@ -575,7 +577,7 @@ impl PyWindow {
         ttl="", w=520, h=420, *, thm="drk", modal=false, center=true,
         frameless=false, topmost=false, resizable=true,
         minbox=false, maxbox=false, closebox=true,
-        glass=false, tint=0.0, blur=false, on_close=None
+        glass=false, tint=0.0, blur=false, insp=false, on_close=None
     ))]
     #[allow(clippy::too_many_arguments)]
     fn subwin(
@@ -596,11 +598,12 @@ impl PyWindow {
         glass: bool,
         tint: f32,
         blur: bool,
+        insp: bool,
         on_close: Option<PyObject>,
     ) -> PyResult<Py<PyWindow>> {
         let mut child = PyWindow::new(
             ttl, w, h, thm, glass, tint, blur, frameless, topmost, center, resizable,
-            minbox, maxbox, closebox,
+            minbox, maxbox, closebox, insp,
         );
         child.owner = self.hwnd.get();
         child.modal = modal;

@@ -130,6 +130,7 @@ class W:
         minbox: bool = True,
         maxbox: bool = True,
         closebox: bool = True,
+        insp: bool = False,
     ) -> None:
         """Создаёт окно.
 
@@ -191,6 +192,7 @@ class W:
         glass: bool = False,
         tint: float = 0.0,
         blur: bool = False,
+        insp: bool = False,
         on_close: Optional[Callable[[], None]] = None,
     ) -> "W":
         """Создаёт дочернее окно с собственным деревом виджетов.
