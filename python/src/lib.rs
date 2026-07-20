@@ -6,7 +6,7 @@ use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
 
-use ssui_core::platform::{dpi, Window as CoreWindow};
+use ssui_core::platform::{dpi, Window as CoreWindow, WindowOpts};
 use ssui_core::tree::{
     Anim, AnimQueue, Axis, DialogData, DialogQueue, Ease, NodeId, NodeKind, NoteData,
     NoteQueue, Props, Shape, TextState, Tree, TreeItem,
@@ -52,16 +52,80 @@ struct PyNode {
 
 type Bindings = Rc<RefCell<Vec<(NodeId, Py<PyAny>)>>>;
 type Stack = Rc<RefCell<Vec<NodeId>>>;
+type BindVec = RefCell<Vec<(NodeId, Py<PyAny>)>>;
+
+/// Биндинги, приватные для одного окна.
+#[derive(Default)]
+struct Extra {
+    chart: BindVec,
+    prop: BindVec,
+    canvas: BindVec,
+    boxes: BindVec,
+    list: BindVec,
+    table: BindVec,
+    depth: BindVec,
+}
+
+impl Extra {
+    fn slot(&self, tag: u8) -> &BindVec {
+        match tag {
+            0 => &self.chart,
+            1 => &self.prop,
+            2 => &self.canvas,
+            3 => &self.boxes,
+            4 => &self.list,
+            5 => &self.table,
+            _ => &self.depth,
+        }
+    }
+}
+
+/// Ссылка на слот биндингов текущего окна.
+struct BindSlot(u8);
+
+impl BindSlot {
+    fn with<R>(&self, f: impl FnOnce(&BindVec) -> R) -> R {
+        let cur = CUR_EXTRA.with(|c| c.borrow().clone());
+        match cur {
+            Some(e) => f(e.slot(self.0)),
+            None => f(&BindVec::default()),
+        }
+    }
+}
+
+static CHART_BINDINGS: BindSlot = BindSlot(0);
+static PROP_BINDINGS: BindSlot = BindSlot(1);
+static CANVAS_BINDINGS: BindSlot = BindSlot(2);
+static BOX_BINDINGS: BindSlot = BindSlot(3);
+static LIST_BINDINGS: BindSlot = BindSlot(4);
+static TABLE_BINDINGS: BindSlot = BindSlot(5);
+static DEPTH_BINDINGS: BindSlot = BindSlot(6);
+
+/// Подставляет биндинги окна на время обновления.
+struct ExtraGuard(Option<Rc<Extra>>);
+
+impl ExtraGuard {
+    fn enter(texts: &Bindings) -> Self {
+        let key = Rc::as_ptr(texts) as usize;
+        let next = EXTRAS.with(|m| m.borrow().get(&key).cloned());
+        let prev = CUR_EXTRA.with(|c| c.borrow_mut().take());
+        CUR_EXTRA.with(|c| *c.borrow_mut() = next);
+        ExtraGuard(prev)
+    }
+}
+
+impl Drop for ExtraGuard {
+    fn drop(&mut self) {
+        let prev = self.0.take();
+        CUR_EXTRA.with(|c| *c.borrow_mut() = prev);
+    }
+}
 
 thread_local! {
+    static ALIVE: RefCell<Vec<CoreWindow>> = RefCell::new(Vec::new());
     static WIN_SETTINGS: RefCell<Vec<(u8, Py<PyAny>)>> = RefCell::new(Vec::new());
-    static CHART_BINDINGS: RefCell<Vec<(NodeId, Py<PyAny>)>> = RefCell::new(Vec::new());
-    static PROP_BINDINGS: RefCell<Vec<(NodeId, Py<PyAny>)>> = RefCell::new(Vec::new());
-    static CANVAS_BINDINGS: RefCell<Vec<(NodeId, Py<PyAny>)>> = RefCell::new(Vec::new());
-    static BOX_BINDINGS: RefCell<Vec<(NodeId, Py<PyAny>)>> = RefCell::new(Vec::new());
-    static LIST_BINDINGS: RefCell<Vec<(NodeId, Py<PyAny>)>> = RefCell::new(Vec::new());
-    static TABLE_BINDINGS: RefCell<Vec<(NodeId, Py<PyAny>)>> = RefCell::new(Vec::new());
-    static DEPTH_BINDINGS: RefCell<Vec<(NodeId, Py<PyAny>)>> = RefCell::new(Vec::new());
+    static EXTRAS: RefCell<HashMap<usize, Rc<Extra>>> = RefCell::new(HashMap::new());
+    static CUR_EXTRA: RefCell<Option<Rc<Extra>>> = const { RefCell::new(None) };
     static TRACK: RefCell<Option<Vec<u32>>> = RefCell::new(None);
     static DIRTY: RefCell<HashSet<u32>> = RefCell::new(HashSet::new());
     static DEPS: RefCell<HashMap<usize, Vec<u32>>> = RefCell::new(HashMap::new());
@@ -374,6 +438,19 @@ struct PyWindow {
     note_queue: NoteQueue,
     theme_queue: Rc<RefCell<Option<usize>>>,
     font_queue: Rc<RefCell<Option<(String, f32)>>>,
+    extra: Rc<Extra>,
+    hwnd: Rc<Cell<isize>>,
+    on_close: Option<PyObject>,
+    parent: Option<(AnimQueue, Bindings, Bindings)>,
+    owner: isize,
+    modal: bool,
+    frameless: bool,
+    topmost: bool,
+    center: bool,
+    resizable: bool,
+    minbox: bool,
+    maxbox: bool,
+    closebox: bool,
     glass: bool,
     tint: f32,
     blur: bool,
@@ -382,8 +459,28 @@ struct PyWindow {
 #[pymethods]
 impl PyWindow {
     #[new]
-    #[pyo3(signature = (ttl="SSUI", w=1280, h=720, thm="drk", glass=false, tint=0.0, blur=false))]
-    fn new(ttl: &str, w: i32, h: i32, thm: &str, glass: bool, tint: f32, blur: bool) -> Self {
+    #[pyo3(signature = (
+        ttl="SSUI", w=1280, h=720, thm="drk", glass=false, tint=0.0, blur=false,
+        frameless=false, topmost=false, center=false, resizable=true,
+        minbox=true, maxbox=true, closebox=true
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        ttl: &str,
+        w: i32,
+        h: i32,
+        thm: &str,
+        glass: bool,
+        tint: f32,
+        blur: bool,
+        frameless: bool,
+        topmost: bool,
+        center: bool,
+        resizable: bool,
+        minbox: bool,
+        maxbox: bool,
+        closebox: bool,
+    ) -> Self {
         let mut tree = Tree::new();
         tree.set_theme(theme_index(thm));
         let root = tree.root();
@@ -392,6 +489,13 @@ impl PyWindow {
         let note_queue = tree.note_queue();
         let theme_queue = tree.theme_queue();
         let font_queue = tree.font_queue();
+        let bindings: Bindings = Rc::new(RefCell::new(Vec::new()));
+        let extra = Rc::new(Extra::default());
+        EXTRAS.with(|m| {
+            m.borrow_mut()
+                .insert(Rc::as_ptr(&bindings) as usize, extra.clone())
+        });
+        CUR_EXTRA.with(|c| *c.borrow_mut() = Some(extra.clone()));
         Self {
             tree: Some(tree),
             title: ttl.to_string(),
@@ -399,17 +503,138 @@ impl PyWindow {
             height: h,
             root,
             stack: Rc::new(RefCell::new(Vec::new())),
-            bindings: Rc::new(RefCell::new(Vec::new())),
+            bindings,
             value_bindings: Rc::new(RefCell::new(Vec::new())),
             anim_queue,
             dialog_queue,
             note_queue,
             theme_queue,
             font_queue,
+            extra,
+            hwnd: Rc::new(Cell::new(0)),
+            on_close: None,
+            parent: None,
+            owner: 0,
+            modal: false,
+            frameless,
+            topmost,
+            center,
+            resizable,
+            minbox,
+            maxbox,
+            closebox,
             glass,
             tint,
             blur,
         }
+    }
+
+    /// Создаёт дочернее окно с собственным деревом виджетов.
+    #[pyo3(signature = (
+        ttl="", w=520, h=420, *, thm="drk", modal=false, center=true,
+        frameless=false, topmost=false, resizable=true,
+        minbox=false, maxbox=false, closebox=true,
+        glass=false, tint=0.0, blur=false, on_close=None
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn subwin(
+        &self,
+        py: Python,
+        ttl: &str,
+        w: i32,
+        h: i32,
+        thm: &str,
+        modal: bool,
+        center: bool,
+        frameless: bool,
+        topmost: bool,
+        resizable: bool,
+        minbox: bool,
+        maxbox: bool,
+        closebox: bool,
+        glass: bool,
+        tint: f32,
+        blur: bool,
+        on_close: Option<PyObject>,
+    ) -> PyResult<Py<PyWindow>> {
+        let mut child = PyWindow::new(
+            ttl, w, h, thm, glass, tint, blur, frameless, topmost, center, resizable,
+            minbox, maxbox, closebox,
+        );
+        child.owner = self.hwnd.get();
+        child.modal = modal;
+        child.on_close = on_close;
+        child.parent = Some((
+            self.anim_queue.clone(),
+            self.bindings.clone(),
+            self.value_bindings.clone(),
+        ));
+        Py::new(py, child)
+    }
+
+    /// Закрывает окно программно.
+    fn close(&self) -> PyResult<()> {
+        let h = self.hwnd.get();
+        if h != 0 {
+            ALIVE.with(|v| {
+                if let Some(win) = v.borrow().iter().find(|x| x.handle() == h) {
+                    win.close();
+                }
+            });
+            self.hwnd.set(0);
+        }
+        Ok(())
+    }
+
+    /// Показывает окно, не блокируя цикл сообщений.
+    fn show(slf: &Bound<'_, Self>) -> PyResult<()> {
+        let (tree, title, width, height, mut opts, cell, done, parent) = {
+            let mut me = slf.borrow_mut();
+            let tree = me.tree.take().ok_or_else(consumed)?;
+            let done = me.on_close.take();
+            let parent = me.parent.take();
+            (
+                tree,
+                me.title.clone(),
+                me.width,
+                me.height,
+                me.opts(),
+                me.hwnd.clone(),
+                done,
+                parent,
+            )
+        };
+        let notify = cell.clone();
+        opts.on_close = Some(Box::new(move || {
+            notify.set(0);
+            if let Some(cb) = &done {
+                Python::with_gil(|py| {
+                    if let Err(e) = cb.bind(py).call0() {
+                        e.print(py);
+                    }
+                });
+            }
+            if let Some((queue, texts, values)) = &parent {
+                let t2 = texts.clone();
+                let v2 = values.clone();
+                queue.borrow_mut().push(Anim::new(
+                    0.0,
+                    1.0,
+                    0.01,
+                    Ease::Linear,
+                    move |t, _| {
+                        Python::with_gil(|py| refresh_all(py, t, &t2, &v2));
+                    },
+                ));
+            }
+        }));
+        dpi::enable_dpi_awareness();
+        let window = CoreWindow::with_opts(&title, width, height, tree, opts)
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        cell.set(window.handle());
+        window.raise();
+        ALIVE.with(|v| v.borrow_mut().push(window));
+        Ok(())
     }
 
     /// Возвращает корневой узел окна.
@@ -455,25 +680,25 @@ impl PyWindow {
 
     /// Привязывает `(padding, gap)` контейнера к колбэку.
     fn bindb(&mut self, node: PyNode, f: PyObject) -> PyResult<()> {
-        BOX_BINDINGS.with(|c| c.borrow_mut().push((node.id, f)));
+        self.extra.boxes.borrow_mut().push((node.id, f));
         Ok(())
     }
 
     /// Привязывает пункты списка к колбэку, возвращающему список строк.
     fn bindl(&mut self, node: PyNode, f: PyObject) -> PyResult<()> {
-        LIST_BINDINGS.with(|c| c.borrow_mut().push((node.id, f)));
+        self.extra.list.borrow_mut().push((node.id, f));
         Ok(())
     }
 
     /// Привязывает строки таблицы к колбэку, возвращающему список рядов.
     fn bindt(&mut self, node: PyNode, f: PyObject) -> PyResult<()> {
-        TABLE_BINDINGS.with(|c| c.borrow_mut().push((node.id, f)));
+        self.extra.table.borrow_mut().push((node.id, f));
         Ok(())
     }
 
     /// Привязывает глубину `z` узла к колбэку, возвращающему число.
     fn bindz(&mut self, node: PyNode, f: PyObject) -> PyResult<()> {
-        DEPTH_BINDINGS.with(|c| c.borrow_mut().push((node.id, f)));
+        self.extra.depth.borrow_mut().push((node.id, f));
         Ok(())
     }
 
@@ -1117,7 +1342,7 @@ impl PyWindow {
             props,
         );
         if let Some(f) = bind {
-            CANVAS_BINDINGS.with(|c| c.borrow_mut().push((id, f)));
+            self.extra.canvas.borrow_mut().push((id, f));
         }
         Ok(PyNode { id })
     }
@@ -1390,7 +1615,7 @@ impl PyWindow {
             });
         });
         if let Some(f) = bind {
-            PROP_BINDINGS.with(|c| c.borrow_mut().push((id, f)));
+            self.extra.prop.borrow_mut().push((id, f));
         }
         Ok(PyNode { id })
     }
@@ -1813,7 +2038,7 @@ impl PyWindow {
         let tree = self.tree.as_mut().ok_or_else(consumed)?;
         let id = tree.add_child(parent, NodeKind::Chart { values: initial }, props);
         if let Some(f) = bind {
-            CHART_BINDINGS.with(|c| c.borrow_mut().push((id, f)));
+            self.extra.chart.borrow_mut().push((id, f));
         }
         Ok(PyNode { id })
     }
@@ -2540,17 +2765,68 @@ impl PyWindow {
     }
 
     /// Показывает окно и запускает цикл сообщений.
-    fn go(&mut self) -> PyResult<()> {
+    fn go(slf: &Bound<'_, Self>) -> PyResult<()> {
+        let (tree, title, width, height, opts, cell) = {
+            let mut me = slf.borrow_mut();
+            let tree = me.tree.take().ok_or_else(consumed)?;
+            (
+                tree,
+                me.title.clone(),
+                me.width,
+                me.height,
+                me.opts(),
+                me.hwnd.clone(),
+            )
+        };
         dpi::enable_dpi_awareness();
-        let tree = self.tree.take().ok_or_else(consumed)?;
-        let window = CoreWindow::new(&self.title, self.width, self.height, tree, self.glass, self.tint, self.blur)
+        let window = CoreWindow::with_opts(&title, width, height, tree, opts)
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+        cell.set(window.handle());
+        window.mark_main();
         window.run();
         Ok(())
+    }
+
+    fn __enter__(slf: Py<Self>) -> Py<Self> {
+        slf
+    }
+
+    #[pyo3(signature = (_t=None, _v=None, _tb=None))]
+    fn __exit__(
+        slf: &Bound<'_, Self>,
+        _t: Option<PyObject>,
+        _v: Option<PyObject>,
+        _tb: Option<PyObject>,
+    ) -> PyResult<bool> {
+        PyWindow::show(slf)?;
+        Ok(false)
     }
 }
 
 impl PyWindow {
+    /// Параметры создания окна для ядра.
+    fn opts(&self) -> WindowOpts {
+        WindowOpts {
+            glass: self.glass,
+            tint: self.tint,
+            blur: self.blur,
+            frameless: self.frameless,
+            topmost: self.topmost,
+            center: self.center,
+            resizable: self.resizable,
+            minbox: self.minbox,
+            maxbox: self.maxbox,
+            closebox: self.closebox,
+            owner: if self.owner == 0 {
+                None
+            } else {
+                Some(self.owner)
+            },
+            modal: self.modal,
+            on_close: None,
+        }
+    }
+
     fn parent_of(&self, pr: Option<PyNode>) -> NodeId {
         match pr {
             Some(p) => p.id,
@@ -2705,6 +2981,7 @@ fn utf16(s: &str) -> Vec<u16> {
 }
 
 fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
+    let _guard = ExtraGuard::enter(texts);
     for (id, f) in texts.borrow().iter() {
         let Some(r) = run_binding(py, f) else { continue };
         match r.extract::<String>() {

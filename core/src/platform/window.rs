@@ -1,4 +1,5 @@
 use core::ffi::c_void;
+use std::cell::Cell;
 use std::sync::Once;
 
 use windows::core::*;
@@ -11,7 +12,7 @@ use windows::Win32::UI::Input::Ime::{
     ImmGetCompositionStringW, ImmGetContext, ImmReleaseContext, ImmSetCompositionWindow, CFS_POINT,
     COMPOSITIONFORM, GCS_RESULTSTR,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
+use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, ReleaseCapture, SetCapture};
 use windows::Win32::UI::Shell::{
     DragAcceptFiles, DragFinish, DragQueryFileW, DragQueryPoint, HDROP,
 };
@@ -28,16 +29,60 @@ struct WindowState {
     applied_tint: u32,
     ticking: bool,
     idle: u32,
+    owner: HWND,
+    modal: bool,
+    on_close: Option<Box<dyn FnMut()>>,
 }
 
 pub struct Window {
     hwnd: HWND,
 }
 
+/// Параметры создания окна.
+pub struct WindowOpts {
+    pub glass: bool,
+    pub tint: f32,
+    pub blur: bool,
+    pub frameless: bool,
+    pub topmost: bool,
+    pub center: bool,
+    pub resizable: bool,
+    pub minbox: bool,
+    pub maxbox: bool,
+    pub closebox: bool,
+    pub owner: Option<isize>,
+    pub modal: bool,
+    pub on_close: Option<Box<dyn FnMut()>>,
+}
+
+impl Default for WindowOpts {
+    fn default() -> Self {
+        Self {
+            glass: false,
+            tint: 0.0,
+            blur: false,
+            frameless: false,
+            topmost: false,
+            center: false,
+            resizable: true,
+            minbox: true,
+            maxbox: true,
+            closebox: true,
+            owner: None,
+            modal: false,
+            on_close: None,
+        }
+    }
+}
+
+thread_local! {
+    static MAIN: Cell<isize> = const { Cell::new(0) };
+}
+
 static REGISTER_CLASS: Once = Once::new();
 
 impl Window {
-    /// Создаёт окно, инициализирует рендерер деревом `tree` и показывает его.
+    /// Создаёт окно со стандартными параметрами.
     pub fn new(
         title: &str,
         width: i32,
@@ -47,6 +92,43 @@ impl Window {
         tint: f32,
         blur: bool,
     ) -> Result<Self> {
+        Self::with_opts(
+            title,
+            width,
+            height,
+            tree,
+            WindowOpts {
+                glass,
+                tint,
+                blur,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Создаёт окно по расширенным параметрам `opts`.
+    pub fn with_opts(
+        title: &str,
+        width: i32,
+        height: i32,
+        tree: Tree,
+        opts: WindowOpts,
+    ) -> Result<Self> {
+        let WindowOpts {
+            glass,
+            tint,
+            blur,
+            frameless,
+            topmost,
+            center,
+            resizable,
+            minbox,
+            maxbox,
+            closebox,
+            owner,
+            modal,
+            on_close,
+        } = opts;
         unsafe {
             let instance = GetModuleHandleW(None)?;
             let hinstance: HINSTANCE = instance.into();
@@ -67,25 +149,88 @@ impl Window {
 
             let title_w: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
 
-            let ex_style = if glass {
+            let mut ex_style = if glass {
                 WS_EX_NOREDIRECTIONBITMAP
             } else {
                 WINDOW_EX_STYLE::default()
             };
+            if topmost {
+                ex_style |= WS_EX_TOPMOST;
+            }
+            if frameless {
+                ex_style |= WS_EX_TOOLWINDOW;
+            }
+
+            let style = if frameless {
+                WS_POPUP
+            } else {
+                let mut s = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
+                if resizable {
+                    s |= WS_THICKFRAME;
+                }
+                if minbox {
+                    s |= WS_MINIMIZEBOX;
+                }
+                if maxbox {
+                    s |= WS_MAXIMIZEBOX;
+                }
+                if !closebox && !minbox && !maxbox {
+                    s &= !WS_SYSMENU;
+                }
+                s
+            };
+
+            let owner_hwnd = match owner {
+                Some(h) if h != 0 => HWND(h as *mut c_void),
+                _ => HWND::default(),
+            };
+
+            let (px, py) = if center {
+                let (sw, sh) = if owner_hwnd.0.is_null() {
+                    (
+                        GetSystemMetrics(SM_CXSCREEN),
+                        GetSystemMetrics(SM_CYSCREEN),
+                    )
+                } else {
+                    let mut rc = RECT::default();
+                    let _ = GetWindowRect(owner_hwnd, &mut rc);
+                    (rc.right - rc.left, rc.bottom - rc.top)
+                };
+                let mut ox = 0;
+                let mut oy = 0;
+                if !owner_hwnd.0.is_null() {
+                    let mut rc = RECT::default();
+                    let _ = GetWindowRect(owner_hwnd, &mut rc);
+                    ox = rc.left;
+                    oy = rc.top;
+                }
+                (ox + (sw - width) / 2, oy + (sh - height) / 2)
+            } else {
+                (CW_USEDEFAULT, CW_USEDEFAULT)
+            };
+
             let hwnd = CreateWindowExW(
                 ex_style,
                 class_name,
                 PCWSTR(title_w.as_ptr()),
-                WS_OVERLAPPEDWINDOW,
-                CW_USEDEFAULT,
-                CW_USEDEFAULT,
+                style,
+                px,
+                py,
                 width,
                 height,
-                None,
+                if modal && !owner_hwnd.0.is_null() {
+                    Some(owner_hwnd)
+                } else {
+                    None
+                },
                 None,
                 Some(hinstance),
                 None,
             )?;
+
+            if modal && !owner_hwnd.0.is_null() {
+                let _ = EnableWindow(owner_hwnd, false);
+            }
 
             let _ = ShowWindow(hwnd, SW_SHOW);
             let init_mode: u32 = if blur { 3 } else { 0 };
@@ -103,6 +248,9 @@ impl Window {
                 applied_tint: init_tint,
                 ticking: true,
                 idle: 0,
+                owner: owner_hwnd,
+                modal,
+                on_close,
             });
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
 
@@ -130,6 +278,46 @@ impl Window {
     /// HWND окна.
     pub fn hwnd(&self) -> HWND {
         self.hwnd
+    }
+
+    /// HWND окна как целое; для передачи в Python-слой.
+    pub fn handle(&self) -> isize {
+        self.hwnd.0 as isize
+    }
+
+    /// Помечает окно главным: его закрытие завершает приложение.
+    pub fn mark_main(&self) {
+        MAIN.with(|c| c.set(self.hwnd.0 as isize));
+    }
+
+    /// Поднимает окно поверх остальных и передаёт ему фокус.
+    pub fn raise(&self) {
+        unsafe {
+            let _ = BringWindowToTop(self.hwnd);
+            let _ = SetForegroundWindow(self.hwnd);
+        }
+    }
+
+    /// Закрывает окно программно; разрушение отложено до конца обработки.
+    pub fn close(&self) {
+        unsafe {
+            let _ = PostMessageW(Some(self.hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+        }
+    }
+
+    /// Прокачивает накопленные сообщения без блокировки.
+    pub fn pump() -> bool {
+        unsafe {
+            let mut msg = MSG::default();
+            while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                if msg.message == WM_QUIT {
+                    return false;
+                }
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+            true
+        }
     }
 
     /// Запускает блокирующий цикл сообщений до закрытия окна.
@@ -330,6 +518,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                 }
             }
 
+            WM_MOUSEACTIVATE => {
+                let _ = BringWindowToTop(hwnd);
+                LRESULT(MA_ACTIVATE as isize)
+            }
+
             WM_SETCURSOR => {
                 let ht = (lparam.0 & 0xFFFF) as i32;
                 if ht == HTCLIENT as i32 {
@@ -400,7 +593,21 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             }
 
             WM_DESTROY => {
-                PostQuitMessage(0);
+                if let Some(state) = state_ptr(hwnd).as_mut() {
+                    if state.modal && !state.owner.0.is_null() {
+                        let _ = EnableWindow(state.owner, true);
+                        let _ = SetForegroundWindow(state.owner);
+                        state.modal = false;
+                    }
+                    if let Some(cb) = state.on_close.as_mut() {
+                        cb();
+                    }
+                    state.on_close = None;
+                }
+                let is_main = MAIN.with(|c| c.get()) == hwnd.0 as isize;
+                if is_main {
+                    PostQuitMessage(0);
+                }
                 LRESULT(0)
             }
 

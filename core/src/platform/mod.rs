@@ -1,4 +1,4 @@
 pub mod dpi;
 pub mod window;
 
-pub use window::Window;
+pub use window::{Window, WindowOpts};
