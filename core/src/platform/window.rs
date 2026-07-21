@@ -367,6 +367,17 @@ impl Window {
         }
     }
 
+    /// Будит цикл сообщений окна по HWND; безопасно из любого потока.
+    pub fn wake(handle: isize) {
+        if handle == 0 {
+            return;
+        }
+        unsafe {
+            let h = HWND(handle as *mut c_void);
+            let _ = PostMessageW(Some(h), WM_NULL, WPARAM(0), LPARAM(0));
+        }
+    }
+
     /// Прокачивает накопленные сообщения без блокировки.
     pub fn pump() -> bool {
         unsafe {
@@ -384,6 +395,11 @@ impl Window {
 
     /// Запускает блокирующий цикл сообщений до закрытия окна.
     pub fn run(&self) {
+        Window::loop_messages();
+    }
+
+    /// Крутит цикл сообщений потока до `WM_QUIT`; не требует окна.
+    pub fn loop_messages() {
         unsafe {
             let mut msg = MSG::default();
             while GetMessageW(&mut msg, None, 0, 0).as_bool() {
@@ -425,7 +441,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                         state.idle = 0;
                     } else {
                         state.idle = state.idle.saturating_add(1);
-                        if state.idle > 8 {
+                        if state.idle > 8 && !state.renderer.busy() {
                             let _ = KillTimer(Some(hwnd), 1);
                             state.ticking = false;
                         }
@@ -680,6 +696,14 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                     SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
                 }
                 DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
+
+            WM_NULL => {
+                if let Some(state) = state_ptr(hwnd).as_mut() {
+                    ensure_timer(hwnd, state);
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                }
+                LRESULT(0)
             }
 
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),

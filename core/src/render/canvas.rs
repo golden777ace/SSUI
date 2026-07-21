@@ -319,6 +319,13 @@ impl<'a> Canvas<'a> {
         }
     }
 
+    /// Рисует замкнутый контур многоугольника заданной толщины.
+    pub fn stroke_polygon(&self, pts: &[(f32, f32)], width: f32, color: Color) {
+        if let (Some(geo), Some(brush)) = (self.path(pts, true, false), self.solid(color)) {
+            unsafe { self.rt.DrawGeometry(&geo, brush, width.max(0.1), None) };
+        }
+    }
+
     /// Рисует стрелку из (x1,y1) в (x2,y2); `head` — длина наконечника.
     pub fn draw_arrow(&self, x1: f32, y1: f32, x2: f32, y2: f32, width: f32, head: f32, color: Color) {
         let dx = x2 - x1;

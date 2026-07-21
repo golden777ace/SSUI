@@ -1,6 +1,8 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -9,8 +11,10 @@ use pyo3::wrap_pyfunction;
 use ssui_core::platform::{dpi, Window as CoreWindow, WindowOpts};
 use ssui_core::tree::{
     Anim, AnimQueue, Axis, DialogData, DialogQueue, Ease, FocusQueue, NodeId, NodeKind,
-    NoteData, NoteQueue, Props, RectTable, Shape, TextState, Tree, TreeItem,
+    CanvasQueue, NoteData, NoteQueue, PointerCb, Props, RectTable, Shape, TextState,
+    TimerKill, TimerQueue, TimerReq, Tree, TreeItem, TreeQueue, WheelCb,
 };
+use pyo3::types::PyAnyMethods;
 
 type ShapeSpec = (String, Vec<f32>, String, String);
 
@@ -32,20 +36,90 @@ fn make_shapes(items: Vec<ShapeSpec>) -> Vec<Shape> {
                 "arrow" => 4,
                 "arc" => 5,
                 "sector" => 6,
+                "poly" => 7,
                 _ => 3,
             };
             let mut args = [0.0f32; 6];
-            for (i, v) in a.iter().take(6).enumerate() {
-                args[i] = *v;
+            let mut pts = Vec::new();
+            if kind == 7 {
+                let n = a.len();
+                let cut = n - n % 2;
+                if cut < n {
+                    args[0] = a[n - 1];
+                }
+                pts.extend_from_slice(&a[..cut]);
+            } else {
+                for (i, v) in a.iter().take(6).enumerate() {
+                    args[i] = *v;
+                }
             }
             Shape {
                 kind,
                 args,
                 color: hexa(c),
                 text: utf16(t),
+                pts,
             }
         })
         .collect()
+}
+
+/// Оборачивает питоновский колбэк `f(строка, колонка)`.
+fn pair_cb(f: PyObject, texts: Bindings, values: Bindings) -> PointerCb {
+    Box::new(move |t, i, c, _| {
+        Python::with_gil(|py| {
+            if let Err(e) = f.bind(py).call1((i, c as i64)) {
+                e.print(py);
+            }
+            refresh_all(py, t, &texts, &values);
+        });
+    })
+}
+
+/// Разбирает строки дерева: старые кортежи и новые словари.
+fn tree_rows(items: &Bound<'_, PyAny>) -> PyResult<Vec<TreeItem>> {
+    let mut out = Vec::new();
+    for obj in items.try_iter()? {
+        let obj = obj?;
+        if let Ok((d, s, leaf)) = obj.extract::<(usize, String, bool)>() {
+            out.push(TreeItem::new(d, utf16(&s), true, leaf));
+            continue;
+        }
+        let pick = |k: &str| obj.get_item(k).ok();
+        let depth = pick("depth")
+            .and_then(|v| v.extract::<usize>().ok())
+            .unwrap_or(0);
+        let text = pick("text")
+            .and_then(|v| v.extract::<String>().ok())
+            .unwrap_or_default();
+        let leaf = pick("leaf")
+            .and_then(|v| v.extract::<bool>().ok())
+            .unwrap_or(false);
+        let open = pick("open")
+            .and_then(|v| v.extract::<bool>().ok())
+            .unwrap_or(true);
+        let values = pick("values")
+            .and_then(|v| v.extract::<Vec<String>>().ok())
+            .unwrap_or_default();
+        let bg = pick("bg")
+            .and_then(|v| v.extract::<String>().ok())
+            .map(|s| hexa(&s));
+        let fg = pick("fg")
+            .and_then(|v| v.extract::<String>().ok())
+            .map(|s| hexa(&s));
+        let icon = pick("icon").and_then(|v| v.extract::<String>().ok());
+        out.push(TreeItem {
+            depth,
+            label: utf16(&text),
+            open,
+            leaf,
+            values: values.iter().map(|s| utf16(s)).collect(),
+            bg,
+            fg,
+            icon,
+        });
+    }
+    Ok(out)
 }
 
 #[pyclass(name = "N")]
@@ -57,6 +131,87 @@ struct PyNode {
 type Bindings = Rc<RefCell<Vec<(NodeId, Py<PyAny>)>>>;
 type Stack = Rc<RefCell<Vec<NodeId>>>;
 type BindVec = RefCell<Vec<(NodeId, Py<PyAny>)>>;
+
+/// Состояние окна, доступное из любого потока.
+struct Share {
+    id: u64,
+    hwnd: AtomicIsize,
+    wake: AtomicBool,
+    alive: AtomicBool,
+}
+
+static POSTS: Mutex<Vec<(u64, Py<PyAny>)>> = Mutex::new(Vec::new());
+static WIN_SEQ: AtomicU64 = AtomicU64::new(0);
+static TIMER_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Разбирает очередь вызовов окна `id`; true — что-то выполнено.
+fn drain_posts(share: &Share, t: &mut Tree, texts: &Bindings, values: &Bindings) -> bool {
+    share.wake.store(false, Ordering::Release);
+    let mine = {
+        let mut q = match POSTS.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        if q.is_empty() {
+            return false;
+        }
+        let taken = std::mem::take(&mut *q);
+        let mut mine = Vec::new();
+        let mut rest = Vec::with_capacity(taken.len());
+        for (wid, f) in taken {
+            if wid == share.id {
+                mine.push(f);
+            } else {
+                rest.push((wid, f));
+            }
+        }
+        *q = rest;
+        mine
+    };
+    if mine.is_empty() {
+        return false;
+    }
+    Python::with_gil(|py| {
+        for f in mine {
+            if let Err(e) = f.bind(py).call0() {
+                e.print(py);
+            }
+        }
+        refresh_all(py, t, texts, values);
+    });
+    true
+}
+
+#[pyclass(name = "Post")]
+struct Post {
+    share: Arc<Share>,
+}
+
+#[pymethods]
+impl Post {
+    /// Ставит вызов в очередь UI-потока; безопасно из любого потока.
+    fn __call__(&self, f: PyObject) -> PyResult<()> {
+        if !self.share.alive.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        {
+            let mut q = match POSTS.lock() {
+                Ok(g) => g,
+                Err(e) => e.into_inner(),
+            };
+            q.push((self.share.id, f));
+        }
+        if self
+            .share
+            .wake
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            CoreWindow::wake(self.share.hwnd.load(Ordering::Acquire));
+        }
+        Ok(())
+    }
+}
 
 /// Биндинги, приватные для одного окна.
 #[derive(Default)]
@@ -70,6 +225,7 @@ struct Extra {
     depth: BindVec,
     pos: BindVec,
     src: BindVec,
+    tre: BindVec,
 }
 
 impl Extra {
@@ -83,6 +239,7 @@ impl Extra {
             5 => &self.table,
             6 => &self.depth,
             7 => &self.pos,
+            9 => &self.tre,
             _ => &self.src,
         }
     }
@@ -108,6 +265,7 @@ static BOX_BINDINGS: BindSlot = BindSlot(3);
 static LIST_BINDINGS: BindSlot = BindSlot(4);
 static TABLE_BINDINGS: BindSlot = BindSlot(5);
 static DEPTH_BINDINGS: BindSlot = BindSlot(6);
+static TREE_BINDINGS: BindSlot = BindSlot(9);
 
 /// Подставляет биндинги окна на время обновления.
 struct ExtraGuard(Option<Rc<Extra>>);
@@ -465,8 +623,13 @@ struct PyWindow {
     font_queue: Rc<RefCell<Option<(String, f32)>>>,
     focus_queue: FocusQueue,
     rect_table: RectTable,
+    timer_queue: TimerQueue,
+    kill_timers: TimerKill,
+    canvas_queue: CanvasQueue,
+    tree_queue: TreeQueue,
     extra: Rc<Extra>,
     hwnd: Rc<Cell<isize>>,
+    share: Arc<Share>,
     icon: Option<String>,
     caption: Option<u32>,
     caption_text: Option<u32>,
@@ -525,6 +688,10 @@ impl PyWindow {
         let font_queue = tree.font_queue();
         let focus_queue = tree.focus_queue();
         let rect_table = tree.rect_table();
+        let timer_queue = tree.timer_queue();
+        let kill_timers = tree.kill_queue();
+        let canvas_queue = tree.canvas_queue();
+        let tree_queue = tree.tree_queue();
         let bindings: Bindings = Rc::new(RefCell::new(Vec::new()));
         let extra = Rc::new(Extra::default());
         EXTRAS.with(|m| {
@@ -548,8 +715,18 @@ impl PyWindow {
             font_queue,
             focus_queue,
             rect_table,
+            timer_queue,
+            kill_timers,
+            canvas_queue,
+            tree_queue,
             extra,
             hwnd: Rc::new(Cell::new(0)),
+            share: Arc::new(Share {
+                id: WIN_SEQ.fetch_add(1, Ordering::Relaxed),
+                hwnd: AtomicIsize::new(0),
+                wake: AtomicBool::new(false),
+                alive: AtomicBool::new(true),
+            }),
             icon: None,
             caption: None,
             caption_text: None,
@@ -618,6 +795,7 @@ impl PyWindow {
 
     /// Закрывает окно программно.
     fn close(&self) -> PyResult<()> {
+        self.share.alive.store(false, Ordering::Release);
         let h = self.hwnd.get();
         if h != 0 {
             ALIVE.with(|v| {
@@ -632,7 +810,7 @@ impl PyWindow {
 
     /// Показывает окно, не блокируя цикл сообщений.
     fn show(slf: &Bound<'_, Self>) -> PyResult<()> {
-        let (tree, title, width, height, mut opts, cell, done, parent) = {
+        let (tree, title, width, height, mut opts, cell, done, parent, share) = {
             let mut me = slf.borrow_mut();
             let tree = me.tree.take().ok_or_else(consumed)?;
             let done = me.on_close.take();
@@ -646,10 +824,13 @@ impl PyWindow {
                 me.hwnd.clone(),
                 done,
                 parent,
+                me.share.clone(),
             )
         };
         let notify = cell.clone();
+        let dead = share.clone();
         opts.on_close = Some(Box::new(move || {
+            dead.alive.store(false, Ordering::Release);
             notify.set(0);
             if let Some(cb) = &done {
                 Python::with_gil(|py| {
@@ -676,6 +857,7 @@ impl PyWindow {
         let window = CoreWindow::with_opts(&title, width, height, tree, opts)
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         cell.set(window.handle());
+        share.hwnd.store(window.handle(), Ordering::Release);
         window.raise();
         ALIVE.with(|v| v.borrow_mut().push(window));
         Ok(())
@@ -787,19 +969,19 @@ impl PyWindow {
         Ok(())
     }
 
-    /// Вызывает колбэк каждые `ms` миллисекунд, не блокируя окно.
-    fn every(&mut self, ms: f32, f: PyObject) -> PyResult<()> {
-        let texts = self.bindings.clone();
-        let values = self.value_bindings.clone();
-        let tree = self.tree.as_mut().ok_or_else(consumed)?;
-        tree.add_timer(ms, move |t| {
-            Python::with_gil(|py| {
-                if let Err(e) = f.bind(py).call0() {
-                    e.print(py);
-                }
-                refresh_all(py, t, &texts, &values);
-            });
-        });
+    /// Периодический вызов каждые `ms` мс; возвращает идентификатор.
+    fn every(&self, ms: f32, f: PyObject) -> PyResult<u64> {
+        Ok(self.push_timer(ms, false, f))
+    }
+
+    /// Одноразовый вызов через `ms` мс; возвращает идентификатор.
+    fn after(&self, ms: f32, f: PyObject) -> PyResult<u64> {
+        Ok(self.push_timer(ms, true, f))
+    }
+
+    /// Отменяет таймер по идентификатору; повторный вызов безвреден.
+    fn cancel(&self, tid: u64) -> PyResult<()> {
+        self.kill_timers.borrow_mut().push(tid);
         Ok(())
     }
 
@@ -816,11 +998,39 @@ impl PyWindow {
         }
     }
 
+    /// Очередь вызовов в UI-потоке: `p = win.post()`, далее `p(f)` из любого потока.
+    fn post(&mut self) -> PyResult<Post> {
+        let share = self.share.clone();
+        let hook = share.clone();
+        let texts = self.bindings.clone();
+        let values = self.value_bindings.clone();
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        tree.set_on_frame(Box::new(move |t| drain_posts(&hook, t, &texts, &values)));
+        Ok(Post { share })
+    }
+
     /// Ставит фокус на узел; `txt` подменяет текст, `sel` выделяет всё.
     #[pyo3(signature = (node=None, *, txt=None, sel=true))]
     fn focus(&self, node: Option<PyNode>, txt: Option<&str>, sel: bool) -> PyResult<()> {
         let text = txt.map(utf16);
         *self.focus_queue.borrow_mut() = Some((node.map(|n| n.id), text, sel));
+        Ok(())
+    }
+
+    /// Колесо над узлом: `f(дельта, x, y)`; узел перехватывает событие.
+    fn wheel(&mut self, node: PyNode, f: PyObject) -> PyResult<()> {
+        let texts = self.bindings.clone();
+        let values = self.value_bindings.clone();
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let cb: WheelCb = Box::new(move |t, d, x, y| {
+            Python::with_gil(|py| {
+                if let Err(e) = f.bind(py).call1((d, x, y)) {
+                    e.print(py);
+                }
+                refresh_all(py, t, &texts, &values);
+            });
+        });
+        tree.set_on_wheel(node.id, cb);
         Ok(())
     }
 
@@ -1453,8 +1663,11 @@ impl PyWindow {
 
     /// Область рисования; фигуры — `(вид, [args], цвет, текст)`.
     /// Виды: `rect` `[x,y,w,h,rad,stroke]`, `circle` `[cx,cy,r,stroke]`,
-    /// `line` `[x1,y1,x2,y2,w]`, `text` `[x,y,w,h]`.
-    #[pyo3(signature = (shapes=Vec::new(), *, pr=None, bind=None, ch=None, pd=0.0, gp=0.0, w=None, h=None))]
+    /// `line` `[x1,y1,x2,y2,w]`, `text` `[x,y,w,h]`,
+    /// `poly` `[x1,y1,...,xn,yn,stroke]`.
+    #[pyo3(signature = (shapes=Vec::new(), *, pr=None, bind=None, ch=None, down=None,
+                        r#move=None, up=None, dbl=None, scroll=false,
+                        pd=0.0, gp=0.0, w=None, h=None))]
     #[allow(clippy::too_many_arguments)]
     fn cv(
         &mut self,
@@ -1463,6 +1676,11 @@ impl PyWindow {
         pr: Option<PyNode>,
         bind: Option<PyObject>,
         ch: Option<PyObject>,
+        down: Option<PyObject>,
+        r#move: Option<PyObject>,
+        up: Option<PyObject>,
+        dbl: Option<PyObject>,
+        scroll: bool,
         pd: f32,
         gp: f32,
         w: Option<f32>,
@@ -1482,9 +1700,18 @@ impl PyWindow {
             parent,
             NodeKind::Canvas {
                 shapes: make_shapes(initial),
+                ox: 0.0,
+                oy: 0.0,
+                rx: 0.0,
+                ry: 0.0,
+                rw: 0.0,
+                rh: 0.0,
+                scroll,
             },
             props,
         );
+        let ct = texts.clone();
+        let cvl = values.clone();
         tree.set_on_change(id, move |t, v| {
             Python::with_gil(|py| {
                 if let Some(cb) = &ch {
@@ -1492,13 +1719,40 @@ impl PyWindow {
                         e.print(py);
                     }
                 }
-                refresh_all(py, t, &texts, &values);
+                refresh_all(py, t, &ct, &cvl);
             });
         });
+        for (phase, cb) in [(0u8, down), (1u8, r#move), (2u8, up), (3u8, dbl)] {
+            if let Some(f) = cb {
+                tree.set_on_point(id, phase, point_cb(f, texts.clone(), values.clone()));
+            }
+        }
         if let Some(f) = bind {
             self.extra.canvas.borrow_mut().push((id, f));
         }
         Ok(PyNode { id })
+    }
+
+    /// Задаёт виртуальную область прокрутки области рисования.
+    fn cv_region(&self, node: PyNode, x1: f32, y1: f32, x2: f32, y2: f32) -> PyResult<()> {
+        self.canvas_queue
+            .borrow_mut()
+            .push((node.id, 0, x1, y1, x2, y2));
+        Ok(())
+    }
+
+    /// Прокручивает область рисования к точке содержимого.
+    fn cv_view(&self, node: PyNode, x: f32, y: f32) -> PyResult<()> {
+        self.canvas_queue
+            .borrow_mut()
+            .push((node.id, 1, x, y, 0.0, 0.0));
+        Ok(())
+    }
+
+    /// Задаёт выделенные строки дерева; первая становится текущей.
+    fn tre_sel(&self, node: PyNode, indexes: Vec<usize>) -> PyResult<()> {
+        self.tree_queue.borrow_mut().push((node.id, 0, indexes));
+        Ok(())
     }
 
     /// Постраничная навигация; `ch(page)` при смене страницы.
@@ -1913,13 +2167,23 @@ impl PyWindow {
         Ok(PyNode { id })
     }
 
-    /// Дерево; `items` — список `(глубина, текст, лист)`, `ch(i)` при выборе.
-    #[pyo3(signature = (items, *, pr=None, ch=None, pd=0.0, gp=0.0, w=None, h=None))]
+    /// Дерево; строка — кортеж `(глубина, текст, лист)` либо словарь.
+    #[pyo3(signature = (items, *, pr=None, cols=None, widths=None, multi=false,
+                        bind=None, ch=None, clk=None, dbl=None,
+                        pd=0.0, gp=0.0, w=None, h=None))]
+    #[allow(clippy::too_many_arguments)]
     fn tre(
         &mut self,
-        items: Vec<(usize, String, bool)>,
+        py: Python,
+        items: &Bound<'_, PyAny>,
         pr: Option<PyNode>,
+        cols: Option<Vec<String>>,
+        widths: Option<Vec<f32>>,
+        multi: bool,
+        bind: Option<PyObject>,
         ch: Option<PyObject>,
+        clk: Option<PyObject>,
+        dbl: Option<PyObject>,
         pd: f32,
         gp: f32,
         w: Option<f32>,
@@ -1927,14 +2191,14 @@ impl PyWindow {
     ) -> PyResult<PyNode> {
         let h = h.or(Some(300.0));
         let props = make_props("v", pd, gp, w, h);
-        let nodes: Vec<TreeItem> = items
+        let nodes: Vec<TreeItem> = match &bind {
+            Some(f) => tree_rows(&f.bind(py).call0()?)?,
+            None => tree_rows(items)?,
+        };
+        let heads: Vec<Vec<u16>> = cols
+            .unwrap_or_default()
             .iter()
-            .map(|(d, s, leaf)| TreeItem {
-                depth: *d,
-                label: utf16(s),
-                open: true,
-                leaf: *leaf,
-            })
+            .map(|s| utf16(s))
             .collect();
         let parent = self.parent_of(pr);
         let texts = self.bindings.clone();
@@ -1946,13 +2210,18 @@ impl PyWindow {
                 items: nodes,
                 selected: None,
                 scroll: 0.0,
+                cols: heads,
+                widths: widths.unwrap_or_default(),
+                multi: Vec::new(),
+                msel: multi,
             },
             props,
         );
+        let (ch_one, ch_many) = if multi { (None, ch) } else { (ch, None) };
         tree.set_on_change(id, move |t, v| {
             let i = v.max(0.0) as i64;
             Python::with_gil(|py| {
-                if let Some(cb) = &ch {
+                if let Some(cb) = &ch_one {
                     if let Err(e) = cb.bind(py).call1((i,)) {
                         e.print(py);
                     }
@@ -1960,6 +2229,31 @@ impl PyWindow {
                 refresh_all(py, t, &texts, &values);
             });
         });
+        if let Some(f) = ch_many {
+            let ct = self.bindings.clone();
+            let cv = self.value_bindings.clone();
+            let cb: PointerCb = Box::new(move |t, _, _, _| {
+                let list = t.tree_multi(id);
+                Python::with_gil(|py| {
+                    if let Err(e) = f.bind(py).call1((list,)) {
+                        e.print(py);
+                    }
+                    refresh_all(py, t, &ct, &cv);
+                });
+            });
+            tree.set_on_point(id, 7, cb);
+        }
+        if let Some(f) = clk {
+            let cb = pair_cb(f, self.bindings.clone(), self.value_bindings.clone());
+            tree.set_on_point(id, 5, cb);
+        }
+        if let Some(f) = dbl {
+            let cb = pair_cb(f, self.bindings.clone(), self.value_bindings.clone());
+            tree.set_on_point(id, 6, cb);
+        }
+        if let Some(f) = bind {
+            self.extra.tre.borrow_mut().push((id, f));
+        }
         Ok(PyNode { id })
     }
 
@@ -2920,7 +3214,7 @@ impl PyWindow {
 
     /// Показывает окно и запускает цикл сообщений.
     fn go(slf: &Bound<'_, Self>) -> PyResult<()> {
-        let (tree, title, width, height, opts, cell) = {
+        let (tree, title, width, height, opts, cell, share) = {
             let mut me = slf.borrow_mut();
             let tree = me.tree.take().ok_or_else(consumed)?;
             (
@@ -2930,14 +3224,17 @@ impl PyWindow {
                 me.height,
                 me.opts(),
                 me.hwnd.clone(),
+                me.share.clone(),
             )
         };
         dpi::enable_dpi_awareness();
         let window = CoreWindow::with_opts(&title, width, height, tree, opts)
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
         cell.set(window.handle());
+        share.hwnd.store(window.handle(), Ordering::Release);
         window.mark_main();
-        window.run();
+        slf.py().allow_threads(|| CoreWindow::loop_messages());
+        share.alive.store(false, Ordering::Release);
         Ok(())
     }
 
@@ -2958,6 +3255,28 @@ impl PyWindow {
 }
 
 impl PyWindow {
+    /// Кладёт таймер в очередь и будит цикл; возвращает идентификатор.
+    fn push_timer(&self, ms: f32, once: bool, f: PyObject) -> u64 {
+        let id = TIMER_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+        let texts = self.bindings.clone();
+        let values = self.value_bindings.clone();
+        self.timer_queue.borrow_mut().push(TimerReq {
+            id,
+            ms,
+            once,
+            cb: Box::new(move |t| {
+                Python::with_gil(|py| {
+                    if let Err(e) = f.bind(py).call0() {
+                        e.print(py);
+                    }
+                    refresh_all(py, t, &texts, &values);
+                });
+            }),
+        });
+        CoreWindow::wake(self.share.hwnd.load(Ordering::Acquire));
+        id
+    }
+
     /// Параметры создания окна для ядра.
     fn opts(&self) -> WindowOpts {
         WindowOpts {
@@ -3145,6 +3464,18 @@ fn utf16(s: &str) -> Vec<u16> {
     s.encode_utf16().collect()
 }
 
+/// Оборачивает питоновский колбэк указателя `f(i, x, y)`.
+fn point_cb(f: PyObject, texts: Bindings, values: Bindings) -> PointerCb {
+    Box::new(move |t, i, x, y| {
+        Python::with_gil(|py| {
+            if let Err(e) = f.bind(py).call1((i, x, y)) {
+                e.print(py);
+            }
+            refresh_all(py, t, &texts, &values);
+        });
+    })
+}
+
 fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
     let _guard = ExtraGuard::enter(texts);
     let cur = CUR_EXTRA.with(|c| c.borrow().clone());
@@ -3269,6 +3600,15 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
             }
         }
     });
+    TREE_BINDINGS.with(|c| {
+        for (id, f) in c.borrow().iter() {
+            let Some(r) = run_binding(py, f) else { continue };
+            match tree_rows(&r) {
+                Ok(rows) => t.set_tree_items(*id, rows),
+                Err(e) => e.print(py),
+            }
+        }
+    });
     WIN_SETTINGS.with(|s| {
         for (tag, f) in s.borrow().iter() {
             let Some(r) = run_binding(py, f) else { continue };
@@ -3308,6 +3648,7 @@ fn _ssui(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Ctx>()?;
     m.add_class::<Fx>()?;
     m.add_class::<Fnt>()?;
+    m.add_class::<Post>()?;
     m.add_class::<Rct>()?;
     m.add_class::<Dlg>()?;
     m.add_class::<Signal>()?;

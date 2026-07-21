@@ -209,6 +209,8 @@ pub struct Renderer {
     range_drag: Option<(NodeId, bool)>,
     knob_drag: Option<(NodeId, f32, f32)>,
     color_drag: Option<(NodeId, u8)>,
+    canvas_drag: Option<NodeId>,
+    canvas_pan: Option<(NodeId, f32, f32, f32, f32)>,
     popup: Option<Popup>,
     hover_since: Option<(NodeId, Instant)>,
     toast: Option<(Vec<u16>, Instant, f32)>,
@@ -415,6 +417,8 @@ impl Renderer {
                 range_drag: None,
                 knob_drag: None,
                 color_drag: None,
+                canvas_drag: None,
+                canvas_pan: None,
                 popup: None,
                 hover_since: None,
                 toast: None,
@@ -502,24 +506,34 @@ impl Renderer {
 
     /// Продвигает анимации, таймеры и спиннеры; true — нужна перерисовка.
     pub fn pump(&mut self) -> bool {
+        let posted = self.tree.fire_frame();
+        let scrolled = self.tree.apply_canvas_queue() | self.tree.apply_tree_queue();
         let now = Instant::now();
         let dt = (now - self.last_tick).as_secs_f32();
         self.last_tick = now;
         let anim = self.tree.tick(dt);
-        let timers = self.tree.has_timers();
-        if timers {
-            self.tree.tick_timers();
-        }
+        let fired = if self.tree.has_timers() {
+            self.tree.tick_timers()
+        } else {
+            false
+        };
         let spin = self.tree.has_spinner();
         if spin {
             self.tree.spin(dt);
         }
         anim
             || spin
-            || timers
+            || fired
+            || posted
+            || scrolled
             || self.toast.is_some()
             || !self.notes.is_empty()
             || self.tip_pending()
+    }
+
+    /// Нельзя ли усыплять цикл: есть незавершённые таймеры.
+    pub fn busy(&self) -> bool {
+        self.tree.has_timers()
     }
 
     /// Продвигает анимации по таймеру; true, если нужна перерисовка.
@@ -621,8 +635,32 @@ impl Renderer {
 
     /// Прокручивает таблицу под курсором колесом мыши.
     pub fn on_wheel(&mut self, delta: i32) -> bool {
+        let (mx, my) = self.mouse;
+        let mut node = self.hot;
+        let mut guard = 0;
+        while let Some(id) = node {
+            if self.tree.has_wheel(id) {
+                let (lx, ly) = self.tree.canvas_local(id, mx, my);
+                self.tree.fire_wheel(id, delta as f32 / 120.0, lx, ly);
+                return true;
+            }
+            node = self.tree.get(id).parent;
+            guard += 1;
+            if guard > 64 {
+                break;
+            }
+        }
         if let Some(hot) = self.hot {
             let step = (delta as f32 / 120.0) * 0.05;
+            if self.tree.is_canvas(hot) && self.tree.is_canvas_scroll(hot) {
+                let d = -(delta as f32 / 120.0) * 60.0;
+                if key_down(0x10) {
+                    self.tree.canvas_scroll_by(hot, d, 0.0);
+                } else {
+                    self.tree.canvas_scroll_by(hot, 0.0, d);
+                }
+                return true;
+            }
             if self.tree.is_slider(hot) {
                 let v = (self.tree.slider_value(hot) + step).clamp(0.0, 1.0);
                 self.tree.set_slider_value(hot, v);
@@ -1130,6 +1168,18 @@ impl Renderer {
             self.set_color_from(id, mode, x, y);
             dirty = true;
         }
+        if let Some((id, sx, sy, px, py)) = self.canvas_pan {
+            self.tree.set_canvas_view(id, px - (x - sx), py - (y - sy));
+            dirty = true;
+        }
+        if let Some(id) = self.canvas_drag {
+            if self.tree.has_point(id, 1) {
+                let i = self.tree.canvas_hit(id, x, y).map_or(-1, |v| v as i32);
+                let (lx, ly) = self.tree.canvas_local(id, x, y);
+                self.tree.fire_point(id, 1, i, lx, ly);
+                dirty = true;
+            }
+        }
         if let Some(p) = self.popup.as_mut() {
             let hv = if p.rect.contains(x, y) {
                 let i = ((y - p.rect.y) / POPUP_ROW).floor();
@@ -1302,7 +1352,19 @@ impl Renderer {
             }
             if self.tree.is_canvas(id) {
                 let i = self.tree.canvas_hit(id, x, y);
-                self.tree.fire_change(id, i.map_or(-1.0, |v| v as f32));
+                let idx = i.map_or(-1, |v| v as i32);
+                let dbl = self.is_double_click(x, y);
+                let (lx, ly) = self.tree.canvas_local(id, x, y);
+                self.tree.fire_change(id, idx as f32);
+                self.tree.fire_point(id, 0, idx, lx, ly);
+                if dbl {
+                    self.tree.fire_point(id, 3, idx, lx, ly);
+                }
+                self.canvas_drag = Some(id);
+                if self.tree.is_canvas_scroll(id) && !self.tree.has_point(id, 1) {
+                    let (px, py) = self.tree.canvas_offset(id);
+                    self.canvas_pan = Some((id, x, y, px, py));
+                }
                 self.focused = Some(id);
                 return true;
             }
@@ -1530,16 +1592,58 @@ impl Renderer {
                 let r = self.tree.get(id).rect;
                 let vis = self.tree.tree_visible(id);
                 let scroll = self.tree.tree_scroll(id);
-                let i = ((y - r.y + scroll) / LIST_ROW).floor();
+                let head = self.tree.tree_head(id);
+                if y < r.y + head {
+                    self.focused = Some(id);
+                    return true;
+                }
+                let twice = self.is_double_click(x, y);
+                let i = ((y - r.y - head + scroll) / LIST_ROW).floor();
                 if i >= 0.0 && (i as usize) < vis.len() {
                     let item = vis[i as usize];
+                    let col = self.tree.tree_col_at(id, x) as i32;
                     if let Some((depth, _, _, leaf)) = self.tree.tree_item(id, item) {
-                        let ax = r.x + 8.0 + depth as f32 * 18.0;
+                        let bounds = self.tree.tree_bounds(id);
+                        let ax = bounds[0].0 + 8.0 + depth as f32 * 18.0;
                         if !leaf && x >= ax && x <= ax + 20.0 {
                             self.tree.toggle_tree(id, item);
                         } else {
-                            self.tree.set_tree_selected(id, Some(item));
-                            self.tree.fire_change(id, item as f32);
+                            if self.tree.is_tree_msel(id) {
+                                let ctrl = key_down(0x11);
+                                let shift = key_down(0x10);
+                                let mut sel = self.tree.tree_multi(id);
+                                if shift {
+                                    let a = self.tree.tree_selected(id).unwrap_or(item);
+                                    let lo = a.min(item);
+                                    let hi = a.max(item);
+                                    sel = vis
+                                        .iter()
+                                        .copied()
+                                        .filter(|v| *v >= lo && *v <= hi)
+                                        .collect();
+                                } else if ctrl {
+                                    match sel.iter().position(|v| *v == item) {
+                                        Some(p) => {
+                                            sel.remove(p);
+                                        }
+                                        None => sel.push(item),
+                                    }
+                                } else {
+                                    sel = vec![item];
+                                }
+                                self.tree.set_tree_multi(id, sel);
+                                if !shift {
+                                    self.tree.set_tree_selected(id, Some(item));
+                                }
+                                self.tree.fire_point(id, 7, item as i32, 0.0, 0.0);
+                            } else {
+                                self.tree.set_tree_selected(id, Some(item));
+                                self.tree.fire_change(id, item as f32);
+                            }
+                            self.tree.fire_point(id, 5, item as i32, col as f32, 0.0);
+                            if twice {
+                                self.tree.fire_point(id, 6, item as i32, col as f32, 0.0);
+                            }
                         }
                     }
                 }
@@ -1577,10 +1681,19 @@ impl Renderer {
         let was_range = self.range_drag.take().is_some();
         let was_knob = self.knob_drag.take().is_some();
         let was_color = self.color_drag.take().is_some();
+        let canvas_up = self.canvas_drag.take();
+        let was_pan = self.canvas_pan.take().is_some();
         let was_selecting = self.text_selecting;
         self.text_selecting = false;
         if let Some(id) = click_id {
             self.dispatch(id);
+        }
+        let mut canvas_fired = false;
+        if let Some(id) = canvas_up {
+            let (mx, my) = self.mouse;
+            let i = self.tree.canvas_hit(id, mx, my).map_or(-1, |v| v as i32);
+            let (lx, ly) = self.tree.canvas_local(id, mx, my);
+            canvas_fired = self.tree.fire_point(id, 2, i, lx, ly);
         }
         was_pressed
             || was_dragging
@@ -1590,6 +1703,8 @@ impl Renderer {
             || was_knob
             || was_color
             || was_selecting
+            || canvas_fired
+            || was_pan
             || click_id.is_some()
     }
 
@@ -2185,6 +2300,7 @@ impl Renderer {
                 }
             }
         });
+        self.tree.tree_icons(&mut paths);
         if paths.is_empty() {
             return;
         }
@@ -2790,6 +2906,10 @@ impl Renderer {
                         items,
                         selected,
                         scroll,
+                        cols,
+                        widths,
+                        multi,
+                        ..
                     } => {
                         let r = node.rect;
                         let rad = style.radius.unwrap_or(8.0);
@@ -2810,23 +2930,55 @@ impl Renderer {
                             }
                         }
                         let color = style.text.unwrap_or(theme.content);
-                        let first = (scroll / LIST_ROW).floor().max(0.0) as usize;
-                        let span = (r.height / LIST_ROW).ceil() as usize + 2;
+                        let bounds =
+                            crate::tree::column_bounds(r, cols.len().max(1), widths);
+                        let head_h = if cols.is_empty() {
+                            0.0
+                        } else {
+                            crate::tree::TREE_HEADER
+                        };
+                        if !cols.is_empty() {
+                            canvas.fill_rounded_rect(
+                                Rect::new(r.x, r.y, r.width, head_h),
+                                0.0,
+                                theme.track,
+                            );
+                            for (c, title) in cols.iter().enumerate() {
+                                let (cx, cw) = bounds[c];
+                                canvas.draw_text(
+                                    title,
+                                    format_left,
+                                    Rect::new(cx + 8.0, r.y, (cw - 12.0).max(0.0), head_h),
+                                    color,
+                                );
+                            }
+                        }
+                        let top = r.y + head_h;
+                        let view = (r.height - head_h).max(0.0);
+                        let first = (*scroll / LIST_ROW).floor().max(0.0) as usize;
+                        let span = (view / LIST_ROW).ceil() as usize + 2;
                         let last = (first + span).min(vis.len());
                         for row in first..last {
                             let i = vis[row];
                             let it = &items[i];
-                            let ry = r.y + row as f32 * LIST_ROW - scroll;
-                            if *selected == Some(i) {
-                                let hl = Rect::new(
-                                    r.x + 3.0,
-                                    ry + 2.0,
-                                    (r.width - 6.0).max(0.0),
-                                    LIST_ROW - 4.0,
-                                );
+                            let ry = top + row as f32 * LIST_ROW - *scroll;
+                            let hl = Rect::new(
+                                r.x + 3.0,
+                                ry + 2.0,
+                                (r.width - 6.0).max(0.0),
+                                LIST_ROW - 4.0,
+                            );
+                            if let Some(bg) = it.bg {
+                                canvas.fill_rounded_rect(hl, 5.0, Color::hexa(bg));
+                            }
+                            if *selected == Some(i) || multi.contains(&i) {
                                 canvas.fill_rounded_rect(hl, 5.0, theme.selection);
                             }
-                            let ax = r.x + 8.0 + it.depth as f32 * 18.0;
+                            let fg = match it.fg {
+                                Some(c) => Color::hexa(c),
+                                None => color,
+                            };
+                            let ax = bounds[0].0 + 8.0 + it.depth as f32 * 18.0;
                             if !it.leaf {
                                 let arrow: Vec<u16> = if it.open {
                                     "\u{25BC}".encode_utf16().collect()
@@ -2837,23 +2989,58 @@ impl Renderer {
                                     &arrow,
                                     format_left,
                                     Rect::new(ax, ry, 20.0, LIST_ROW),
-                                    color,
+                                    fg,
                                 );
                             }
-                            let tr = Rect::new(
-                                ax + 22.0,
-                                ry,
-                                (r.x + r.width - ax - 30.0).max(0.0),
-                                LIST_ROW,
+                            let mut tx = ax + 22.0;
+                            if let Some(icon) = &it.icon {
+                                if let Some(Some(bmp)) = img_cache.get(icon) {
+                                    let sz = (LIST_ROW - 8.0).clamp(12.0, 24.0);
+                                    canvas.draw_bitmap(
+                                        bmp,
+                                        Rect::new(tx, ry + (LIST_ROW - sz) / 2.0, sz, sz),
+                                        0,
+                                    );
+                                    tx += sz + 6.0;
+                                }
+                            }
+                            let name_end = if cols.is_empty() {
+                                r.x + r.width - 8.0
+                            } else {
+                                bounds[0].0 + bounds[0].1
+                            };
+                            canvas.draw_text(
+                                &it.label,
+                                format_left,
+                                Rect::new(tx, ry, (name_end - tx - 6.0).max(0.0), LIST_ROW),
+                                fg,
                             );
-                            canvas.draw_text(&it.label, format_left, tr, color);
+                            for (c, val) in it.values.iter().enumerate() {
+                                if c + 1 >= bounds.len() {
+                                    break;
+                                }
+                                let (cx, cw) = bounds[c + 1];
+                                canvas.draw_text(
+                                    val,
+                                    format_left,
+                                    Rect::new(cx + 8.0, ry, (cw - 12.0).max(0.0), LIST_ROW),
+                                    fg,
+                                );
+                            }
+                        }
+                        for c in 1..cols.len() {
+                            canvas.fill_rounded_rect(
+                                Rect::new(bounds[c].0, r.y, 1.0, r.height),
+                                0.0,
+                                theme.track,
+                            );
                         }
                         let content = vis.len() as f32 * LIST_ROW;
                         draw_scrollbar(
                             &canvas,
-                            r,
+                            Rect::new(r.x, top, r.width, view),
                             content,
-                            r.height,
+                            view,
                             *scroll,
                             theme.track,
                             theme.content,
@@ -3180,11 +3367,20 @@ impl Renderer {
                             );
                         }
                     }
-                    NodeKind::Canvas { shapes } => {
-                        let r = node.rect;
+                    NodeKind::Canvas {
+                        shapes,
+                        ox,
+                        oy,
+                        rw,
+                        rh,
+                        scroll,
+                        ..
+                    } => {
+                        let view = node.rect;
                         let rad = style.radius.unwrap_or(8.0);
-                        canvas.fill_rounded_rect(r, rad, style.fill.unwrap_or(theme.surface));
-                        canvas.push_clip(r);
+                        canvas.fill_rounded_rect(view, rad, style.fill.unwrap_or(theme.surface));
+                        canvas.push_clip(view);
+                        let r = Rect::new(view.x - *ox, view.y - *oy, view.width, view.height);
                         for s in shapes.iter() {
                             let c = Color::hexa(s.color);
                             let a = s.args;
@@ -3251,7 +3447,7 @@ impl Renderer {
                                         c,
                                     );
                                 }
-                                _ => {
+                                6 => {
                                     canvas.fill_sector(
                                         r.x + a[0],
                                         r.y + a[1],
@@ -3261,7 +3457,24 @@ impl Renderer {
                                         c,
                                     );
                                 }
+                                _ => {
+                                    let pts: Vec<(f32, f32)> = s
+                                        .pts
+                                        .chunks_exact(2)
+                                        .map(|p| (r.x + p[0], r.y + p[1]))
+                                        .collect();
+                                    if a[0] > 0.0 {
+                                        canvas.stroke_polygon(&pts, a[0], c);
+                                    } else {
+                                        canvas.fill_polygon(&pts, c);
+                                    }
+                                }
                             }
+                        }
+                        if *scroll {
+                            draw_canvas_bars(
+                                &canvas, view, *rw, *rh, *ox, *oy, theme.track, theme.content,
+                            );
                         }
                         canvas.pop_clip();
                     }
@@ -4134,6 +4347,53 @@ const INSPECT_LABEL_FG: Color = Color::rgba(1.0, 1.0, 1.0, 1.0);
 
 fn kind_name(kind: &NodeKind) -> &'static str {
     crate::tree::kind_tag(kind)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_canvas_bars(
+    canvas: &Canvas,
+    view: Rect,
+    rw: f32,
+    rh: f32,
+    ox: f32,
+    oy: f32,
+    track_col: Color,
+    thumb_col: Color,
+) {
+    if rh > view.height && view.height > 0.0 {
+        let bar = Rect::new(
+            view.x + view.width - SCROLLBAR_W - 2.0,
+            view.y + 2.0,
+            SCROLLBAR_W,
+            (view.height - 4.0).max(0.0),
+        );
+        canvas.fill_rounded_rect(bar, SCROLLBAR_W / 2.0, track_col);
+        let th = (bar.height * (view.height / rh)).max(24.0);
+        let t = (oy / (rh - view.height)).clamp(0.0, 1.0);
+        let ty = bar.y + (bar.height - th) * t;
+        canvas.fill_rounded_rect(
+            Rect::new(bar.x, ty, SCROLLBAR_W, th),
+            SCROLLBAR_W / 2.0,
+            thumb_col,
+        );
+    }
+    if rw > view.width && view.width > 0.0 {
+        let bar = Rect::new(
+            view.x + 2.0,
+            view.y + view.height - SCROLLBAR_W - 2.0,
+            (view.width - 4.0).max(0.0),
+            SCROLLBAR_W,
+        );
+        canvas.fill_rounded_rect(bar, SCROLLBAR_W / 2.0, track_col);
+        let tw = (bar.width * (view.width / rw)).max(24.0);
+        let t = (ox / (rw - view.width)).clamp(0.0, 1.0);
+        let tx = bar.x + (bar.width - tw) * t;
+        canvas.fill_rounded_rect(
+            Rect::new(tx, bar.y, tw, SCROLLBAR_W),
+            SCROLLBAR_W / 2.0,
+            thumb_col,
+        );
+    }
 }
 
 fn draw_scrollbar(

@@ -428,6 +428,10 @@ pub enum NodeKind {
         items: Vec<TreeItem>,
         selected: Option<usize>,
         scroll: f32,
+        cols: Vec<Vec<u16>>,
+        widths: Vec<f32>,
+        multi: Vec<usize>,
+        msel: bool,
     },
     Calendar {
         year: i32,
@@ -465,6 +469,13 @@ pub enum NodeKind {
     },
     Canvas {
         shapes: Vec<Shape>,
+        ox: f32,
+        oy: f32,
+        rx: f32,
+        ry: f32,
+        rw: f32,
+        rh: f32,
+        scroll: bool,
     },
     Term {
         lines: Vec<Vec<u16>>,
@@ -489,6 +500,59 @@ pub struct TreeItem {
     pub label: Vec<u16>,
     pub open: bool,
     pub leaf: bool,
+    pub values: Vec<Vec<u16>>,
+    pub bg: Option<u32>,
+    pub fg: Option<u32>,
+    pub icon: Option<String>,
+}
+
+impl TreeItem {
+    /// Создаёт строку без колонок, цветов и иконки.
+    pub fn new(depth: usize, label: Vec<u16>, open: bool, leaf: bool) -> Self {
+        Self {
+            depth,
+            label,
+            open,
+            leaf,
+            values: Vec::new(),
+            bg: None,
+            fg: None,
+            icon: None,
+        }
+    }
+}
+
+/// Высота заголовка колонок дерева в пикселях.
+pub const TREE_HEADER: f32 = 34.0;
+
+/// Границы колонок дерева: `(x, ширина)` в оконных координатах.
+pub fn column_bounds(r: Rect, ncol: usize, widths: &[f32]) -> Vec<(f32, f32)> {
+    let n = ncol.max(1);
+    let avail = (r.width - SCROLLBAR_W - 4.0).max(1.0);
+    let mut fixed = 0.0;
+    let mut free = 0usize;
+    for i in 0..n {
+        let w = widths.get(i).copied().unwrap_or(0.0);
+        if w > 0.0 {
+            fixed += w;
+        } else {
+            free += 1;
+        }
+    }
+    let rest = if free > 0 {
+        ((avail - fixed) / free as f32).max(40.0)
+    } else {
+        0.0
+    };
+    let mut out = Vec::with_capacity(n);
+    let mut x = r.x;
+    for i in 0..n {
+        let w = widths.get(i).copied().unwrap_or(0.0);
+        let w = if w > 0.0 { w } else { rest };
+        out.push((x, w));
+        x += w;
+    }
+    out
 }
 
 #[derive(Clone)]
@@ -497,6 +561,28 @@ pub struct Shape {
     pub args: [f32; 6],
     pub color: u32,
     pub text: Vec<u16>,
+    pub pts: Vec<f32>,
+}
+
+fn point_in_poly(px: f32, py: f32, pts: &[f32]) -> bool {
+    let n = pts.len() / 2;
+    if n < 3 {
+        return false;
+    }
+    let mut inside = false;
+    let mut j = n - 1;
+    for i in 0..n {
+        let (xi, yi) = (pts[i * 2], pts[i * 2 + 1]);
+        let (xj, yj) = (pts[j * 2], pts[j * 2 + 1]);
+        if (yi > py) != (yj > py) {
+            let t = (py - yi) / (yj - yi);
+            if px < xi + t * (xj - xi) {
+                inside = !inside;
+            }
+        }
+        j = i;
+    }
+    inside
 }
 
 fn near_segment(px: f32, py: f32, x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
@@ -624,11 +710,42 @@ pub type FocusQueue = Rc<RefCell<Option<(Option<NodeId>, Option<Vec<u16>>, bool)
 /// Прямоугольники узлов после раскладки, в координатах окна.
 pub type RectTable = Rc<RefCell<Vec<Rect>>>;
 
+/// Хук начала кадра; true — работа была, нужна перерисовка.
+pub type FrameHook = Box<dyn FnMut(&mut Tree) -> bool>;
+
+/// Колбэк указателя: индекс фигуры, x, y в координатах содержимого.
+pub type PointerCb = Box<dyn FnMut(&mut Tree, i32, f32, f32)>;
+
+/// Колбэк колеса: дельта в щелчках, x, y в координатах содержимого.
+pub type WheelCb = Box<dyn FnMut(&mut Tree, f32, f32, f32)>;
+
+/// Заявка на таймер: идентификатор, период в мс, одноразовость.
+pub struct TimerReq {
+    pub id: u64,
+    pub ms: f32,
+    pub once: bool,
+    pub cb: Box<dyn FnMut(&mut Tree)>,
+}
+
+pub type TimerQueue = Rc<RefCell<Vec<TimerReq>>>;
+pub type TimerKill = Rc<RefCell<Vec<u64>>>;
+
+/// Заявка на прокрутку канвы: узел, операция, четыре числа.
+/// Операция: 0 — область прокрутки, 1 — переход к точке.
+pub type CanvasQueue = Rc<RefCell<Vec<(NodeId, u8, f32, f32, f32, f32)>>>;
+
+/// Заявка дереву: узел, операция, список индексов.
+/// Операция: 0 — выделение, 1 — показать строку, 2 — раскрыть, 3 — свернуть.
+pub type TreeQueue = Rc<RefCell<Vec<(NodeId, u8, Vec<usize>)>>>;
+
 use std::time::{Duration, Instant};
 
 struct Timer {
+    id: u64,
     every: Duration,
     last: Instant,
+    once: bool,
+    dead: bool,
     cb: Box<dyn FnMut(&mut Tree)>,
 }
 
@@ -671,6 +788,13 @@ pub struct Tree {
     pending_focus: FocusQueue,
     rects: RectTable,
     timers: Vec<Timer>,
+    pending_timers: TimerQueue,
+    kill_timers: TimerKill,
+    pending_canvas: CanvasQueue,
+    pending_tree: TreeQueue,
+    on_point: HashMap<(usize, u8), PointerCb>,
+    on_wheel: HashMap<usize, WheelCb>,
+    on_frame: Option<FrameHook>,
     insp: bool,
     img_dirty: bool,
     ghosts: HashSet<usize>,
@@ -720,6 +844,13 @@ impl Tree {
             pending_focus: Rc::new(RefCell::new(None)),
             rects: Rc::new(RefCell::new(Vec::new())),
             timers: Vec::new(),
+            pending_timers: Rc::new(RefCell::new(Vec::new())),
+            kill_timers: Rc::new(RefCell::new(Vec::new())),
+            pending_canvas: Rc::new(RefCell::new(Vec::new())),
+            pending_tree: Rc::new(RefCell::new(Vec::new())),
+            on_point: HashMap::new(),
+            on_wheel: HashMap::new(),
+            on_frame: None,
             insp: false,
             img_dirty: false,
             ghosts: HashSet::new(),
@@ -1129,19 +1260,160 @@ impl Tree {
 
     /// Задаёт фигуры области рисования.
     pub fn set_canvas_shapes(&mut self, id: NodeId, data: Vec<Shape>) {
-        if let NodeKind::Canvas { shapes } = &mut self.nodes[id.0].kind {
+        if let NodeKind::Canvas { shapes, .. } = &mut self.nodes[id.0].kind {
             *shapes = data;
         }
+    }
+
+    /// Прокручивается ли область рисования.
+    pub fn is_canvas_scroll(&self, id: NodeId) -> bool {
+        matches!(&self.nodes[id.0].kind, NodeKind::Canvas { scroll, .. } if *scroll)
+    }
+
+    /// Возвращает смещение прокрутки области рисования.
+    pub fn canvas_offset(&self, id: NodeId) -> (f32, f32) {
+        if let NodeKind::Canvas { ox, oy, .. } = &self.nodes[id.0].kind {
+            (*ox, *oy)
+        } else {
+            (0.0, 0.0)
+        }
+    }
+
+    /// Возвращает очередь заявок на прокрутку канвы.
+    pub fn canvas_queue(&self) -> CanvasQueue {
+        self.pending_canvas.clone()
+    }
+
+    /// Применяет накопленные заявки; true — что-то изменилось.
+    pub fn apply_canvas_queue(&mut self) -> bool {
+        let list = std::mem::take(&mut *self.pending_canvas.borrow_mut());
+        if list.is_empty() {
+            return false;
+        }
+        for (id, op, a, b, c, d) in list {
+            if id.0 >= self.nodes.len() {
+                continue;
+            }
+            if op == 0 {
+                self.set_canvas_region(id, a, b, c, d);
+            } else {
+                self.set_canvas_view(id, a, b);
+            }
+        }
+        true
+    }
+
+    /// Задаёт виртуальную область прокрутки в координатах содержимого.
+    pub fn set_canvas_region(&mut self, id: NodeId, x1: f32, y1: f32, x2: f32, y2: f32) {
+        if let NodeKind::Canvas { rx, ry, rw, rh, .. } = &mut self.nodes[id.0].kind {
+            *rx = x1.min(x2);
+            *ry = y1.min(y2);
+            *rw = (x2 - x1).abs();
+            *rh = (y2 - y1).abs();
+        }
+        self.clamp_canvas(id);
+    }
+
+    /// Прокручивает область к точке содержимого.
+    pub fn set_canvas_view(&mut self, id: NodeId, x: f32, y: f32) {
+        if let NodeKind::Canvas { ox, oy, .. } = &mut self.nodes[id.0].kind {
+            *ox = x;
+            *oy = y;
+        }
+        self.clamp_canvas(id);
+    }
+
+    /// Сдвигает область прокрутки на `dx`, `dy` пикселей.
+    pub fn canvas_scroll_by(&mut self, id: NodeId, dx: f32, dy: f32) {
+        if let NodeKind::Canvas { ox, oy, .. } = &mut self.nodes[id.0].kind {
+            *ox += dx;
+            *oy += dy;
+        }
+        self.clamp_canvas(id);
+    }
+
+    fn clamp_canvas(&mut self, id: NodeId) {
+        let view = self.nodes[id.0].rect;
+        if let NodeKind::Canvas {
+            ox,
+            oy,
+            rx,
+            ry,
+            rw,
+            rh,
+            ..
+        } = &mut self.nodes[id.0].kind
+        {
+            let mx = (*rw - view.width).max(0.0);
+            let my = (*rh - view.height).max(0.0);
+            *ox = ox.clamp(*rx, *rx + mx);
+            *oy = oy.clamp(*ry, *ry + my);
+        }
+        self.dirty = true;
+    }
+
+    /// Задаёт колбэк указателя: 0 — нажатие, 1 — движение, 2 — отпускание, 3 — двойной.
+    pub fn set_on_point(&mut self, id: NodeId, phase: u8, cb: PointerCb) {
+        self.on_point.insert((id.0, phase), cb);
+    }
+
+    /// Задан ли колбэк указателя для фазы.
+    pub fn has_point(&self, id: NodeId, phase: u8) -> bool {
+        self.on_point.contains_key(&(id.0, phase))
+    }
+
+    /// Вызывает колбэк указателя; true — колбэк был задан.
+    pub fn fire_point(&mut self, id: NodeId, phase: u8, i: i32, x: f32, y: f32) -> bool {
+        match self.on_point.remove(&(id.0, phase)) {
+            Some(mut cb) => {
+                cb(self, i, x, y);
+                self.on_point.insert((id.0, phase), cb);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Задаёт колбэк колеса мыши над узлом.
+    pub fn set_on_wheel(&mut self, id: NodeId, cb: WheelCb) {
+        self.on_wheel.insert(id.0, cb);
+    }
+
+    /// Задан ли колбэк колеса для узла.
+    pub fn has_wheel(&self, id: NodeId) -> bool {
+        self.on_wheel.contains_key(&id.0)
+    }
+
+    /// Вызывает колбэк колеса; true — колбэк был задан.
+    pub fn fire_wheel(&mut self, id: NodeId, d: f32, x: f32, y: f32) -> bool {
+        match self.on_wheel.remove(&id.0) {
+            Some(mut cb) => {
+                cb(self, d, x, y);
+                self.on_wheel.insert(id.0, cb);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Переводит точку окна в систему координат содержимого узла.
+    pub fn canvas_local(&self, id: NodeId, x: f32, y: f32) -> (f32, f32) {
+        let r = self.nodes[id.0].rect;
+        let (ox, oy) = self.canvas_offset(id);
+        (x - r.x + ox, y - r.y + oy)
     }
 
     /// Индекс верхней фигуры под точкой; координаты — экранные.
     pub fn canvas_hit(&self, id: NodeId, x: f32, y: f32) -> Option<usize> {
         let node = &self.nodes[id.0];
-        let NodeKind::Canvas { shapes } = &node.kind else {
+        let NodeKind::Canvas {
+            shapes, ox, oy, ..
+        } = &node.kind
+        else {
             return None;
         };
-        let lx = x - node.rect.x;
-        let ly = y - node.rect.y;
+        let lx = x - node.rect.x + ox;
+        let ly = y - node.rect.y + oy;
         for (i, s) in shapes.iter().enumerate().rev() {
             let a = s.args;
             let hit = match s.kind {
@@ -1157,6 +1429,7 @@ impl Tree {
                     let tol = a[4].max(4.0);
                     near_segment(lx, ly, a[0], a[1], a[2], a[3]) <= tol
                 }
+                7 => point_in_poly(lx, ly, &s.pts),
                 _ => {
                     let dx = lx - a[0];
                     let dy = ly - a[1];
@@ -1409,18 +1682,52 @@ impl Tree {
         std::mem::take(&mut self.img_dirty)
     }
 
-    /// Добавляет периодический таймер с интервалом в миллисекундах.
-    pub fn add_timer<F: FnMut(&mut Tree) + 'static>(&mut self, ms: f32, f: F) {
-        self.timers.push(Timer {
-            every: Duration::from_secs_f32((ms.max(1.0)) / 1000.0),
-            last: Instant::now(),
+    /// Ставит таймер в очередь регистрации; `once` — одноразовый.
+    pub fn add_timer<F: FnMut(&mut Tree) + 'static>(
+        &mut self,
+        id: u64,
+        ms: f32,
+        once: bool,
+        f: F,
+    ) {
+        self.pending_timers.borrow_mut().push(TimerReq {
+            id,
+            ms,
+            once,
             cb: Box::new(f),
         });
     }
 
-    /// Есть ли активные таймеры.
+    /// Возвращает очередь регистрации таймеров.
+    pub fn timer_queue(&self) -> TimerQueue {
+        self.pending_timers.clone()
+    }
+
+    /// Возвращает очередь отмены таймеров.
+    pub fn kill_queue(&self) -> TimerKill {
+        self.kill_timers.clone()
+    }
+
+    /// Есть ли активные или ожидающие регистрации таймеры.
     pub fn has_timers(&self) -> bool {
-        !self.timers.is_empty()
+        !self.timers.is_empty() || !self.pending_timers.borrow().is_empty()
+    }
+
+    /// Задаёт хук начала кадра; вызывается до раскладки.
+    pub fn set_on_frame(&mut self, f: FrameHook) {
+        self.on_frame = Some(f);
+    }
+
+    /// Вызывает хук начала кадра; true — работа была.
+    pub fn fire_frame(&mut self) -> bool {
+        match self.on_frame.take() {
+            Some(mut f) => {
+                let done = f(self);
+                self.on_frame = Some(f);
+                done
+            }
+            None => false,
+        }
     }
 
     /// Разрешает вызов инспектора по F12.
@@ -1433,21 +1740,43 @@ impl Tree {
         self.insp
     }
 
-    /// Прогоняет созревшие таймеры.
-    pub fn tick_timers(&mut self) {
-        if self.timers.is_empty() {
-            return;
+    /// Прогоняет созревшие таймеры; true — хотя бы один сработал.
+    pub fn tick_timers(&mut self) -> bool {
+        let fresh = std::mem::take(&mut *self.pending_timers.borrow_mut());
+        for r in fresh {
+            self.timers.push(Timer {
+                id: r.id,
+                every: Duration::from_secs_f32(r.ms.max(1.0) / 1000.0),
+                last: Instant::now(),
+                once: r.once,
+                dead: false,
+                cb: r.cb,
+            });
         }
+        let kills = std::mem::take(&mut *self.kill_timers.borrow_mut());
+        if !kills.is_empty() {
+            self.timers.retain(|t| !kills.contains(&t.id));
+        }
+        if self.timers.is_empty() {
+            return false;
+        }
+        let mut fired = false;
         let mut list = std::mem::take(&mut self.timers);
         let now = Instant::now();
         for t in list.iter_mut() {
             if now.duration_since(t.last) >= t.every {
                 t.last = now;
+                if t.once {
+                    t.dead = true;
+                }
+                fired = true;
                 (t.cb)(self);
             }
         }
+        list.retain(|t| !t.dead);
         list.append(&mut self.timers);
         self.timers = list;
+        fired
     }
 
     /// Задаёт иконку узла из файла.
@@ -2002,6 +2331,139 @@ impl Tree {
                 .map(|it| (it.depth, it.label.clone(), it.open, it.leaf))
         } else {
             None
+        }
+    }
+
+    /// Заменяет строки дерева, сохраняя выбор в пределах длины.
+    pub fn set_tree_items(&mut self, id: NodeId, data: Vec<TreeItem>) {
+        if let NodeKind::TreeView {
+            items,
+            selected,
+            multi,
+            ..
+        } = &mut self.nodes[id.0].kind
+        {
+            if let Some(s) = selected {
+                if *s >= data.len() {
+                    *selected = None;
+                }
+            }
+            multi.retain(|i| *i < data.len());
+            *items = data;
+            self.dirty = true;
+        }
+    }
+
+    /// Число строк дерева.
+    pub fn tree_len(&self, id: NodeId) -> usize {
+        if let NodeKind::TreeView { items, .. } = &self.nodes[id.0].kind {
+            items.len()
+        } else {
+            0
+        }
+    }
+
+    /// Число колонок дерева; 0 — заголовка нет.
+    pub fn tree_cols(&self, id: NodeId) -> usize {
+        if let NodeKind::TreeView { cols, .. } = &self.nodes[id.0].kind {
+            cols.len()
+        } else {
+            0
+        }
+    }
+
+    /// Высота заголовка колонок конкретного дерева.
+    pub fn tree_head(&self, id: NodeId) -> f32 {
+        if self.tree_cols(id) == 0 {
+            0.0
+        } else {
+            TREE_HEADER
+        }
+    }
+
+    /// Границы колонок дерева в оконных координатах.
+    pub fn tree_bounds(&self, id: NodeId) -> Vec<(f32, f32)> {
+        if let NodeKind::TreeView { cols, widths, .. } = &self.nodes[id.0].kind {
+            column_bounds(self.nodes[id.0].rect, cols.len().max(1), widths)
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Возвращает очередь заявок дереву.
+    pub fn tree_queue(&self) -> TreeQueue {
+        self.pending_tree.clone()
+    }
+
+    /// Применяет накопленные заявки дереву; true — что-то изменилось.
+    pub fn apply_tree_queue(&mut self) -> bool {
+        let list = std::mem::take(&mut *self.pending_tree.borrow_mut());
+        if list.is_empty() {
+            return false;
+        }
+        for (id, op, arg) in list {
+            if id.0 >= self.nodes.len() {
+                continue;
+            }
+            if op == 0 {
+                let first = arg.first().copied();
+                self.set_tree_multi(id, arg);
+                self.set_tree_selected(id, first);
+            }
+        }
+        self.dirty = true;
+        true
+    }
+
+    /// Включён ли множественный выбор в дереве.
+    pub fn is_tree_msel(&self, id: NodeId) -> bool {
+        matches!(&self.nodes[id.0].kind, NodeKind::TreeView { msel, .. } if *msel)
+    }
+
+    /// Возвращает множественное выделение дерева.
+    pub fn tree_multi(&self, id: NodeId) -> Vec<usize> {
+        if let NodeKind::TreeView { multi, .. } = &self.nodes[id.0].kind {
+            multi.clone()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Задаёт множественное выделение дерева.
+    pub fn set_tree_multi(&mut self, id: NodeId, mut data: Vec<usize>) {
+        let n = self.tree_len(id);
+        data.retain(|i| *i < n);
+        data.sort_unstable();
+        data.dedup();
+        if let NodeKind::TreeView { multi, .. } = &mut self.nodes[id.0].kind {
+            *multi = data;
+        }
+        self.dirty = true;
+    }
+
+    /// Индекс колонки под точкой; 0 при отсутствии колонок.
+    pub fn tree_col_at(&self, id: NodeId, x: f32) -> usize {
+        let b = self.tree_bounds(id);
+        for (i, (cx, cw)) in b.iter().enumerate() {
+            if x >= *cx && x < *cx + *cw {
+                return i;
+            }
+        }
+        b.len().saturating_sub(1)
+    }
+
+    /// Пути иконок строк дерева для предзагрузки.
+    pub fn tree_icons(&self, out: &mut Vec<String>) {
+        for n in self.nodes.iter() {
+            if let NodeKind::TreeView { items, .. } = &n.kind {
+                for it in items.iter() {
+                    if let Some(p) = &it.icon {
+                        if !p.is_empty() {
+                            out.push(p.clone());
+                        }
+                    }
+                }
+            }
         }
     }
 
