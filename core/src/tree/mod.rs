@@ -504,6 +504,8 @@ pub struct TreeItem {
     pub bg: Option<u32>,
     pub fg: Option<u32>,
     pub icon: Option<String>,
+    pub cbg: Vec<Option<u32>>,
+    pub cfg: Vec<Option<u32>>,
 }
 
 impl TreeItem {
@@ -518,6 +520,8 @@ impl TreeItem {
             bg: None,
             fg: None,
             icon: None,
+            cbg: Vec::new(),
+            cfg: Vec::new(),
         }
     }
 }
@@ -738,6 +742,11 @@ pub type CanvasQueue = Rc<RefCell<Vec<(NodeId, u8, f32, f32, f32, f32)>>>;
 /// Операция: 0 — выделение, 1 — показать строку, 2 — раскрыть, 3 — свернуть.
 pub type TreeQueue = Rc<RefCell<Vec<(NodeId, u8, Vec<usize>)>>>;
 
+/// Геометрия дерева: прямоугольник, заголовок, прокрутка,
+/// границы колонок, порядок видимых строк.
+pub type TreeGeomRow = (Rect, f32, f32, Vec<(f32, f32)>, Vec<usize>);
+pub type TreeGeom = Rc<RefCell<HashMap<usize, TreeGeomRow>>>;
+
 use std::time::{Duration, Instant};
 
 struct Timer {
@@ -792,6 +801,7 @@ pub struct Tree {
     kill_timers: TimerKill,
     pending_canvas: CanvasQueue,
     pending_tree: TreeQueue,
+    geom_tree: TreeGeom,
     on_point: HashMap<(usize, u8), PointerCb>,
     on_wheel: HashMap<usize, WheelCb>,
     on_frame: Option<FrameHook>,
@@ -848,6 +858,7 @@ impl Tree {
             kill_timers: Rc::new(RefCell::new(Vec::new())),
             pending_canvas: Rc::new(RefCell::new(Vec::new())),
             pending_tree: Rc::new(RefCell::new(Vec::new())),
+            geom_tree: Rc::new(RefCell::new(HashMap::new())),
             on_point: HashMap::new(),
             on_wheel: HashMap::new(),
             on_frame: None,
@@ -2405,14 +2416,130 @@ impl Tree {
             if id.0 >= self.nodes.len() {
                 continue;
             }
-            if op == 0 {
-                let first = arg.first().copied();
-                self.set_tree_multi(id, arg);
-                self.set_tree_selected(id, first);
+            match op {
+                0 => {
+                    let first = arg.first().copied();
+                    self.set_tree_multi(id, arg);
+                    self.set_tree_selected(id, first);
+                }
+                1 => {
+                    if let Some(i) = arg.first() {
+                        self.open_ancestors(id, *i);
+                        self.tree_reveal(id, *i);
+                    }
+                }
+                _ => {
+                    let on = op == 2;
+                    if arg.is_empty() {
+                        let n = self.tree_len(id);
+                        for i in 0..n {
+                            self.set_tree_open(id, i, on);
+                        }
+                    } else {
+                        for i in arg {
+                            self.open_subtree(id, i, on);
+                        }
+                    }
+                    self.clamp_tree_scroll(id);
+                }
             }
         }
         self.dirty = true;
         true
+    }
+
+    /// Возвращает таблицу геометрии деревьев.
+    pub fn tree_geom(&self) -> TreeGeom {
+        self.geom_tree.clone()
+    }
+
+    /// Обновляет таблицу геометрии по текущей раскладке.
+    pub fn sync_tree_geom(&self) {
+        let mut map = self.geom_tree.borrow_mut();
+        map.clear();
+        for (i, n) in self.nodes.iter().enumerate() {
+            if !matches!(n.kind, NodeKind::TreeView { .. }) {
+                continue;
+            }
+            let id = NodeId(i);
+            map.insert(
+                i,
+                (
+                    n.rect,
+                    self.tree_head(id),
+                    self.tree_scroll(id),
+                    self.tree_bounds(id),
+                    self.tree_visible(id),
+                ),
+            );
+        }
+    }
+
+    fn set_tree_open(&mut self, id: NodeId, index: usize, on: bool) {
+        if let NodeKind::TreeView { items, .. } = &mut self.nodes[id.0].kind {
+            if let Some(it) = items.get_mut(index) {
+                if !it.leaf {
+                    it.open = on;
+                }
+            }
+        }
+    }
+
+    fn item_depth(&self, id: NodeId, index: usize) -> Option<usize> {
+        if let NodeKind::TreeView { items, .. } = &self.nodes[id.0].kind {
+            items.get(index).map(|it| it.depth)
+        } else {
+            None
+        }
+    }
+
+    fn open_subtree(&mut self, id: NodeId, index: usize, on: bool) {
+        let Some(base) = self.item_depth(id, index) else {
+            return;
+        };
+        self.set_tree_open(id, index, on);
+        let n = self.tree_len(id);
+        for i in index + 1..n {
+            match self.item_depth(id, i) {
+                Some(d) if d > base => self.set_tree_open(id, i, on),
+                _ => break,
+            }
+        }
+    }
+
+    fn open_ancestors(&mut self, id: NodeId, index: usize) {
+        let Some(mut want) = self.item_depth(id, index) else {
+            return;
+        };
+        let mut i = index;
+        while i > 0 && want > 0 {
+            i -= 1;
+            if let Some(d) = self.item_depth(id, i) {
+                if d < want {
+                    self.set_tree_open(id, i, true);
+                    want = d;
+                }
+            }
+        }
+    }
+
+    fn tree_reveal(&mut self, id: NodeId, index: usize) {
+        let vis = self.tree_visible(id);
+        let Some(pos) = vis.iter().position(|v| *v == index) else {
+            return;
+        };
+        let rect = self.nodes[id.0].rect;
+        let view = (rect.height - self.tree_head(id)).max(0.0);
+        let y = pos as f32 * LIST_ROW;
+        let mut s = self.tree_scroll(id);
+        if y < s {
+            s = y;
+        }
+        if y + LIST_ROW > s + view {
+            s = y + LIST_ROW - view;
+        }
+        let max = (vis.len() as f32 * LIST_ROW - view).max(0.0);
+        self.set_tree_scroll(id, s.clamp(0.0, max));
     }
 
     /// Включён ли множественный выбор в дереве.
@@ -2439,6 +2566,102 @@ impl Tree {
             *multi = data;
         }
         self.dirty = true;
+    }
+
+    /// Соседняя видимая строка: `step` −1 вверх, +1 вниз.
+    pub fn tree_step(&self, id: NodeId, step: i32) -> Option<usize> {
+        let vis = self.tree_visible(id);
+        if vis.is_empty() {
+            return None;
+        }
+        let cur = self
+            .tree_selected(id)
+            .and_then(|s| vis.iter().position(|v| *v == s));
+        let next = match cur {
+            Some(p) => {
+                let n = p as i32 + step;
+                n.clamp(0, vis.len() as i32 - 1) as usize
+            }
+            None => {
+                if step < 0 {
+                    vis.len() - 1
+                } else {
+                    0
+                }
+            }
+        };
+        Some(vis[next])
+    }
+
+    /// Первая или последняя видимая строка.
+    pub fn tree_edge(&self, id: NodeId, last: bool) -> Option<usize> {
+        let vis = self.tree_visible(id);
+        if last {
+            vis.last().copied()
+        } else {
+            vis.first().copied()
+        }
+    }
+
+    /// Родитель строки по глубине; `None` у корневых.
+    pub fn tree_parent(&self, id: NodeId, index: usize) -> Option<usize> {
+        let want = self.item_depth(id, index)?;
+        if want == 0 {
+            return None;
+        }
+        let mut i = index;
+        while i > 0 {
+            i -= 1;
+            if let Some(d) = self.item_depth(id, i) {
+                if d < want {
+                    return Some(i);
+                }
+            }
+        }
+        None
+    }
+
+    /// Раскрыта ли строка; для листьев всегда false.
+    pub fn tree_open(&self, id: NodeId, index: usize) -> bool {
+        if let NodeKind::TreeView { items, .. } = &self.nodes[id.0].kind {
+            items.get(index).map(|it| !it.leaf && it.open).unwrap_or(false)
+        } else {
+            false
+        }
+    }
+
+    /// Лист ли строка.
+    pub fn tree_leaf(&self, id: NodeId, index: usize) -> bool {
+        if let NodeKind::TreeView { items, .. } = &self.nodes[id.0].kind {
+            items.get(index).map(|it| it.leaf).unwrap_or(true)
+        } else {
+            true
+        }
+    }
+
+    /// Раскрывает или сворачивает одну строку.
+    pub fn open_row(&mut self, id: NodeId, index: usize, on: bool) {
+        self.set_tree_open(id, index, on);
+        self.clamp_tree_scroll(id);
+        self.dirty = true;
+    }
+
+    /// Возвращает прокрутку дерева в допустимые пределы.
+    pub fn clamp_tree_scroll(&mut self, id: NodeId) {
+        let rect = self.nodes[id.0].rect;
+        let view = (rect.height - self.tree_head(id)).max(0.0);
+        let content = self.tree_visible(id).len() as f32 * LIST_ROW;
+        let max = (content - view).max(0.0);
+        let cur = self.tree_scroll(id);
+        if cur > max {
+            self.set_tree_scroll(id, max);
+            self.dirty = true;
+        }
+    }
+
+    /// Прокручивает дерево так, чтобы строка была видна.
+    pub fn reveal_row(&mut self, id: NodeId, index: usize) {
+        self.tree_reveal(id, index);
     }
 
     /// Индекс колонки под точкой; 0 при отсутствии колонок.
@@ -2682,6 +2905,7 @@ impl Tree {
             || self.is_tabs(id)
             || self.is_table(id)
             || self.is_list(id)
+            || self.is_tree(id)
     }
 
     /// Является ли узел списком.

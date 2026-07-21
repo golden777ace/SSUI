@@ -211,6 +211,7 @@ pub struct Renderer {
     color_drag: Option<(NodeId, u8)>,
     canvas_drag: Option<NodeId>,
     canvas_pan: Option<(NodeId, f32, f32, f32, f32)>,
+    tree_bar: Option<NodeId>,
     popup: Option<Popup>,
     hover_since: Option<(NodeId, Instant)>,
     toast: Option<(Vec<u16>, Instant, f32)>,
@@ -419,6 +420,7 @@ impl Renderer {
                 color_drag: None,
                 canvas_drag: None,
                 canvas_pan: None,
+                tree_bar: None,
                 popup: None,
                 hover_since: None,
                 toast: None,
@@ -508,6 +510,7 @@ impl Renderer {
     pub fn pump(&mut self) -> bool {
         let posted = self.tree.fire_frame();
         let scrolled = self.tree.apply_canvas_queue() | self.tree.apply_tree_queue();
+        self.tree.sync_tree_geom();
         let now = Instant::now();
         let dt = (now - self.last_tick).as_secs_f32();
         self.last_tick = now;
@@ -906,6 +909,30 @@ impl Renderer {
         }
     }
 
+    fn select_tree_row(&mut self, id: NodeId, row: usize) {
+        self.tree.set_tree_selected(id, Some(row));
+        self.tree.reveal_row(id, row);
+        if self.tree.is_tree_msel(id) {
+            self.tree.set_tree_multi(id, vec![row]);
+            self.tree.fire_point(id, 7, row as i32, 0.0, 0.0);
+        } else {
+            self.tree.fire_change(id, row as f32);
+        }
+        self.tree.fire_point(id, 5, row as i32, 0.0, 0.0);
+    }
+
+    fn set_tree_scroll_from_y(&mut self, id: NodeId, y: f32) {
+        let r = self.tree.get(id).rect;
+        let head = self.tree.tree_head(id);
+        let vis = self.tree.tree_visible(id).len() as f32;
+        let view = (r.height - head).max(0.0);
+        let max = (vis * LIST_ROW - view).max(0.0);
+        let track_y = r.y + head + 2.0;
+        let track_h = (view - 4.0).max(1.0);
+        let t = ((y - track_y) / track_h).clamp(0.0, 1.0);
+        self.tree.set_tree_scroll(id, t * max);
+    }
+
     fn reveal_table_row(&mut self, id: NodeId, row: usize) {
         let r = self.tree.get(id).rect;
         let visible = (r.height - TABLE_HEADER).max(0.0);
@@ -1166,6 +1193,10 @@ impl Renderer {
         }
         if let Some((id, mode)) = self.color_drag {
             self.set_color_from(id, mode, x, y);
+            dirty = true;
+        }
+        if let Some(id) = self.tree_bar {
+            self.set_tree_scroll_from_y(id, y);
             dirty = true;
         }
         if let Some((id, sx, sy, px, py)) = self.canvas_pan {
@@ -1597,6 +1628,12 @@ impl Renderer {
                     self.focused = Some(id);
                     return true;
                 }
+                if self.scrollbar_zone(id, x) {
+                    self.tree_bar = Some(id);
+                    self.set_tree_scroll_from_y(id, y);
+                    self.focused = Some(id);
+                    return true;
+                }
                 let twice = self.is_double_click(x, y);
                 let i = ((y - r.y - head + scroll) / LIST_ROW).floor();
                 if i >= 0.0 && (i as usize) < vis.len() {
@@ -1607,6 +1644,7 @@ impl Renderer {
                         let ax = bounds[0].0 + 8.0 + depth as f32 * 18.0;
                         if !leaf && x >= ax && x <= ax + 20.0 {
                             self.tree.toggle_tree(id, item);
+                            self.tree.clamp_tree_scroll(id);
                         } else {
                             if self.tree.is_tree_msel(id) {
                                 let ctrl = key_down(0x11);
@@ -1682,7 +1720,7 @@ impl Renderer {
         let was_knob = self.knob_drag.take().is_some();
         let was_color = self.color_drag.take().is_some();
         let canvas_up = self.canvas_drag.take();
-        let was_pan = self.canvas_pan.take().is_some();
+        let was_pan = self.canvas_pan.take().is_some() | self.tree_bar.take().is_some();
         let was_selecting = self.text_selecting;
         self.text_selecting = false;
         if let Some(id) = click_id {
@@ -1830,6 +1868,51 @@ impl Renderer {
                 return true;
             }
             return true;
+        }
+        if self.open_menu.is_none() && self.open_dropdown.is_none() {
+            if let Some(id) = self.focused {
+                if self.tree.is_tree(id) {
+                    let step = match vk {
+                        0x26 => Some(-1),
+                        0x28 => Some(1),
+                        0x21 => Some(-8),
+                        0x22 => Some(8),
+                        _ => None,
+                    };
+                    if let Some(s) = step {
+                        if let Some(next) = self.tree.tree_step(id, s) {
+                            self.select_tree_row(id, next);
+                        }
+                        return true;
+                    }
+                    if vk == 0x24 || vk == 0x23 {
+                        if let Some(next) = self.tree.tree_edge(id, vk == 0x23) {
+                            self.select_tree_row(id, next);
+                        }
+                        return true;
+                    }
+                    if vk == 0x27 {
+                        if let Some(cur) = self.tree.tree_selected(id) {
+                            if !self.tree.tree_leaf(id, cur) && !self.tree.tree_open(id, cur) {
+                                self.tree.open_row(id, cur, true);
+                            } else if let Some(next) = self.tree.tree_step(id, 1) {
+                                self.select_tree_row(id, next);
+                            }
+                        }
+                        return true;
+                    }
+                    if vk == 0x25 {
+                        if let Some(cur) = self.tree.tree_selected(id) {
+                            if !self.tree.tree_leaf(id, cur) && self.tree.tree_open(id, cur) {
+                                self.tree.open_row(id, cur, false);
+                            } else if let Some(p) = self.tree.tree_parent(id, cur) {
+                                self.select_tree_row(id, p);
+                            }
+                        }
+                        return true;
+                    }
+                }
+            }
         }
         if self.open_menu.is_some() {
             let n = self.tree.menu_len();
@@ -2955,6 +3038,7 @@ impl Renderer {
                         }
                         let top = r.y + head_h;
                         let view = (r.height - head_h).max(0.0);
+                        canvas.push_clip(Rect::new(r.x, top, r.width, view));
                         let first = (*scroll / LIST_ROW).floor().max(0.0) as usize;
                         let span = (view / LIST_ROW).ceil() as usize + 2;
                         let last = (first + span).min(vis.len());
@@ -2977,6 +3061,22 @@ impl Renderer {
                             let fg = match it.fg {
                                 Some(c) => Color::hexa(c),
                                 None => color,
+                            };
+                            for (c, cell) in it.cbg.iter().enumerate() {
+                                let Some(col) = cell else { continue };
+                                let Some((cx, cw)) = bounds.get(c) else {
+                                    break;
+                                };
+                                canvas.fill_rounded_rect(
+                                    Rect::new(*cx + 1.0, ry + 2.0, (*cw - 2.0).max(0.0),
+                                              LIST_ROW - 4.0),
+                                    4.0,
+                                    Color::hexa(*col),
+                                );
+                            }
+                            let cell_fg = |c: usize| match it.cfg.get(c) {
+                                Some(Some(v)) => Color::hexa(*v),
+                                _ => fg,
                             };
                             let ax = bounds[0].0 + 8.0 + it.depth as f32 * 18.0;
                             if !it.leaf {
@@ -3013,7 +3113,7 @@ impl Renderer {
                                 &it.label,
                                 format_left,
                                 Rect::new(tx, ry, (name_end - tx - 6.0).max(0.0), LIST_ROW),
-                                fg,
+                                cell_fg(0),
                             );
                             for (c, val) in it.values.iter().enumerate() {
                                 if c + 1 >= bounds.len() {
@@ -3024,10 +3124,11 @@ impl Renderer {
                                     val,
                                     format_left,
                                     Rect::new(cx + 8.0, ry, (cw - 12.0).max(0.0), LIST_ROW),
-                                    fg,
+                                    cell_fg(c + 1),
                                 );
                             }
                         }
+                        canvas.pop_clip();
                         for c in 1..cols.len() {
                             canvas.fill_rounded_rect(
                                 Rect::new(bounds[c].0, r.y, 1.0, r.height),
@@ -3045,6 +3146,9 @@ impl Renderer {
                             theme.track,
                             theme.content,
                         );
+                        if ring == Some(id) {
+                            canvas.stroke_rect(r, 2.0, theme.accent);
+                        }
                         canvas.pop_clip();
                     }
                     NodeKind::Calendar { year, month, day } => {

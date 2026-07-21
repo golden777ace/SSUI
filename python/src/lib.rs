@@ -12,7 +12,8 @@ use ssui_core::platform::{dpi, Window as CoreWindow, WindowOpts};
 use ssui_core::tree::{
     Anim, AnimQueue, Axis, DialogData, DialogQueue, Ease, FocusQueue, NodeId, NodeKind,
     CanvasQueue, NoteData, NoteQueue, PointerCb, Props, RectTable, Shape, TextState,
-    TimerKill, TimerQueue, TimerReq, Tree, TreeItem, TreeQueue, WheelCb,
+    TimerKill, TimerQueue, TimerReq, Tree, TreeGeom, TreeItem, TreeQueue, WheelCb,
+    LIST_ROW,
 };
 use pyo3::types::PyAnyMethods;
 
@@ -108,6 +109,14 @@ fn tree_rows(items: &Bound<'_, PyAny>) -> PyResult<Vec<TreeItem>> {
             .and_then(|v| v.extract::<String>().ok())
             .map(|s| hexa(&s));
         let icon = pick("icon").and_then(|v| v.extract::<String>().ok());
+        let paint = |k: &str| -> Vec<Option<u32>> {
+            pick(k)
+                .and_then(|v| v.extract::<Vec<String>>().ok())
+                .unwrap_or_default()
+                .iter()
+                .map(|s| if s.is_empty() { None } else { Some(hexa(s)) })
+                .collect()
+        };
         out.push(TreeItem {
             depth,
             label: utf16(&text),
@@ -117,6 +126,8 @@ fn tree_rows(items: &Bound<'_, PyAny>) -> PyResult<Vec<TreeItem>> {
             bg,
             fg,
             icon,
+            cbg: paint("cbg"),
+            cfg: paint("cfg"),
         });
     }
     Ok(out)
@@ -627,6 +638,7 @@ struct PyWindow {
     kill_timers: TimerKill,
     canvas_queue: CanvasQueue,
     tree_queue: TreeQueue,
+    tree_geom: TreeGeom,
     extra: Rc<Extra>,
     hwnd: Rc<Cell<isize>>,
     share: Arc<Share>,
@@ -692,6 +704,7 @@ impl PyWindow {
         let kill_timers = tree.kill_queue();
         let canvas_queue = tree.canvas_queue();
         let tree_queue = tree.tree_queue();
+        let tree_geom = tree.tree_geom();
         let bindings: Bindings = Rc::new(RefCell::new(Vec::new()));
         let extra = Rc::new(Extra::default());
         EXTRAS.with(|m| {
@@ -719,6 +732,7 @@ impl PyWindow {
             kill_timers,
             canvas_queue,
             tree_queue,
+            tree_geom,
             extra,
             hwnd: Rc::new(Cell::new(0)),
             share: Arc::new(Share {
@@ -1753,6 +1767,40 @@ impl PyWindow {
     fn tre_sel(&self, node: PyNode, indexes: Vec<usize>) -> PyResult<()> {
         self.tree_queue.borrow_mut().push((node.id, 0, indexes));
         Ok(())
+    }
+
+    /// Прокручивает дерево к строке, раскрывая её предков.
+    fn tre_see(&self, node: PyNode, index: usize) -> PyResult<()> {
+        self.tree_queue.borrow_mut().push((node.id, 1, vec![index]));
+        Ok(())
+    }
+
+    /// Раскрывает или сворачивает поддеревья; пустой список — всё дерево.
+    #[pyo3(signature = (node, indexes=Vec::new(), *, on=true))]
+    fn tre_open(&self, node: PyNode, indexes: Vec<usize>, on: bool) -> PyResult<()> {
+        let op = if on { 2 } else { 3 };
+        self.tree_queue.borrow_mut().push((node.id, op, indexes));
+        Ok(())
+    }
+
+    /// Прямоугольник ячейки в координатах окна: `(x, y, w, h)`.
+    fn tre_cell(&self, node: PyNode, index: usize, col: usize) -> (f32, f32, f32, f32) {
+        let map = self.tree_geom.borrow();
+        let Some((rect, head, scroll, bounds, vis)) = map.get(&node.id.index()) else {
+            return (0.0, 0.0, 0.0, 0.0);
+        };
+        let Some(pos) = vis.iter().position(|v| *v == index) else {
+            return (0.0, 0.0, 0.0, 0.0);
+        };
+        let y = rect.y + head + pos as f32 * LIST_ROW - scroll;
+        if y + LIST_ROW < rect.y + head || y > rect.y + rect.height {
+            return (0.0, 0.0, 0.0, 0.0);
+        }
+        let (cx, cw) = match bounds.get(col) {
+            Some(v) => *v,
+            None => (rect.x, rect.width),
+        };
+        (cx, y, cw, LIST_ROW)
     }
 
     /// Постраничная навигация; `ch(page)` при смене страницы.
