@@ -815,6 +815,7 @@ pub struct Tree {
     fronts: HashSet<usize>,
     placeholders: HashMap<usize, Vec<u16>>,
     on_dialog: Option<Box<dyn FnMut(&mut Tree, usize)>>,
+    hotkeys: Vec<(u8, u32, Box<dyn FnMut(&mut Tree)>)>,
     tint: f32,
     blur_mode: u32,
     blur_tint: u32,
@@ -873,6 +874,7 @@ impl Tree {
             fronts: HashSet::new(),
             placeholders: HashMap::new(),
             on_dialog: None,
+            hotkeys: Vec::new(),
             tint: 0.0,
             blur_mode: 0,
             blur_tint: 0x40101418,
@@ -2111,6 +2113,32 @@ impl Tree {
             cb(self, index);
             self.on_dialog = Some(cb);
         }
+    }
+
+    /// Регистрирует горячую клавишу окна: маска модификаторов и код.
+    pub fn add_hotkey<F: FnMut(&mut Tree) + 'static>(&mut self, mods: u8, vk: u32, f: F) {
+        self.hotkeys.push((mods, vk, Box::new(f)));
+    }
+
+    /// Вызывает первый подходящий хоткей; true — если сработал.
+    pub fn fire_hotkey(&mut self, mods: u8, vk: u32) -> bool {
+        let vk = match vk {
+            0x6B => 0xBB,
+            0x6D => 0xBD,
+            _ => vk,
+        };
+        let mut list = std::mem::take(&mut self.hotkeys);
+        let mut hit = false;
+        for (m, k, cb) in list.iter_mut() {
+            if *m == mods && *k == vk {
+                cb(self);
+                hit = true;
+                break;
+            }
+        }
+        list.append(&mut self.hotkeys);
+        self.hotkeys = list;
+        hit
     }
 
     /// Реагирует ли узел на клик.

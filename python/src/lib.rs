@@ -394,6 +394,65 @@ fn run_binding<'py>(py: Python<'py>, f: &Py<PyAny>) -> Option<Bound<'py, PyAny>>
     }
 }
 
+/// Код клавиши по имени: буква, цифра, fN или именованная клавиша.
+fn key_vk(name: &str) -> Option<u32> {
+    Some(match name {
+        "enter" | "return" => 0x0D,
+        "space" => 0x20,
+        "tab" => 0x09,
+        "escape" | "esc" => 0x1B,
+        "delete" | "del" => 0x2E,
+        "backspace" => 0x08,
+        "insert" | "ins" => 0x2D,
+        "home" => 0x24,
+        "end" => 0x23,
+        "pageup" => 0x21,
+        "pagedown" => 0x22,
+        "left" => 0x25,
+        "up" => 0x26,
+        "right" => 0x27,
+        "down" => 0x28,
+        "plus" => 0xBB,
+        "minus" => 0xBD,
+        s if s.len() == 1 => {
+            let c = s.as_bytes()[0];
+            if c.is_ascii_lowercase() {
+                c.to_ascii_uppercase() as u32
+            } else if c.is_ascii_digit() {
+                c as u32
+            } else {
+                return None;
+            }
+        }
+        s if s.starts_with('f') => {
+            let n: u32 = s[1..].parse().ok()?;
+            if (1..=24).contains(&n) {
+                0x70 + n - 1
+            } else {
+                return None;
+            }
+        }
+        _ => return None,
+    })
+}
+
+/// Разбирает спецификацию хоткея в маску модификаторов и код клавиши.
+fn parse_hotkey(spec: &str) -> Option<(u8, u32)> {
+    let mut mods = 0u8;
+    let mut vk = None;
+    for part in spec.split('+') {
+        let p = part.trim().to_ascii_lowercase();
+        match p.as_str() {
+            "" => {}
+            "ctrl" | "control" => mods |= 1,
+            "shift" => mods |= 2,
+            "alt" => mods |= 4,
+            other => vk = Some(key_vk(other)?),
+        }
+    }
+    vk.map(|v| (mods, v))
+}
+
 #[pyclass(unsendable, name = "Ctx")]
 struct Ctx {
     stack: Stack,
@@ -3301,6 +3360,24 @@ impl PyWindow {
     /// Задаёт выделенные пункты списка; первый становится текущим.
     fn lst_sel(&self, node: PyNode, indexes: Vec<usize>) -> PyResult<()> {
         self.tree_queue.borrow_mut().push((node.id, 5, indexes));
+        Ok(())
+    }
+
+    /// Регистрирует горячую клавишу окна; молчит при фокусе в поле ввода.
+    fn hotkey(&mut self, spec: &str, f: PyObject) -> PyResult<()> {
+        let (mods, vk) = parse_hotkey(spec)
+            .ok_or_else(|| PyRuntimeError::new_err(format!("плохой хоткей: {spec}")))?;
+        let texts = self.bindings.clone();
+        let values = self.value_bindings.clone();
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        tree.add_hotkey(mods, vk, move |t| {
+            Python::with_gil(|py| {
+                if let Err(e) = f.bind(py).call0() {
+                    e.print(py);
+                }
+                refresh_all(py, t, &texts, &values);
+            });
+        });
         Ok(())
     }
 

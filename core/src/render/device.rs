@@ -1916,6 +1916,24 @@ impl Renderer {
                 return true;
             }
         }
+        if self.open_menu.is_none()
+            && self.open_dropdown.is_none()
+            && self.focused.map_or(true, |id| !self.tree.is_textbox(id))
+        {
+            let mut mods = 0u8;
+            if key_down(0x11) {
+                mods |= 1;
+            }
+            if key_down(0x10) {
+                mods |= 2;
+            }
+            if key_down(0x12) {
+                mods |= 4;
+            }
+            if self.tree.fire_hotkey(mods, vk) {
+                return true;
+            }
+        }
         if self.open_menu.is_none() && self.open_dropdown.is_none() {
             if let Some(id) = self.focused {
                 if self.tree.is_tree(id) {
