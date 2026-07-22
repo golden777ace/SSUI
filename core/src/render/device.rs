@@ -164,6 +164,7 @@ struct DialogView {
     buttons: Vec<Vec<u16>>,
     hover: Option<usize>,
     focus: Option<usize>,
+    msg_scroll: f32,
 }
 
 struct Popup {
@@ -653,6 +654,15 @@ impl Renderer {
 
     /// Прокручивает таблицу под курсором колесом мыши.
     pub fn on_wheel(&mut self, delta: i32) -> bool {
+        if self.dialog.is_some() {
+            let content_h = self.dialog_msg_height(392.0);
+            let max_scroll = (content_h - 96.0).max(0.0);
+            if let Some(d) = self.dialog.as_mut() {
+                let step = delta as f32 / 120.0 * 40.0;
+                d.msg_scroll = (d.msg_scroll - step).clamp(0.0, max_scroll);
+            }
+            return true;
+        }
         let (mx, my) = self.mouse;
         let mut node = self.hot;
         let mut guard = 0;
@@ -1049,6 +1059,31 @@ impl Renderer {
         btns.iter().position(|r| r.contains(x, y))
     }
 
+    /// Полная высота сообщения диалога при переносе по ширине области.
+    fn dialog_msg_height(&self, width: f32) -> f32 {
+        let d = match self.dialog.as_ref() {
+            Some(d) => d,
+            None => return 0.0,
+        };
+        if d.message.is_empty() {
+            return 0.0;
+        }
+        unsafe {
+            if let Ok(layout) = self.dwrite.CreateTextLayout(
+                &d.message,
+                &self.text_format_wrap,
+                width.max(1.0),
+                100000.0,
+            ) {
+                let mut m = DWRITE_TEXT_METRICS::default();
+                if layout.GetMetrics(&mut m).is_ok() {
+                    return m.height;
+                }
+            }
+        }
+        0.0
+    }
+
     /// Тип курсора под текущим положением мыши.
     pub fn cursor_kind(&self) -> CursorKind {
         match self.hot {
@@ -1300,7 +1335,7 @@ impl Renderer {
         if self.dialog.is_some() {
             if let Some(i) = self.dialog_button_at(x, y) {
                 self.dialog = None;
-                self.tree.fire_dialog(i);
+                self.tree.fire_dialog(i as i32);
             }
             return true;
         }
@@ -1897,6 +1932,7 @@ impl Renderer {
         if self.dialog.is_some() {
             if vk == 0x1B {
                 self.dialog = None;
+                self.tree.fire_dialog(-1);
                 return true;
             }
             if vk == 0x09 {
@@ -1933,8 +1969,9 @@ impl Renderer {
                     })
                 });
                 self.dialog = None;
-                if let Some(i) = idx {
-                    self.tree.fire_dialog(i);
+                match idx {
+                    Some(i) => self.tree.fire_dialog(i as i32),
+                    None => self.tree.fire_dialog(-1),
                 }
                 return true;
             }
@@ -2585,6 +2622,7 @@ impl Renderer {
                 buttons: data.buttons,
                 hover: None,
                 focus: None,
+                msg_scroll: 0.0,
             });
         }
     }
@@ -4475,7 +4513,23 @@ impl Renderer {
                     let tr = Rect::new(panel.x + 24.0, panel.y + 20.0, panel.width - 48.0, 34.0);
                     canvas.draw_text(&d.title, format_left, tr, theme.content);
                     let mr = Rect::new(panel.x + 24.0, panel.y + 60.0, panel.width - 48.0, 96.0);
-                    canvas.draw_text(&d.message, format_wrap, mr, theme.content);
+                    let content_h = self.dialog_msg_height(mr.width).max(mr.height);
+                    let max_scroll = (content_h - mr.height).max(0.0);
+                    let sc = d.msg_scroll.clamp(0.0, max_scroll);
+                    canvas.push_clip(mr);
+                    canvas.draw_text(
+                        &d.message,
+                        format_wrap,
+                        Rect::new(mr.x, mr.y - sc, mr.width, content_h),
+                        theme.content,
+                    );
+                    canvas.pop_clip();
+                    if max_scroll > 0.0 {
+                        draw_scrollbar(
+                            &canvas, mr, content_h, mr.height, sc,
+                            theme.track, theme.content,
+                        );
+                    }
                     for (i, br) in btns.iter().enumerate() {
                         let is_primary = i + 1 == btns.len();
                         let hovered_btn = d.hover == Some(i);

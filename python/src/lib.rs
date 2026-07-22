@@ -735,7 +735,7 @@ struct Dlg {
 
 #[pymethods]
 impl Dlg {
-    /// Показывает модальный диалог; `on(index)` по нажатию кнопки.
+    /// Показывает модальный диалог; `on(index)`, -1 при отмене (Esc).
     #[pyo3(signature = (title, message, buttons, *, on=None))]
     fn __call__(
         &self,
@@ -3947,6 +3947,7 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
                 t.set_meter_value(*id, v);
                 t.set_dial_value(*id, v);
                 t.set_stack_page(*id, v.max(0.0) as usize);
+                t.set_tabs_selected(*id, v.max(0.0) as usize);
                 t.set_image_fit(*id, v as u8);
                 if t.is_stack(*id) {
                     t.set_stack_page(*id, v.max(0.0) as usize);

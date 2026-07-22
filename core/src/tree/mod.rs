@@ -695,7 +695,7 @@ pub struct DialogData {
     pub title: Vec<u16>,
     pub message: Vec<u16>,
     pub buttons: Vec<Vec<u16>>,
-    pub cb: Box<dyn FnMut(&mut Tree, usize)>,
+    pub cb: Box<dyn FnMut(&mut Tree, i32)>,
 }
 
 pub type DialogQueue = Rc<RefCell<Option<DialogData>>>;
@@ -827,7 +827,7 @@ pub struct Tree {
     fronts: HashSet<usize>,
     placeholders: HashMap<usize, Vec<u16>>,
     image_bytes: HashMap<String, Vec<u8>>,
-    on_dialog: Option<Box<dyn FnMut(&mut Tree, usize)>>,
+    on_dialog: Option<Box<dyn FnMut(&mut Tree, i32)>>,
     hotkeys: Vec<(u8, u32, Box<dyn FnMut(&mut Tree)>)>,
     on_resize: Option<Box<dyn FnMut(&mut Tree, f32, f32)>>,
     tint: f32,
@@ -2131,12 +2131,12 @@ impl Tree {
     }
 
     /// Устанавливает колбэк активного диалога.
-    pub fn set_dialog_cb(&mut self, cb: Box<dyn FnMut(&mut Tree, usize)>) {
+    pub fn set_dialog_cb(&mut self, cb: Box<dyn FnMut(&mut Tree, i32)>) {
         self.on_dialog = Some(cb);
     }
 
-    /// Вызывает колбэк диалога с выбранной кнопкой.
-    pub fn fire_dialog(&mut self, index: usize) {
+    /// Вызывает колбэк диалога; `index` = -1 при отмене (Esc).
+    pub fn fire_dialog(&mut self, index: i32) {
         if let Some(mut cb) = self.on_dialog.take() {
             cb(self, index);
             self.on_dialog = Some(cb);
