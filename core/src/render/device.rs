@@ -1370,8 +1370,34 @@ impl Renderer {
             }
             if self.tree.is_list(id) {
                 if let Some(ri) = self.list_row_at(id, y) {
-                    self.tree.set_list_selected(id, Some(ri));
-                    self.tree.fire_change(id, ri as f32);
+                    if self.tree.is_list_msel(id) {
+                        let ctrl = key_down(0x11);
+                        let shift = key_down(0x10);
+                        let mut sel = self.tree.list_multi(id);
+                        if shift {
+                            let a = self.tree.list_selected(id).unwrap_or(ri);
+                            let lo = a.min(ri);
+                            let hi = a.max(ri);
+                            sel = (lo..=hi).collect();
+                        } else if ctrl {
+                            match sel.iter().position(|v| *v == ri) {
+                                Some(p) => {
+                                    sel.remove(p);
+                                }
+                                None => sel.push(ri),
+                            }
+                        } else {
+                            sel = vec![ri];
+                        }
+                        self.tree.set_list_multi(id, sel);
+                        if !shift {
+                            self.tree.set_list_selected(id, Some(ri));
+                        }
+                        self.tree.fire_point(id, 7, ri as i32, 0.0, 0.0);
+                    } else {
+                        self.tree.set_list_selected(id, Some(ri));
+                        self.tree.fire_change(id, ri as f32);
+                    }
                 }
                 self.focused = Some(id);
                 return true;
@@ -2110,7 +2136,12 @@ impl Renderer {
                         ns = top + LIST_ROW - vis;
                     }
                     self.tree.set_list_scroll(id, ns.max(0.0));
-                    self.tree.fire_change(id, next as f32);
+                    if self.tree.is_list_msel(id) {
+                        self.tree.set_list_multi(id, vec![next]);
+                        self.tree.fire_point(id, 7, next as i32, 0.0, 0.0);
+                    } else {
+                        self.tree.fire_change(id, next as f32);
+                    }
                     return true;
                 }
                 return false;
@@ -3900,6 +3931,8 @@ impl Renderer {
                         items,
                         selected,
                         scroll,
+                        multi,
+                        ..
                     } => {
                         let r = node.rect;
                         canvas.push_clip(r);
@@ -3922,7 +3955,7 @@ impl Renderer {
                             let item = &items[i];
                             let iy = r.y - *scroll + LIST_ROW * i as f32;
                             let row_rect = Rect::new(r.x, iy, r.width, LIST_ROW);
-                            if *selected == Some(i) {
+                            if *selected == Some(i) || multi.contains(&i) {
                                 canvas.fill_rounded_rect(row_rect, 0.0, theme.selection);
                             } else if hover_row == Some(i) {
                                 canvas.fill_rounded_rect(row_rect, 0.0, theme.track);

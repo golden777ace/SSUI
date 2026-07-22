@@ -901,18 +901,34 @@ class W:
 
     # --- Списки и данные ---
     def lst(
-        self,
-        items: list[str],
-        *,
-        pr: Optional[Node] = None,
-        sel: Optional[int] = None,
-        ch: Optional[Callable[[int], None]] = None,
-        pd: float = 0.0,
-        gp: float = 0.0,
-        w: Optional[float] = None,
-        h: Optional[float] = None,
+            self,
+            items: list[str],
+            *,
+            pr: Optional[Node] = None,
+            sel: Optional[int] | Optional[list[int]] = None,
+            multi: bool = False,
+            ch: Optional[Callable[[int], None]]
+                | Optional[Callable[[list[int]], None]] = None,
+            pd: float = 0.0,
+            gp: float = 0.0,
+            w: Optional[float] = None,
+            h: Optional[float] = None,
     ) -> Node:
-        """Список с выбором пункта."""
+        """Список с выбором пункта.
+
+        `multi` включает множественный выбор: Ctrl добавляет и
+        убирает пункт, Shift выделяет диапазон от текущего.
+        Форма `ch` определяется этим флагом: при `multi=False`
+        приходит индекс, при `multi=True` — список индексов.
+        `sel` задаёт начальный выбор: число или список номеров.
+        """
+
+    def lst_sel(self, node: Node, indexes: list[int]) -> None:
+        """Задаёт выделенные пункты; первый становится текущим.
+
+        Безопасно вызывать из колбэков и после показа окна.
+        Индексы вне длины списка отбрасываются.
+        """
     def tbl(
         self,
         columns: list[str],

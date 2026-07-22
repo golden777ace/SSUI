@@ -367,6 +367,8 @@ pub enum NodeKind {
         items: Vec<Vec<u16>>,
         selected: Option<usize>,
         scroll: f32,
+        multi: Vec<usize>,
+        msel: bool,
     },
     Group {
         title: Vec<u16>,
@@ -2483,6 +2485,14 @@ impl Tree {
                         self.reveal_table(id, *i);
                     }
                 }
+                5 => {
+                    let first = arg.first().copied();
+                    self.set_list_multi(id, arg);
+                    self.set_list_selected(id, first);
+                    if let Some(i) = first {
+                        self.reveal_list(id, i);
+                    }
+                }
                 _ => {
                     let on = op == 2;
                     if arg.is_empty() {
@@ -3029,7 +3039,7 @@ impl Tree {
     /// Заменяет пункты списка, сохраняя выбор в пределах длины.
     pub fn set_list_items(&mut self, id: NodeId, data: Vec<Vec<u16>>) {
         if let NodeKind::List {
-            items, selected, ..
+            items, selected, multi, ..
         } = &mut self.nodes[id.0].kind
         {
             if let Some(s) = selected {
@@ -3037,6 +3047,7 @@ impl Tree {
                     *selected = None;
                 }
             }
+            multi.retain(|i| *i < data.len());
             *items = data;
             self.dirty = true;
         }
@@ -3056,6 +3067,49 @@ impl Tree {
         if let NodeKind::List { scroll, .. } = &mut self.nodes[id.0].kind {
             *scroll = value;
         }
+    }
+
+    /// Включён ли множественный выбор списка.
+    pub fn is_list_msel(&self, id: NodeId) -> bool {
+        matches!(&self.nodes[id.0].kind, NodeKind::List { msel, .. } if *msel)
+    }
+
+    /// Возвращает множественное выделение списка.
+    pub fn list_multi(&self, id: NodeId) -> Vec<usize> {
+        if let NodeKind::List { multi, .. } = &self.nodes[id.0].kind {
+            multi.clone()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Задаёт множественное выделение списка.
+    pub fn set_list_multi(&mut self, id: NodeId, mut data: Vec<usize>) {
+        let n = self.list_len(id);
+        data.retain(|i| *i < n);
+        data.sort_unstable();
+        data.dedup();
+        if let NodeKind::List { multi, .. } = &mut self.nodes[id.0].kind {
+            *multi = data;
+        }
+        self.dirty = true;
+    }
+
+    /// Прокручивает список так, чтобы строка была видна.
+    pub fn reveal_list(&mut self, id: NodeId, index: usize) {
+        let r = self.nodes[id.0].rect;
+        let view = r.height.max(0.0);
+        let n = self.list_len(id);
+        let content = n as f32 * LIST_ROW;
+        let max = (content - view).max(0.0);
+        let top = index as f32 * LIST_ROW;
+        let mut scroll = self.list_scroll(id);
+        if top < scroll {
+            scroll = top;
+        } else if top + LIST_ROW > scroll + view {
+            scroll = top + LIST_ROW - view;
+        }
+        self.set_list_scroll(id, scroll.clamp(0.0, max));
     }
 
     /// Список фокусируемых узлов в порядке обхода дерева.

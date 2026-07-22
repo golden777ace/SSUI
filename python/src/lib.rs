@@ -3215,13 +3215,17 @@ impl PyWindow {
         Ok(())
     }
 
-    /// Добавляет список; `ch(index)` при выборе пункта.
-    #[pyo3(signature = (items, *, pr=None, sel=None, ch=None, pd=0.0, gp=0.0, w=None, h=None))]
+    /// Добавляет список; `ch` — индекс, при `multi` — список индексов.
+    #[pyo3(signature = (items, *, pr=None, sel=None, multi=false, ch=None,
+                        pd=0.0, gp=0.0, w=None, h=None))]
+    #[allow(clippy::too_many_arguments)]
     fn lst(
         &mut self,
+        py: Python,
         items: Vec<String>,
         pr: Option<PyNode>,
-        sel: Option<usize>,
+        sel: Option<PyObject>,
+        multi: bool,
         ch: Option<PyObject>,
         pd: f32,
         gp: f32,
@@ -3231,6 +3235,17 @@ impl PyWindow {
         let h = h.or(Some(240.0));
         let props = make_props("v", pd, gp, w, h);
         let its: Vec<Vec<u16>> = items.iter().map(|s| utf16(s)).collect();
+        let picks: Vec<usize> = match &sel {
+            Some(o) => {
+                let b = o.bind(py);
+                match b.extract::<usize>() {
+                    Ok(i) => vec![i],
+                    Err(_) => b.extract::<Vec<usize>>().unwrap_or_default(),
+                }
+            }
+            None => Vec::new(),
+        };
+        let first = picks.first().copied();
         let parent = self.parent_of(pr);
         let texts = self.bindings.clone();
         let values = self.value_bindings.clone();
@@ -3239,14 +3254,20 @@ impl PyWindow {
             parent,
             NodeKind::List {
                 items: its,
-                selected: sel,
+                selected: first,
                 scroll: 0.0,
+                multi: Vec::new(),
+                msel: multi,
             },
             props,
         );
+        if multi && !picks.is_empty() {
+            tree.set_list_multi(id, picks);
+        }
+        let (ch_one, ch_many) = if multi { (None, ch) } else { (ch, None) };
         tree.set_on_change(id, move |t, v| {
             Python::with_gil(|py| {
-                if let Some(cb) = &ch {
+                if let Some(cb) = &ch_one {
                     if let Err(e) = cb.bind(py).call1((v as i64,)) {
                         e.print(py);
                     }
@@ -3254,6 +3275,20 @@ impl PyWindow {
                 refresh_all(py, t, &texts, &values);
             });
         });
+        if let Some(f) = ch_many {
+            let ct = self.bindings.clone();
+            let cv = self.value_bindings.clone();
+            let cb: PointerCb = Box::new(move |t, _, _, _| {
+                let list = t.list_multi(id);
+                Python::with_gil(|py| {
+                    if let Err(e) = f.bind(py).call1((list,)) {
+                        e.print(py);
+                    }
+                    refresh_all(py, t, &ct, &cv);
+                });
+            });
+            tree.set_on_point(id, 7, cb);
+        }
         Ok(PyNode { id })
     }
 
@@ -3261,6 +3296,12 @@ impl PyWindow {
     fn lstv(&self, n: PyNode) -> PyResult<i64> {
         let tree = self.tree.as_ref().ok_or_else(consumed)?;
         Ok(tree.list_selected(n.id).map_or(-1, |i| i as i64))
+    }
+
+    /// Задаёт выделенные пункты списка; первый становится текущим.
+    fn lst_sel(&self, node: PyNode, indexes: Vec<usize>) -> PyResult<()> {
+        self.tree_queue.borrow_mut().push((node.id, 5, indexes));
+        Ok(())
     }
 
     /// Добавляет таблицу; `hl`/`vl` — толщина разделителей строк и столбцов.
