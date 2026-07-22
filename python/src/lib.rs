@@ -175,6 +175,7 @@ struct Share {
 static POSTS: Mutex<Vec<(u64, Py<PyAny>)>> = Mutex::new(Vec::new());
 static WIN_SEQ: AtomicU64 = AtomicU64::new(0);
 static TIMER_SEQ: AtomicU64 = AtomicU64::new(0);
+static MEM_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Разбирает очередь вызовов окна `id`; true — что-то выполнено.
 fn drain_posts(share: &Share, t: &mut Tree, texts: &Bindings, values: &Bindings) -> bool {
@@ -1595,8 +1596,8 @@ impl PyWindow {
         Ok(PyNode { id })
     }
 
-    /// Добавляет изображение; `src_bind` — путь из колбэка.
-    #[pyo3(signature = (src="", *, pr=None, src_bind=None, fit="contain", fit_bind=None, pd=0.0, gp=0.0, w=None, h=None))]
+    /// Добавляет изображение; `src_bind` — путь, `data` — PNG/JPEG из памяти.
+    #[pyo3(signature = (src="", *, pr=None, src_bind=None, data=None, fit="contain", fit_bind=None, pd=0.0, gp=0.0, w=None, h=None))]
     #[allow(clippy::too_many_arguments)]
     fn img(
         &mut self,
@@ -1604,6 +1605,7 @@ impl PyWindow {
         src: &str,
         pr: Option<PyNode>,
         src_bind: Option<PyObject>,
+        data: Option<Vec<u8>>,
         fit: &str,
         fit_bind: Option<PyObject>,
         pd: f32,
@@ -1622,7 +1624,15 @@ impl PyWindow {
         };
         let parent = self.parent_of(pr);
         let tree = self.tree.as_mut().ok_or_else(consumed)?;
-        let id = tree.add_child(parent, NodeKind::Image { path, fit: code }, props);
+        let key = match data {
+            Some(bytes) => {
+                let k = format!("mem:{}", MEM_SEQ.fetch_add(1, Ordering::Relaxed) + 1);
+                tree.set_image_bytes(k.clone(), bytes);
+                k
+            }
+            None => path,
+        };
+        let id = tree.add_child(parent, NodeKind::Image { path: key, fit: code }, props);
         if let Some(f) = fit_bind {
             self.value_bindings.borrow_mut().push((id, f));
         }

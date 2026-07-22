@@ -687,6 +687,7 @@ class W:
             *,
             pr: Optional[Node] = None,
             src_bind: Optional[Callable[[], str]] = None,
+            data: Optional[bytes] = None,
             fit: str = "contain",
             fit_bind: Optional[Callable[[], float]] = None,
             pd: float = 0.0,
@@ -694,13 +695,18 @@ class W:
             w: Optional[float] = None,
             h: Optional[float] = None,
     ) -> Node:
-        """Изображение из файла.
+        """Изображение из файла или из памяти.
 
         `src` — путь к файлу; `src_bind` — путь из колбэка,
         пересчитывается каждый кадр.
         Кадр анимированного GIF выбирается суффиксом: `"logo.gif|3"`.
         `fit`/`fit_bind` — режим вписывания:
         `contain`, `cover`, `fill`, `none`.
+
+        `data` — байты закодированного изображения (PNG/JPEG),
+        например график matplotlib из `BytesIO`. Задаётся при
+        создании и имеет приоритет над `src`; с `src_bind` не
+        сочетается.
         """
     def sep(
         self,

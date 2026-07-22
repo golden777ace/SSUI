@@ -826,6 +826,7 @@ pub struct Tree {
     ghosts: HashSet<usize>,
     fronts: HashSet<usize>,
     placeholders: HashMap<usize, Vec<u16>>,
+    image_bytes: HashMap<String, Vec<u8>>,
     on_dialog: Option<Box<dyn FnMut(&mut Tree, usize)>>,
     hotkeys: Vec<(u8, u32, Box<dyn FnMut(&mut Tree)>)>,
     on_resize: Option<Box<dyn FnMut(&mut Tree, f32, f32)>>,
@@ -887,6 +888,7 @@ impl Tree {
             ghosts: HashSet::new(),
             fronts: HashSet::new(),
             placeholders: HashMap::new(),
+            image_bytes: HashMap::new(),
             on_dialog: None,
             hotkeys: Vec::new(),
             on_resize: None,
@@ -1709,6 +1711,17 @@ impl Tree {
                 self.img_dirty = true;
             }
         }
+    }
+
+    /// Регистрирует байты изображения под ключом (например `mem:1`).
+    pub fn set_image_bytes(&mut self, key: String, data: Vec<u8>) {
+        self.image_bytes.insert(key, data);
+        self.img_dirty = true;
+    }
+
+    /// Возвращает байты изображения по ключу.
+    pub fn image_bytes(&self, key: &str) -> Option<Vec<u8>> {
+        self.image_bytes.get(key).cloned()
     }
 
     /// Забирает флаг необходимости дозагрузки изображений.

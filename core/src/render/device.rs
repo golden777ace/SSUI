@@ -2502,7 +2502,14 @@ impl Renderer {
             if self.img_cache.contains_key(&p) {
                 continue;
             }
-            let bmp = load_bitmap(&wic, &self.rt, &p);
+            let bmp = if p.starts_with("mem:") {
+                match self.tree.image_bytes(&p) {
+                    Some(mut data) => load_bitmap_mem(&wic, &self.rt, &mut data),
+                    None => None,
+                }
+            } else {
+                load_bitmap(&wic, &self.rt, &p)
+            };
             self.img_cache.insert(p, bmp);
         }
     }
@@ -4680,6 +4687,32 @@ fn load_bitmap(
             .ok()?;
         let total = decoder.GetFrameCount().unwrap_or(1);
         let frame = decoder.GetFrame(index.min(total.saturating_sub(1))).ok()?;
+        let conv = wic.CreateFormatConverter().ok()?;
+        conv.Initialize(
+            &frame,
+            &GUID_WICPixelFormat32bppPBGRA,
+            WICBitmapDitherTypeNone,
+            None,
+            0.0,
+            WICBitmapPaletteTypeMedianCut,
+        )
+        .ok()?;
+        rt.CreateBitmapFromWicBitmap(&conv, None).ok()
+    }
+}
+
+fn load_bitmap_mem(
+    wic: &IWICImagingFactory,
+    rt: &ID2D1RenderTarget,
+    data: &mut [u8],
+) -> Option<ID2D1Bitmap> {
+    unsafe {
+        let stream = wic.CreateStream().ok()?;
+        stream.InitializeFromMemory(data).ok()?;
+        let decoder = wic
+            .CreateDecoderFromStream(&stream, std::ptr::null(), WICDecodeMetadataCacheOnLoad)
+            .ok()?;
+        let frame = decoder.GetFrame(0).ok()?;
         let conv = wic.CreateFormatConverter().ok()?;
         conv.Initialize(
             &frame,
