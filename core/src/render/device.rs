@@ -539,6 +539,16 @@ impl Renderer {
         self.tree.has_timers()
     }
 
+    /// Забирает запросы файловых диалогов для показа.
+    pub fn take_files(&mut self) -> Vec<crate::tree::FileReq> {
+        self.tree.take_files()
+    }
+
+    /// Доставляет выбранный путь колбэку файлового диалога.
+    pub fn deliver_file(&mut self, req: crate::tree::FileReq, path: String) {
+        self.tree.deliver_file(req, path);
+    }
+
     /// Продвигает анимации по таймеру; true, если нужна перерисовка.
     pub fn on_timer(&mut self) -> bool {
         self.pump()
@@ -4851,7 +4861,7 @@ fn to_crlf(text: &[u16]) -> Vec<u16> {
     out
 }
 
-fn set_clipboard_text(text: &[u16]) {
+pub fn set_clipboard_text(text: &[u16]) {
     unsafe {
         if OpenClipboard(None).is_err() {
             return;
@@ -4872,7 +4882,7 @@ fn set_clipboard_text(text: &[u16]) {
     }
 }
 
-fn get_clipboard_text() -> Vec<u16> {
+pub fn get_clipboard_text() -> Vec<u16> {
     let mut out = Vec::new();
     unsafe {
         if OpenClipboard(None).is_err() {

@@ -745,6 +745,17 @@ pub type CanvasQueue = Rc<RefCell<Vec<(NodeId, u8, f32, f32, f32, f32)>>>;
 /// Операция: 0 — выделение, 1 — показать строку, 2 — раскрыть, 3 — свернуть.
 pub type TreeQueue = Rc<RefCell<Vec<(NodeId, u8, Vec<usize>)>>>;
 
+/// Запрос файлового диалога: режим 0 — открыть, 1 — сохранить, 2 — папка.
+pub struct FileReq {
+    pub mode: u8,
+    pub title: String,
+    pub name: String,
+    pub patterns: Vec<(String, String)>,
+    pub cb: Box<dyn FnMut(&mut Tree, String)>,
+}
+
+pub type FileQueue = Rc<RefCell<Vec<FileReq>>>;
+
 /// Геометрия дерева: прямоугольник, заголовок, прокрутка,
 /// границы колонок, порядок видимых строк.
 pub type TreeGeomRow = (Rect, f32, f32, Vec<(f32, f32)>, Vec<usize>);
@@ -804,6 +815,7 @@ pub struct Tree {
     kill_timers: TimerKill,
     pending_canvas: CanvasQueue,
     pending_tree: TreeQueue,
+    pending_files: FileQueue,
     geom_tree: TreeGeom,
     popup_layer: Option<NodeId>,
     on_point: HashMap<(usize, u8), PointerCb>,
@@ -863,6 +875,7 @@ impl Tree {
             kill_timers: Rc::new(RefCell::new(Vec::new())),
             pending_canvas: Rc::new(RefCell::new(Vec::new())),
             pending_tree: Rc::new(RefCell::new(Vec::new())),
+            pending_files: Rc::new(RefCell::new(Vec::new())),
             geom_tree: Rc::new(RefCell::new(HashMap::new())),
             popup_layer: None,
             on_point: HashMap::new(),
@@ -2483,6 +2496,21 @@ impl Tree {
     /// Возвращает очередь заявок дереву.
     pub fn tree_queue(&self) -> TreeQueue {
         self.pending_tree.clone()
+    }
+
+    /// Возвращает очередь файловых диалогов.
+    pub fn file_queue(&self) -> FileQueue {
+        self.pending_files.clone()
+    }
+
+    /// Забирает накопленные запросы файловых диалогов.
+    pub fn take_files(&mut self) -> Vec<FileReq> {
+        std::mem::take(&mut *self.pending_files.borrow_mut())
+    }
+
+    /// Вызывает колбэк файлового диалога с выбранным путём.
+    pub fn deliver_file(&mut self, mut req: FileReq, path: String) {
+        (req.cb)(self, path);
     }
 
     /// Применяет накопленные заявки дереву; true — что-то изменилось.

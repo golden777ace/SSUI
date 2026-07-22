@@ -10,9 +10,9 @@ use pyo3::wrap_pyfunction;
 
 use ssui_core::platform::{dpi, Window as CoreWindow, WindowOpts};
 use ssui_core::tree::{
-    Anim, AnimQueue, Axis, DialogData, DialogQueue, Ease, FocusQueue, NodeId, NodeKind,
-    CanvasQueue, NoteData, NoteQueue, PointerCb, Props, RectTable, Shape, TextState,
-    TimerKill, TimerQueue, TimerReq, Tree, TreeGeom, TreeItem, TreeQueue, WheelCb,
+    Anim, AnimQueue, Axis, DialogData, DialogQueue, Ease, FileQueue, FileReq, FocusQueue,
+    NodeId, NodeKind, CanvasQueue, NoteData, NoteQueue, PointerCb, Props, RectTable, Shape,
+    TextState, TimerKill, TimerQueue, TimerReq, Tree, TreeGeom, TreeItem, TreeQueue, WheelCb,
     LIST_ROW, OFF_COORD,
 };
 use pyo3::types::PyAnyMethods;
@@ -536,6 +536,97 @@ impl Rct {
     }
 }
 
+#[pyclass(unsendable, name = "Fl")]
+struct Fl {
+    queue: FileQueue,
+    share: Arc<Share>,
+    texts: Bindings,
+    values: Bindings,
+}
+
+impl Fl {
+    fn push(
+        &self,
+        mode: u8,
+        title: &str,
+        name: &str,
+        patterns: Vec<(String, String)>,
+        on: Option<PyObject>,
+    ) {
+        let texts = self.texts.clone();
+        let values = self.values.clone();
+        let cb: Box<dyn FnMut(&mut Tree, String)> = Box::new(move |t, path| {
+            Python::with_gil(|py| {
+                if let Some(f) = &on {
+                    if let Err(e) = f.bind(py).call1((path,)) {
+                        e.print(py);
+                    }
+                }
+                refresh_all(py, t, &texts, &values);
+            });
+        });
+        self.queue.borrow_mut().push(FileReq {
+            mode,
+            title: title.to_string(),
+            name: name.to_string(),
+            patterns,
+            cb,
+        });
+        CoreWindow::post_files(self.share.hwnd.load(Ordering::Acquire));
+    }
+}
+
+#[pymethods]
+impl Fl {
+    /// Диалог выбора файла; `on(path)` с путём или "" при отмене.
+    #[pyo3(signature = (*, title="", patterns=Vec::new(), on=None))]
+    fn open(
+        &self,
+        title: &str,
+        patterns: Vec<(String, String)>,
+        on: Option<PyObject>,
+    ) -> PyResult<()> {
+        self.push(0, title, "", patterns, on);
+        Ok(())
+    }
+
+    /// Диалог сохранения; `name` — имя по умолчанию.
+    #[pyo3(signature = (*, title="", name="", patterns=Vec::new(), on=None))]
+    fn save(
+        &self,
+        title: &str,
+        name: &str,
+        patterns: Vec<(String, String)>,
+        on: Option<PyObject>,
+    ) -> PyResult<()> {
+        self.push(1, title, name, patterns, on);
+        Ok(())
+    }
+
+    /// Диалог выбора папки; `on(path)` с путём или "".
+    #[pyo3(signature = (*, title="", on=None))]
+    fn dir(&self, title: &str, on: Option<PyObject>) -> PyResult<()> {
+        self.push(2, title, "", Vec::new(), on);
+        Ok(())
+    }
+}
+
+#[pyclass(unsendable, name = "Clip")]
+struct Clip;
+
+#[pymethods]
+impl Clip {
+    /// Возвращает текст из буфера обмена; пустая строка, если он пуст.
+    fn get(&self) -> String {
+        ssui_core::render::clipboard_get()
+    }
+
+    /// Кладёт текст в буфер обмена.
+    fn set(&self, text: &str) {
+        ssui_core::render::clipboard_set(text);
+    }
+}
+
 #[pyclass(unsendable, name = "Fnt")]
 struct Fnt {
     queue: Rc<RefCell<Option<(String, f32)>>>,
@@ -722,6 +813,7 @@ struct PyWindow {
     canvas_queue: CanvasQueue,
     tree_queue: TreeQueue,
     tree_geom: TreeGeom,
+    file_queue: FileQueue,
     extra: Rc<Extra>,
     hwnd: Rc<Cell<isize>>,
     share: Arc<Share>,
@@ -788,6 +880,7 @@ impl PyWindow {
         let canvas_queue = tree.canvas_queue();
         let tree_queue = tree.tree_queue();
         let tree_geom = tree.tree_geom();
+        let file_queue = tree.file_queue();
         let bindings: Bindings = Rc::new(RefCell::new(Vec::new()));
         let extra = Rc::new(Extra::default());
         EXTRAS.with(|m| {
@@ -816,6 +909,7 @@ impl PyWindow {
             canvas_queue,
             tree_queue,
             tree_geom,
+            file_queue,
             extra,
             hwnd: Rc::new(Cell::new(0)),
             share: Arc::new(Share {
@@ -3379,6 +3473,21 @@ impl PyWindow {
             });
         });
         Ok(())
+    }
+
+    /// Возвращает контроллер буфера обмена.
+    fn clip(&self) -> Clip {
+        Clip
+    }
+
+    /// Возвращает контроллер файловых диалогов.
+    fn file(&self) -> Fl {
+        Fl {
+            queue: self.file_queue.clone(),
+            share: self.share.clone(),
+            texts: self.bindings.clone(),
+            values: self.value_bindings.clone(),
+        }
     }
 
     /// Добавляет таблицу; `hl`/`vl` — толщина разделителей строк и столбцов.

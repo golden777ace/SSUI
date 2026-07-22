@@ -40,6 +40,19 @@ pub fn frame_count(path: &str) -> u32 {
     }
 }
 
+/// Кладёт текст в системный буфер обмена.
+pub fn clipboard_set(text: &str) {
+    let wide: Vec<u16> = text.encode_utf16().collect();
+    device::set_clipboard_text(&wide);
+}
+
+/// Возвращает текст из системного буфера; переводы строк — `\n`.
+pub fn clipboard_get() -> String {
+    let raw = device::get_clipboard_text();
+    let s = String::from_utf16_lossy(&raw);
+    s.replace("\r\n", "\n").replace('\r', "\n")
+}
+
 /// Ширина и высота строки в пикселях для семейства и размера шрифта.
 pub fn measure_text(text: &str, family: &str, size: f32) -> (f32, f32) {
     MEASURE_DW.with(|cell| {

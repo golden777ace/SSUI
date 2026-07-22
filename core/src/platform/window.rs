@@ -18,7 +18,13 @@ use windows::Win32::Graphics::Dwm::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, ReleaseCapture, SetCapture};
 use windows::Win32::UI::Shell::{
-    DragAcceptFiles, DragFinish, DragQueryFileW, DragQueryPoint, HDROP,
+    DragAcceptFiles, DragFinish, DragQueryFileW, DragQueryPoint, FileOpenDialog, FileSaveDialog,
+    IFileOpenDialog, IFileSaveDialog, IShellItem, FOS_PICKFOLDERS, HDROP, SIGDN_FILESYSPATH,
+};
+use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
+use windows::Win32::System::Com::{
+    CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_INPROC_SERVER,
+    COINIT_APARTMENTTHREADED,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -94,6 +100,8 @@ thread_local! {
 }
 
 static REGISTER_CLASS: Once = Once::new();
+
+const WM_APP_FILES: u32 = WM_APP + 3;
 
 impl Window {
     /// Создаёт окно со стандартными параметрами.
@@ -378,6 +386,17 @@ impl Window {
         }
     }
 
+    /// Просит окно показать отложенные файловые диалоги.
+    pub fn post_files(handle: isize) {
+        if handle == 0 {
+            return;
+        }
+        unsafe {
+            let h = HWND(handle as *mut c_void);
+            let _ = PostMessageW(Some(h), WM_APP_FILES, WPARAM(0), LPARAM(0));
+        }
+    }
+
     /// Прокачивает накопленные сообщения без блокировки.
     pub fn pump() -> bool {
         unsafe {
@@ -419,6 +438,73 @@ unsafe fn ensure_timer(hwnd: HWND, state: &mut WindowState) {
     if !state.ticking {
         let _ = SetTimer(Some(hwnd), 1, 10, None);
         state.ticking = true;
+    }
+}
+
+fn wide0(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+unsafe fn read_item(item: &IShellItem) -> windows::core::Result<String> {
+    let pw = item.GetDisplayName(SIGDN_FILESYSPATH)?;
+    let text = pw.to_string().unwrap_or_default();
+    CoTaskMemFree(Some(pw.0 as *const c_void));
+    Ok(text)
+}
+
+/// Показывает нативный файловый диалог; `None` при отмене или ошибке.
+fn show_file_dialog(
+    owner: HWND,
+    mode: u8,
+    title: &str,
+    name: &str,
+    patterns: &[(String, String)],
+) -> Option<String> {
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let title_w = wide0(title);
+        let name_w = wide0(name);
+        let pat_w: Vec<(Vec<u16>, Vec<u16>)> =
+            patterns.iter().map(|(d, m)| (wide0(d), wide0(m))).collect();
+        let specs: Vec<COMDLG_FILTERSPEC> = pat_w
+            .iter()
+            .map(|(d, m)| COMDLG_FILTERSPEC {
+                pszName: PCWSTR(d.as_ptr()),
+                pszSpec: PCWSTR(m.as_ptr()),
+            })
+            .collect();
+        let run = || -> windows::core::Result<String> {
+            if mode == 1 {
+                let dlg: IFileSaveDialog =
+                    CoCreateInstance(&FileSaveDialog, None, CLSCTX_INPROC_SERVER)?;
+                if !title.is_empty() {
+                    dlg.SetTitle(PCWSTR(title_w.as_ptr()))?;
+                }
+                if !specs.is_empty() {
+                    dlg.SetFileTypes(&specs)?;
+                }
+                if !name.is_empty() {
+                    dlg.SetFileName(PCWSTR(name_w.as_ptr()))?;
+                }
+                dlg.Show(Some(owner))?;
+                read_item(&dlg.GetResult()?)
+            } else {
+                let dlg: IFileOpenDialog =
+                    CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)?;
+                if !title.is_empty() {
+                    dlg.SetTitle(PCWSTR(title_w.as_ptr()))?;
+                }
+                if mode == 2 {
+                    let opts = dlg.GetOptions()?;
+                    dlg.SetOptions(opts | FOS_PICKFOLDERS)?;
+                } else if !specs.is_empty() {
+                    dlg.SetFileTypes(&specs)?;
+                }
+                dlg.Show(Some(owner))?;
+                read_item(&dlg.GetResult()?)
+            }
+        };
+        run().ok()
     }
 }
 
@@ -546,6 +632,23 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
             WM_KEYDOWN => {
                 if let Some(state) = state_ptr(hwnd).as_mut() {
                     if state.renderer.on_key(wparam.0 as u32) {
+                        let _ = InvalidateRect(Some(hwnd), None, false);
+                    }
+                }
+                LRESULT(0)
+            }
+
+            WM_APP_FILES => {
+                let reqs = match state_ptr(hwnd).as_mut() {
+                    Some(state) => state.renderer.take_files(),
+                    None => Vec::new(),
+                };
+                for req in reqs {
+                    let path =
+                        show_file_dialog(hwnd, req.mode, &req.title, &req.name, &req.patterns)
+                            .unwrap_or_default();
+                    if let Some(state) = state_ptr(hwnd).as_mut() {
+                        state.renderer.deliver_file(req, path);
                         let _ = InvalidateRect(Some(hwnd), None, false);
                     }
                 }
