@@ -802,6 +802,7 @@ pub struct Tree {
     pending_canvas: CanvasQueue,
     pending_tree: TreeQueue,
     geom_tree: TreeGeom,
+    popup_layer: Option<NodeId>,
     on_point: HashMap<(usize, u8), PointerCb>,
     on_wheel: HashMap<usize, WheelCb>,
     on_frame: Option<FrameHook>,
@@ -859,6 +860,7 @@ impl Tree {
             pending_canvas: Rc::new(RefCell::new(Vec::new())),
             pending_tree: Rc::new(RefCell::new(Vec::new())),
             geom_tree: Rc::new(RefCell::new(HashMap::new())),
+            popup_layer: None,
             on_point: HashMap::new(),
             on_wheel: HashMap::new(),
             on_frame: None,
@@ -1305,10 +1307,11 @@ impl Tree {
             if id.0 >= self.nodes.len() {
                 continue;
             }
-            if op == 0 {
-                self.set_canvas_region(id, a, b, c, d);
-            } else {
-                self.set_canvas_view(id, a, b);
+            match op {
+                0 => self.set_canvas_region(id, a, b, c, d),
+                1 => self.set_canvas_view(id, a, b),
+                2 => self.show_popup(id, a, b, c, d),
+                _ => self.hide_popup(id),
             }
         }
         true
@@ -2446,6 +2449,39 @@ impl Tree {
         }
         self.dirty = true;
         true
+    }
+
+    /// Открытый слой поверх окна, если он есть.
+    pub fn popup_layer(&self) -> Option<NodeId> {
+        self.popup_layer
+    }
+
+    /// Показывает слой в заданном прямоугольнике окна.
+    pub fn show_popup(&mut self, id: NodeId, x: f32, y: f32, w: f32, h: f32) {
+        let (pw, ph) = (
+            if w > 0.0 { Some(w) } else { None },
+            if h > 0.0 { Some(h) } else { None },
+        );
+        self.set_place(id, Some(x), Some(y), None, None, pw, ph);
+        self.popup_layer = Some(id);
+        self.dirty = true;
+    }
+
+    /// Прячет слой; если он не открыт, вызов безвреден.
+    pub fn hide_popup(&mut self, id: NodeId) {
+        self.set_place(id, Some(OFF_COORD), Some(OFF_COORD), None, None, None, None);
+        if self.popup_layer == Some(id) {
+            self.popup_layer = None;
+        }
+        self.dirty = true;
+    }
+
+    /// Закрывает открытый слой и возвращает его идентификатор.
+    pub fn close_popup(&mut self) -> Option<NodeId> {
+        let id = self.popup_layer.take()?;
+        self.set_place(id, Some(OFF_COORD), Some(OFF_COORD), None, None, None, None);
+        self.dirty = true;
+        Some(id)
     }
 
     /// Возвращает таблицу геометрии деревьев.

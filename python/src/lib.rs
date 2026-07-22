@@ -13,7 +13,7 @@ use ssui_core::tree::{
     Anim, AnimQueue, Axis, DialogData, DialogQueue, Ease, FocusQueue, NodeId, NodeKind,
     CanvasQueue, NoteData, NoteQueue, PointerCb, Props, RectTable, Shape, TextState,
     TimerKill, TimerQueue, TimerReq, Tree, TreeGeom, TreeItem, TreeQueue, WheelCb,
-    LIST_ROW,
+    LIST_ROW, OFF_COORD,
 };
 use pyo3::types::PyAnyMethods;
 
@@ -1780,6 +1780,57 @@ impl PyWindow {
     fn tre_open(&self, node: PyNode, indexes: Vec<usize>, on: bool) -> PyResult<()> {
         let op = if on { 2 } else { 3 };
         self.tree_queue.borrow_mut().push((node.id, op, indexes));
+        Ok(())
+    }
+
+    /// Слой поверх всего окна; содержимое строится внутри `with`.
+    #[pyo3(signature = (*, w=240.0, h=40.0, on_close=None))]
+    fn pop(&mut self, w: f32, h: f32, on_close: Option<PyObject>) -> PyResult<Ctx> {
+        let props = make_props("v", 0.0, 0.0, Some(w), Some(h));
+        let texts = self.bindings.clone();
+        let values = self.value_bindings.clone();
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let root = tree.root();
+        let id = tree.add_child(root, NodeKind::Frame { radius: 10.0 }, props);
+        tree.set_place(
+            id,
+            Some(OFF_COORD),
+            Some(OFF_COORD),
+            None,
+            None,
+            Some(w),
+            Some(h),
+        );
+        tree.set_depth(id, 1000);
+        if let Some(f) = on_close {
+            let cb: PointerCb = Box::new(move |t, _, _, _| {
+                Python::with_gil(|py| {
+                    if let Err(e) = f.bind(py).call0() {
+                        e.print(py);
+                    }
+                    refresh_all(py, t, &texts, &values);
+                });
+            });
+            tree.set_on_point(id, 8, cb);
+        }
+        Ok(Ctx {
+            stack: self.stack.clone(),
+            node: id,
+        })
+    }
+
+    /// Показывает слой в прямоугольнике окна; ноль — оставить размер.
+    #[pyo3(signature = (node, x, y, w=0.0, h=0.0))]
+    fn pop_at(&self, node: PyNode, x: f32, y: f32, w: f32, h: f32) -> PyResult<()> {
+        self.canvas_queue.borrow_mut().push((node.id, 2, x, y, w, h));
+        Ok(())
+    }
+
+    /// Прячет слой; `on_close` при этом не вызывается.
+    fn pop_off(&self, node: PyNode) -> PyResult<()> {
+        self.canvas_queue
+            .borrow_mut()
+            .push((node.id, 3, 0.0, 0.0, 0.0, 0.0));
         Ok(())
     }
 

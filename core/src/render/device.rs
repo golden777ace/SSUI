@@ -1263,6 +1263,13 @@ impl Renderer {
             }
             return true;
         }
+        if let Some(layer) = self.tree.popup_layer() {
+            if !self.tree.get(layer).rect.contains(x, y) {
+                self.tree.close_popup();
+                self.tree.fire_point(layer, 8, 0, 0.0, 0.0);
+                return true;
+            }
+        }
         for (i, _, act) in self.note_rects() {
             if !self.notes[i].action.is_empty() && act.contains(x, y) {
                 let mut cb = self.notes[i].cb.take();
@@ -1868,6 +1875,13 @@ impl Renderer {
                 return true;
             }
             return true;
+        }
+        if vk == 0x1B {
+            if let Some(layer) = self.tree.close_popup() {
+                self.focused = None;
+                self.tree.fire_point(layer, 8, 0, 0.0, 0.0);
+                return true;
+            }
         }
         if self.open_menu.is_none() && self.open_dropdown.is_none() {
             if let Some(id) = self.focused {
