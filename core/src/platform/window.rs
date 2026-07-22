@@ -397,6 +397,50 @@ impl Window {
         }
     }
 
+    /// Размер основного экрана в пикселях.
+    pub fn screen() -> (f32, f32) {
+        unsafe {
+            let w = GetSystemMetrics(SM_CXSCREEN);
+            let h = GetSystemMetrics(SM_CYSCREEN);
+            (w as f32, h as f32)
+        }
+    }
+
+    /// Размер клиентской области окна по HWND.
+    pub fn client_size(handle: isize) -> (f32, f32) {
+        if handle == 0 {
+            return (0.0, 0.0);
+        }
+        unsafe {
+            let h = HWND(handle as *mut c_void);
+            let mut rc = RECT::default();
+            if GetClientRect(h, &mut rc).is_ok() {
+                ((rc.right - rc.left) as f32, (rc.bottom - rc.top) as f32)
+            } else {
+                (0.0, 0.0)
+            }
+        }
+    }
+
+    /// Перемещает окно; `(x, y)` — левый верхний угол на экране.
+    pub fn move_to(handle: isize, x: f32, y: f32) {
+        if handle == 0 {
+            return;
+        }
+        unsafe {
+            let h = HWND(handle as *mut c_void);
+            let _ = SetWindowPos(
+                h,
+                None,
+                x as i32,
+                y as i32,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
+    }
+
     /// Прокачивает накопленные сообщения без блокировки.
     pub fn pump() -> bool {
         unsafe {
@@ -574,6 +618,8 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM)
                     let width = loword(lparam.0 as u32);
                     let height = hiword(lparam.0 as u32);
                     state.renderer.resize(width, height);
+                    state.renderer.fire_resize(width as f32, height as f32);
+                    let _ = InvalidateRect(Some(hwnd), None, false);
                 }
                 LRESULT(0)
             }

@@ -828,6 +828,7 @@ pub struct Tree {
     placeholders: HashMap<usize, Vec<u16>>,
     on_dialog: Option<Box<dyn FnMut(&mut Tree, usize)>>,
     hotkeys: Vec<(u8, u32, Box<dyn FnMut(&mut Tree)>)>,
+    on_resize: Option<Box<dyn FnMut(&mut Tree, f32, f32)>>,
     tint: f32,
     blur_mode: u32,
     blur_tint: u32,
@@ -888,6 +889,7 @@ impl Tree {
             placeholders: HashMap::new(),
             on_dialog: None,
             hotkeys: Vec::new(),
+            on_resize: None,
             tint: 0.0,
             blur_mode: 0,
             blur_tint: 0x40101418,
@@ -2152,6 +2154,19 @@ impl Tree {
         list.append(&mut self.hotkeys);
         self.hotkeys = list;
         hit
+    }
+
+    /// Задаёт колбэк изменения размера окна.
+    pub fn set_resize_cb<F: FnMut(&mut Tree, f32, f32) + 'static>(&mut self, f: F) {
+        self.on_resize = Some(Box::new(f));
+    }
+
+    /// Вызывает колбэк изменения размера, если он задан.
+    pub fn fire_resize(&mut self, w: f32, h: f32) {
+        if let Some(mut cb) = self.on_resize.take() {
+            cb(self, w, h);
+            self.on_resize = Some(cb);
+        }
     }
 
     /// Реагирует ли узел на клик.

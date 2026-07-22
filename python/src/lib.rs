@@ -3490,6 +3490,57 @@ impl PyWindow {
         }
     }
 
+    /// Правый клик по узлу; `f(x, y)` в координатах окна.
+    fn rmb(&mut self, node: PyNode, f: PyObject) -> PyResult<()> {
+        let texts = self.bindings.clone();
+        let values = self.value_bindings.clone();
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        let cb: PointerCb = Box::new(move |t, _, x, y| {
+            Python::with_gil(|py| {
+                if let Err(e) = f.bind(py).call1((x, y)) {
+                    e.print(py);
+                }
+                refresh_all(py, t, &texts, &values);
+            });
+        });
+        tree.set_on_point(node.id, 9, cb);
+        Ok(())
+    }
+
+    /// Размер основного экрана в пикселях: `(ширина, высота)`.
+    #[staticmethod]
+    fn screen() -> (f32, f32) {
+        CoreWindow::screen()
+    }
+
+    /// Размер клиентской области окна: `(ширина, высота)`.
+    fn size(&self) -> (f32, f32) {
+        CoreWindow::client_size(self.hwnd.get())
+    }
+
+    /// Перемещает окно; `(x, y)` — левый верхний угол на экране.
+    #[pyo3(name = "move")]
+    fn move_win(&self, x: f32, y: f32) -> PyResult<()> {
+        CoreWindow::move_to(self.hwnd.get(), x, y);
+        Ok(())
+    }
+
+    /// Колбэк изменения размера окна; `f(width, height)` клиентской области.
+    fn on_resize(&mut self, f: PyObject) -> PyResult<()> {
+        let texts = self.bindings.clone();
+        let values = self.value_bindings.clone();
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        tree.set_resize_cb(move |t, w, h| {
+            Python::with_gil(|py| {
+                if let Err(e) = f.bind(py).call1((w, h)) {
+                    e.print(py);
+                }
+                refresh_all(py, t, &texts, &values);
+            });
+        });
+        Ok(())
+    }
+
     /// Добавляет таблицу; `hl`/`vl` — толщина разделителей строк и столбцов.
     #[pyo3(signature = (columns, rows, *, pr=None, ch=None, bg=None, hl=0.0, vl=0.0,
                         pd=0.0, gp=0.0, w=None, h=None))]

@@ -549,6 +549,11 @@ impl Renderer {
         self.tree.deliver_file(req, path);
     }
 
+    /// Сообщает о новом размере клиентской области окна.
+    pub fn fire_resize(&mut self, w: f32, h: f32) {
+        self.tree.fire_resize(w, h);
+    }
+
     /// Продвигает анимации по таймеру; true, если нужна перерисовка.
     pub fn on_timer(&mut self) -> bool {
         self.pump()
@@ -964,6 +969,22 @@ impl Renderer {
     pub fn on_right_down(&mut self, x: f32, y: f32) -> bool {
         if self.dialog.is_some() {
             return false;
+        }
+        if let Some(mut id) = self.tree.hit_test(x, y) {
+            let mut guard = 0;
+            loop {
+                if self.tree.has_point(id, 9) {
+                    self.tree.fire_point(id, 9, 0, x, y);
+                    return true;
+                }
+                match self.tree.parent(id) {
+                    Some(p) if guard < 64 => {
+                        id = p;
+                        guard += 1;
+                    }
+                    _ => break,
+                }
+            }
         }
         let n = self.tree.menu_len();
         if n == 0 {
