@@ -919,7 +919,9 @@ class W:
         rows: list[list[str]],
         *,
         pr: Optional[Node] = None,
-        ch: Optional[Callable[[int], None]] = None,
+        ch: Optional[Callable[[int], None]]
+            | Optional[Callable[[int, int], None]] = None,
+        bg: Optional[Callable[[], list[tuple[tuple[int, int], str]]]] = None,
         hl: float = 0.0,
         vl: float = 0.0,
         pd: float = 0.0,
@@ -927,7 +929,22 @@ class W:
         w: Optional[float] = None,
         h: Optional[float] = None,
     ) -> Node:
-        """Таблица. hl/vl — толщина линий строк/столбцов."""
+        """Таблица. hl/vl — толщина линий строк/столбцов.
+
+        Форма `ch` выбирается по числу параметров колбэка: один —
+        приходит строка, два — строка и колонка. Старый однопара-
+        метрический колбэк работает без изменений.
+
+        `bg` — колбэков цветов ячеек: список `((строка, колонка), цвет)`,
+        пересобирается при изменении зависимостей. Цвет ячейки
+        рисуется поверх подсветки строки, но под текстом.
+        """
+
+    def tbl_see(self, node: Node, row: int) -> None:
+        """Прокручивает таблицу к строке.
+
+        Безопасно вызывать из колбэков и после показа окна.
+        """
     def tre(
         self,
         items: list[TreeRow] | list[tuple[int, str, bool]],

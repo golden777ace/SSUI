@@ -65,6 +65,27 @@ fn make_shapes(items: Vec<ShapeSpec>) -> Vec<Shape> {
         .collect()
 }
 
+/// Проверяет, принимает ли вызываемый объект два позиционных аргумента.
+fn takes_two(py: Python, f: &PyObject) -> bool {
+    let code = "import inspect\n\
+                def n(f):\n\
+                \x20 try:\n\
+                \x20  return sum(1 for p in inspect.signature(f).parameters.values()\n\
+                \x20   if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD))\n\
+                \x20 except Exception:\n\
+                \x20  return 1\n";
+    let probe = || -> PyResult<usize> {
+        let m = pyo3::types::PyModule::from_code(
+            py,
+            std::ffi::CString::new(code).unwrap().as_c_str(),
+            std::ffi::CString::new("probe.py").unwrap().as_c_str(),
+            std::ffi::CString::new("probe").unwrap().as_c_str(),
+        )?;
+        m.getattr("n")?.call1((f,))?.extract::<usize>()
+    };
+    probe().unwrap_or(1) >= 2
+}
+
 /// Оборачивает питоновский колбэк `f(строка, колонка)`.
 fn pair_cb(f: PyObject, texts: Bindings, values: Bindings) -> PointerCb {
     Box::new(move |t, i, c, _| {
@@ -237,6 +258,7 @@ struct Extra {
     pos: BindVec,
     src: BindVec,
     tre: BindVec,
+    tbg: BindVec,
 }
 
 impl Extra {
@@ -251,6 +273,7 @@ impl Extra {
             6 => &self.depth,
             7 => &self.pos,
             9 => &self.tre,
+            10 => &self.tbg,
             _ => &self.src,
         }
     }
@@ -277,6 +300,7 @@ static LIST_BINDINGS: BindSlot = BindSlot(4);
 static TABLE_BINDINGS: BindSlot = BindSlot(5);
 static DEPTH_BINDINGS: BindSlot = BindSlot(6);
 static TREE_BINDINGS: BindSlot = BindSlot(9);
+static TBG_BINDINGS: BindSlot = BindSlot(10);
 
 /// Подставляет биндинги окна на время обновления.
 struct ExtraGuard(Option<Rc<Extra>>);
@@ -3240,13 +3264,16 @@ impl PyWindow {
     }
 
     /// Добавляет таблицу; `hl`/`vl` — толщина разделителей строк и столбцов.
-    #[pyo3(signature = (columns, rows, *, pr=None, ch=None, hl=0.0, vl=0.0, pd=0.0, gp=0.0, w=None, h=None))]
+    #[pyo3(signature = (columns, rows, *, pr=None, ch=None, bg=None, hl=0.0, vl=0.0,
+                        pd=0.0, gp=0.0, w=None, h=None))]
+    #[allow(clippy::too_many_arguments)]
     fn tbl(
         &mut self,
         columns: Vec<String>,
         rows: Vec<Vec<String>>,
         pr: Option<PyNode>,
         ch: Option<PyObject>,
+        bg: Option<PyObject>,
         hl: f32,
         vl: f32,
         pd: f32,
@@ -3273,12 +3300,18 @@ impl PyWindow {
                 scroll: 0.0,
                 hline: hl,
                 vline: vl,
+                cbg: Vec::new(),
             },
             props,
         );
+        let two = ch
+            .as_ref()
+            .map(|f| Python::with_gil(|py| takes_two(py, f)))
+            .unwrap_or(false);
+        let (ch_one, ch_two) = if two { (None, ch) } else { (ch, None) };
         tree.set_on_change(id, move |t, v| {
             Python::with_gil(|py| {
-                if let Some(cb) = &ch {
+                if let Some(cb) = &ch_one {
                     if let Err(e) = cb.bind(py).call1((v as i64,)) {
                         e.print(py);
                     }
@@ -3286,7 +3319,20 @@ impl PyWindow {
                 refresh_all(py, t, &texts, &values);
             });
         });
+        if let Some(f) = ch_two {
+            let cb = pair_cb(f, self.bindings.clone(), self.value_bindings.clone());
+            tree.set_on_point(id, 5, cb);
+        }
+        if let Some(f) = bg {
+            self.extra.tbg.borrow_mut().push((id, f));
+        }
         Ok(PyNode { id })
+    }
+
+    /// Прокручивает таблицу к строке.
+    fn tbl_see(&self, node: PyNode, row: usize) -> PyResult<()> {
+        self.tree_queue.borrow_mut().push((node.id, 4, vec![row]));
+        Ok(())
     }
 
     /// Задаёт контекстное меню окна; `on_select(index)` по ПКМ.
@@ -3704,6 +3750,18 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
             let Some(r) = run_binding(py, f) else { continue };
             match tree_rows(&r) {
                 Ok(rows) => t.set_tree_items(*id, rows),
+                Err(e) => e.print(py),
+            }
+        }
+    });
+    TBG_BINDINGS.with(|c| {
+        for (id, f) in c.borrow().iter() {
+            let Some(r) = run_binding(py, f) else { continue };
+            match r.extract::<Vec<((usize, usize), String)>>() {
+                Ok(list) => {
+                    let data = list.iter().map(|(k, s)| (*k, hexa(s))).collect();
+                    t.set_table_cbg(*id, data);
+                }
                 Err(e) => e.print(py),
             }
         }

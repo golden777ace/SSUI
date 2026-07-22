@@ -341,6 +341,7 @@ pub enum NodeKind {
         scroll: f32,
         hline: f32,
         vline: f32,
+        cbg: Vec<((usize, usize), u32)>,
     },
     Image {
         path: String,
@@ -2016,6 +2017,51 @@ impl Tree {
         }
     }
 
+    /// Задаёт цвета ячеек таблицы: `((строка, колонка), цвет)`.
+    pub fn set_table_cbg(&mut self, id: NodeId, data: Vec<((usize, usize), u32)>) {
+        if let NodeKind::Table { cbg, .. } = &mut self.nodes[id.0].kind {
+            *cbg = data;
+        }
+        self.dirty = true;
+    }
+
+    /// Число колонок таблицы.
+    pub fn table_cols(&self, id: NodeId) -> usize {
+        if let NodeKind::Table { columns, .. } = &self.nodes[id.0].kind {
+            columns.len().max(1)
+        } else {
+            1
+        }
+    }
+
+    /// Индекс колонки таблицы под точкой окна.
+    pub fn table_col_at(&self, id: NodeId, x: f32) -> usize {
+        let r = self.nodes[id.0].rect;
+        let ncol = self.table_cols(id);
+        let cw = r.width / ncol as f32;
+        if cw <= 0.0 {
+            return 0;
+        }
+        (((x - r.x) / cw).floor() as i32).clamp(0, ncol as i32 - 1) as usize
+    }
+
+    /// Прокручивает таблицу так, чтобы строка была видна.
+    pub fn reveal_table(&mut self, id: NodeId, row: usize) {
+        let r = self.nodes[id.0].rect;
+        let view = (r.height - TABLE_HEADER).max(0.0);
+        let top = row as f32 * TABLE_ROW;
+        let mut s = self.table_scroll(id);
+        if top < s {
+            s = top;
+        }
+        if top + TABLE_ROW > s + view {
+            s = top + TABLE_ROW - view;
+        }
+        let n = self.table_len(id);
+        let max = (n as f32 * TABLE_ROW - view).max(0.0);
+        self.set_table_scroll(id, s.clamp(0.0, max));
+    }
+
     /// Задаёт пункты контекстного меню окна.
     pub fn set_menu(&mut self, items: Vec<Vec<u16>>) {
         self.menu_items = items;
@@ -2429,6 +2475,12 @@ impl Tree {
                     if let Some(i) = arg.first() {
                         self.open_ancestors(id, *i);
                         self.tree_reveal(id, *i);
+                    }
+                }
+                4 => {
+                    if let Some(i) = arg.first() {
+                        self.set_table_selected(id, Some(*i));
+                        self.reveal_table(id, *i);
                     }
                 }
                 _ => {

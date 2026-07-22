@@ -1093,6 +1093,16 @@ impl Renderer {
         self.dropdown_hover = None;
     }
 
+    /// Выбирает строку таблицы и шлёт колбэк с колонкой.
+    fn pick_table(&mut self, id: NodeId, x: f32, y: f32) {
+        if let Some(row) = self.table_row_at(id, y) {
+            let col = self.tree.table_col_at(id, x);
+            self.tree.set_table_selected(id, Some(row));
+            self.tree.fire_change(id, row as f32);
+            self.tree.fire_point(id, 5, row as i32, col as f32, 0.0);
+        }
+    }
+
     fn table_row_at(&self, id: NodeId, y: f32) -> Option<usize> {
         let r = self.tree.get(id).rect;
         let n = self.tree.table_len(id);
@@ -1407,10 +1417,7 @@ impl Renderer {
                 return true;
             }
             if self.tree.is_table(id) {
-                if let Some(ri) = self.table_row_at(id, y) {
-                    self.tree.set_table_selected(id, Some(ri));
-                    self.tree.fire_change(id, ri as f32);
-                }
+                self.pick_table(id, x, y);
                 self.focused = Some(id);
                 return true;
             }
@@ -4099,6 +4106,7 @@ impl Renderer {
                         scroll,
                         hline,
                         vline,
+                        cbg,
                     } => {
                         let r = node.rect;
                         canvas.push_clip(r);
@@ -4132,6 +4140,16 @@ impl Renderer {
                             }
                             for (c, cell) in row.iter().enumerate() {
                                 let cx = r.x + col_w * c as f32;
+                                if let Some((_, col)) =
+                                    cbg.iter().find(|((rr, cc), _)| *rr == ri && *cc == c)
+                                {
+                                    canvas.fill_rounded_rect(
+                                        Rect::new(cx + 1.0, ry + 1.0, (col_w - 2.0).max(0.0),
+                                                  TABLE_ROW - 2.0),
+                                        0.0,
+                                        Color::hexa(*col),
+                                    );
+                                }
                                 let cr = Rect::new(
                                     cx + 10.0,
                                     ry,
