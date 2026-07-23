@@ -2779,9 +2779,12 @@ impl Renderer {
                     }
                     NodeKind::Button { label, radius } => {
                         let rad = style.radius.unwrap_or(*radius);
-                        if let Some(e) = style.elev {
-                            if e > 0.0 {
-                                draw_soft_shadow(&canvas, node.rect, rad, e);
+                        let icon_only = label.is_empty() && node.icon.is_some();
+                        if !icon_only {
+                            if let Some(e) = style.elev {
+                                if e > 0.0 {
+                                    draw_soft_shadow(&canvas, node.rect, rad, e);
+                                }
                             }
                         }
                         let (base, hov, prs) = match style.fill {
@@ -2797,37 +2800,52 @@ impl Renderer {
                             base
                         };
                         let text_color = style.text.unwrap_or(theme.on_accent);
-                        if focused == Some(id) {
-                            let ring = Rect::new(
-                                node.rect.x - 3.0,
-                                node.rect.y - 3.0,
-                                node.rect.width + 6.0,
-                                node.rect.height + 6.0,
-                            );
-                            canvas.fill_rounded_rect(ring, rad + 3.0, theme.content);
-                        }
-                        if let Some((a, b)) = style.grad {
-                            canvas.fill_rounded_gradient(node.rect, rad, a, b, style.grad_dir);
-                        } else {
-                            canvas.fill_rounded_rect(node.rect, rad, fill);
+                        if !icon_only {
+                            if focused == Some(id) {
+                                let ring = Rect::new(
+                                    node.rect.x - 3.0,
+                                    node.rect.y - 3.0,
+                                    node.rect.width + 6.0,
+                                    node.rect.height + 6.0,
+                                );
+                                canvas.fill_rounded_rect(ring, rad + 3.0, theme.content);
+                            }
+                            if let Some((a, b)) = style.grad {
+                                canvas.fill_rounded_gradient(node.rect, rad, a, b, style.grad_dir);
+                            } else {
+                                canvas.fill_rounded_rect(node.rect, rad, fill);
+                            }
                         }
                         let mut tr = node.rect;
                         if let Some(icon) = &node.icon {
                             if let Some(Some(bmp)) = img_cache.get(icon) {
-                                let sz = (node.rect.height - 10.0).clamp(12.0, 26.0);
-                                let iy = node.rect.y + (node.rect.height - sz) / 2.0;
-                                let ix = node.rect.x + 12.0;
-                                canvas.draw_bitmap(bmp, Rect::new(ix, iy, sz, sz), 0);
-                                let off = sz + 20.0;
-                                tr = Rect::new(
-                                    node.rect.x + off,
-                                    node.rect.y,
-                                    (node.rect.width - off).max(0.0),
-                                    node.rect.height,
-                                );
+                                if icon_only {
+                                    let pad = 4.0;
+                                    let r = Rect::new(
+                                        node.rect.x + pad,
+                                        node.rect.y + pad,
+                                        (node.rect.width - pad * 2.0).max(0.0),
+                                        (node.rect.height - pad * 2.0).max(0.0),
+                                    );
+                                    canvas.draw_bitmap(bmp, r, 0);
+                                } else {
+                                    let sz = (node.rect.height - 10.0).clamp(12.0, 26.0);
+                                    let iy = node.rect.y + (node.rect.height - sz) / 2.0;
+                                    let ix = node.rect.x + 12.0;
+                                    canvas.draw_bitmap(bmp, Rect::new(ix, iy, sz, sz), 0);
+                                    let off = sz + 20.0;
+                                    tr = Rect::new(
+                                        node.rect.x + off,
+                                        node.rect.y,
+                                        (node.rect.width - off).max(0.0),
+                                        node.rect.height,
+                                    );
+                                }
                             }
                         }
-                        canvas.draw_text(label, format, tr, text_color);
+                        if !icon_only {
+                            canvas.draw_text(label, format, tr, text_color);
+                        }
                     }
                     NodeKind::Slider { value } => {
                         let v = value.clamp(0.0, 1.0);
