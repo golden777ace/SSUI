@@ -837,6 +837,7 @@ pub struct Tree {
     dirty: bool,
     last_root: Option<Rect>,
     toast: Option<(Vec<u16>, f32)>,
+    tip_style: (f32, f32, f32),
 }
 
 impl Tree {
@@ -899,6 +900,7 @@ impl Tree {
             dirty: true,
             last_root: None,
             toast: None,
+            tip_style: (6.0, 12.0, 5.0),
         }
     }
 
@@ -3377,6 +3379,16 @@ impl Tree {
                 None
             })
             .collect()
+    }
+
+    /// Настройки тултипа: радиус, гориз. и верт. отступ вокруг текста.
+    pub fn set_tip_style(&mut self, radius: f32, pad_x: f32, pad_y: f32) {
+        self.tip_style = (radius.max(0.0), pad_x.max(0.0), pad_y.max(0.0));
+    }
+
+    /// Текущие настройки тултипа: `(radius, pad_x, pad_y)`.
+    pub fn tip_style(&self) -> (f32, f32, f32) {
+        self.tip_style
     }
 
     /// Помечает раскладку устаревшей — следующий кадр пересчитает геометрию.

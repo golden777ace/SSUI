@@ -415,6 +415,14 @@ class W:
         """Применяет CSS из файла."""
     def css_hot(self, path: str) -> None:
         """Следит за CSS-файлом и перезагружает его на лету."""
+    def tip_style(
+        self,
+        *,
+        radius: float = 6.0,
+        pad_x: float = 12.0,
+        pad_y: float = 5.0,
+    ) -> None:
+        """Оформление тултипа: радиус и отступы вокруг текста."""
 
     def bindv(self, node: Node, f: Callable[[], float]) -> None:
         """Привязывает числовой колбэк к узлу.

@@ -194,6 +194,7 @@ pub struct Renderer {
     text_format: IDWriteTextFormat,
     text_format_left: IDWriteTextFormat,
     text_format_wrap: IDWriteTextFormat,
+    text_format_tip: IDWriteTextFormat,
     tree: Tree,
     width: f32,
     height: f32,
@@ -390,6 +391,19 @@ impl Renderer {
             let _ = text_format_wrap.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
             let _ = text_format_wrap.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
 
+            let text_format_tip = dwrite.CreateTextFormat(
+                fam,
+                None,
+                DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                base_size * 1.2,
+                w!("en-us"),
+            )?;
+            let _ = text_format_tip.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+            let _ = text_format_tip.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+            let _ = text_format_tip.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+
             let wic: Option<IWICImagingFactory> = None;
 
             let theme_index = tree.theme();
@@ -403,6 +417,7 @@ impl Renderer {
                 text_format,
                 text_format_left,
                 text_format_wrap,
+                text_format_tip,
                 tree,
                 width: 1280.0,
                 height: 720.0,
@@ -614,6 +629,20 @@ impl Renderer {
                 let _ = f.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
                 let _ = f.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
                 self.text_format_wrap = f;
+            }
+            if let Ok(f) = self.dwrite.CreateTextFormat(
+                fam,
+                None,
+                DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                size * 1.2,
+                w!("en-us"),
+            ) {
+                let _ = f.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                let _ = f.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+                let _ = f.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                self.text_format_tip = f;
             }
         }
         self.fmt_cache.borrow_mut().clear();
@@ -4456,18 +4485,28 @@ impl Renderer {
                     canvas.draw_text(&text, format_left, tr, INSPECT_LABEL_FG);
                 }
             }
+        for (pr, ph, multi) in self.tree.empty_placeholders() {
+                let tr = if multi {
+                    Rect::new(pr.x + 10.0, pr.y + 6.0, (pr.width - 20.0).max(0.0), 28.0)
+                } else {
+                    Rect::new(pr.x + 12.0, pr.y, (pr.width - 24.0).max(0.0), pr.height)
+                };
+                canvas.draw_text(ph, format_left, tr, theme.track);
+            }
+
         if self.dialog.is_none() {
                 if let Some((id, since)) = self.hover_since {
                     if since.elapsed().as_secs_f32() > 0.6 {
                         if let Some(tip) = self.tree.tip(id) {
-                            let tw = text_width(&self.dwrite, format_left, tip);
-                            let bw = tw + 24.0;
-                            let bh = 30.0;
+                            let (rad, pad_x, pad_y) = self.tree.tip_style();
+                            let (tw, th) = text_metrics(&self.dwrite, &self.text_format_tip, tip);
+                            let bw = tw + pad_x * 2.0;
+                            let bh = th + pad_y * 2.0;
                             let bx = (self.mouse.0 + 14.0).min(self.width - bw - 6.0);
                             let by = (self.mouse.1 + 22.0).min(self.height - bh - 6.0);
                             let r = Rect::new(bx.max(4.0), by.max(4.0), bw, bh);
-                            canvas.fill_rounded_rect(r, 6.0, theme.content);
-                            canvas.draw_text(tip, format, r, theme.surface);
+                            canvas.fill_rounded_rect(r, rad, theme.content);
+                            canvas.draw_text(tip, &self.text_format_tip, r, theme.surface);
                         }
                     }
                 }
@@ -4477,7 +4516,7 @@ impl Renderer {
                 let e = at.elapsed().as_secs_f32();
                 if e <= *secs {
                     let fade = ((*secs - e) / 0.35).clamp(0.0, 1.0);
-                    let tw = text_width(&self.dwrite, format_left, text);
+                    let tw = text_width(&self.dwrite, &self.text_format_tip, text);
                     let bw = (tw + 48.0).min(self.width - 40.0);
                     let bh = 48.0;
                     let r = Rect::new(
@@ -4489,17 +4528,8 @@ impl Renderer {
                     let a = theme.accent;
                     let fg = theme.on_accent;
                     canvas.fill_rounded_rect(r, 12.0, Color::rgba(a.r, a.g, a.b, fade));
-                    canvas.draw_text(text, format, r, Color::rgba(fg.r, fg.g, fg.b, fade));
+                    canvas.draw_text(text, &self.text_format_tip, r, Color::rgba(fg.r, fg.g, fg.b, fade));
                 }
-            }
-
-            for (pr, ph, multi) in self.tree.empty_placeholders() {
-                let tr = if multi {
-                    Rect::new(pr.x + 10.0, pr.y + 6.0, (pr.width - 20.0).max(0.0), 28.0)
-                } else {
-                    Rect::new(pr.x + 12.0, pr.y, (pr.width - 24.0).max(0.0), pr.height)
-                };
-                canvas.draw_text(ph, format_left, tr, theme.track);
             }
 
             for (i, r, act) in self.note_rects() {
@@ -4919,6 +4949,21 @@ fn text_width(dwrite: &IDWriteFactory, format: &IDWriteTextFormat, text: &[u16])
         }
     }
     0.0
+}
+
+fn text_metrics(dwrite: &IDWriteFactory, format: &IDWriteTextFormat, text: &[u16]) -> (f32, f32) {
+    if text.is_empty() {
+        return (0.0, 0.0);
+    }
+    unsafe {
+        if let Ok(layout) = dwrite.CreateTextLayout(text, format, 100000.0, 100.0) {
+            let mut m = DWRITE_TEXT_METRICS::default();
+            if layout.GetMetrics(&mut m).is_ok() {
+                return (m.width, m.height);
+            }
+        }
+    }
+    (0.0, 0.0)
 }
 
 fn wrapped_caret(

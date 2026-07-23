@@ -3419,6 +3419,14 @@ impl PyWindow {
         Ok(())
     }
 
+    /// Оформление тултипа: радиус и отступы вокруг текста.
+    #[pyo3(signature = (*, radius=6.0, pad_x=12.0, pad_y=5.0))]
+    fn tip_style(&mut self, radius: f32, pad_x: f32, pad_y: f32) -> PyResult<()> {
+        let tree = self.tree.as_mut().ok_or_else(consumed)?;
+        tree.set_tip_style(radius, pad_x, pad_y);
+        Ok(())
+    }
+
     /// Добавляет список; `ch` — индекс, при `multi` — список индексов.
     #[pyo3(signature = (items, *, pr=None, sel=None, multi=false, ch=None,
                         pd=0.0, gp=0.0, w=None, h=None))]
