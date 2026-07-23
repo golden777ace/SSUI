@@ -4,13 +4,21 @@ build-backend = "maturin"
 
 [project]
 name = "ssui"
-version = "1.1.0"
+version = "1.2.0"
+description = " GUI-библиотека для Windows: ядро на Rust (Direct3D 11 / Direct2D), API на Python"
+readme = "README.md"
 requires-python = ">=3.11"
+license = { file = "LICENSE" }
+keywords = ["gui", "windows", "direct2d", "direct3d", "rust", "tkinter", "desktop", "ui"]
 authors = [
     { name = "Sergievskiy Sergey" }
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
+    "Environment :: Win32 (MS Windows)",
+    "Intended Audience :: Developers",
+    "Natural Language :: Russian",
+    "Typing :: Typed",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -24,8 +32,12 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules"
 ]
 
+[project.urls]
+Homepage = "https://github.com/golden777ace/SSUI"
+Documentation = "https://github.com/golden777ace/SSUI/blob/main/DESC.md"
+
 [tool.maturin]
 manifest-path = "python/Cargo.toml"
 python-source = "python"
 module-name = "ssui._ssui"
-include = ["python/ssui/py.typed", "python/ssui/__init__.pyi"]
+include = ["python/ssui/py.typed", "python/ssui/__init__.pyi", "LICENSE", "README.md"]

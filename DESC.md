@@ -85,13 +85,14 @@ GUI-библиотека для Windows на Rust (Direct3D 11 + Direct2D + Dire
 - `tab(labels, *, pr=None, sel=0, ch=None, pd=0.0, gp=0.0, w=None, h=None)`
 - `acc(title="", *, pr=None, open=False, rad=10.0, pd=8.0, gp=8.0, w=None, h=None)`
 - `stk(*, pr=None, page=0, bind=None, w=None, h=None)`
-- `cv(shapes=[], *, pr=None, bind=None, pd=0.0, gp=0.0, w=None, h=None)`
+- `cv(shapes=[], *, pr=None, bind=None, scroll=False, down=None, move=None, up=None, dbl=None, pd=0.0, gp=0.0, w=None, h=None)`
+- `win.cv_region(node, x1, y1, x2, y2)`, `win.cv_view(node, x, y)`
 - `dock(ttl="", *, pr=None, side="l", size=260.0, open=True, ax="v", pd=10.0, gp=8.0)`
 - `drop(txt="Перетащите файлы сюда", *, pr=None, on=None, pd=0.0, gp=0.0, w=None, h=None)`
 
 ### Отображение
 - `lb(txt="", *, pr=None, bind=None, icon=None, pd=0.0, gp=0.0, w=None, h=None, wrap=False)`
-- `img(src, *, pr=None, fit="contain", fit_bind=None, pd=0.0, gp=0.0, w=None, h=None)`
+- `img(src, *, pr=None, src_bind=None, data=None, fit="contain", fit_bind=None, pd=0.0, gp=0.0, w=None, h=None)`
 - `sep(*, pr=None, vertical=False, pd=0.0, gp=0.0, w=None, h=None)`
 - `pr(vl=0.0, *, pr=None, bind=None, pd=0.0, gp=0.0, w=None, h=None)`
 - `spn(*, pr=None, pd=0.0, gp=0.0, w=None, h=None)`
@@ -120,9 +121,13 @@ GUI-библиотека для Windows на Rust (Direct3D 11 + Direct2D + Dire
 - `dl(vl=0.5, *, pr=None, lb="", ch=None, bind=None, pd=0.0, gp=0.0, w=None, h=None)`
 
 ### Списки и данные
-- `lst(items, *, pr=None, sel=None, ch=None, pd=0.0, gp=0.0, w=None, h=None)`
-- `tbl(columns, rows, *, pr=None, ch=None, hl=0.0, vl=0.0, pd=0.0, gp=0.0, w=None, h=None)`
-- `tre(items, *, pr=None, ch=None, pd=0.0, gp=0.0, w=None, h=None)`
+- `lst(items, *, pr=None, sel=None, multi=False, ch=None, pd=0.0, gp=0.0, w=None, h=None)`
+- `win.lst_sel(node, indexes)`
+- `tbl(columns, rows, *, pr=None, ch=None, bg=None, hl=0.0, vl=0.0, pd=0.0, gp=0.0, w=None, h=None)`
+- `win.tbl_see(node, row)`
+- `tre(items, *, pr=None, cols=None, widths=None, multi=False, bind=None, ch=None, clk=None, dbl=None, pd=0.0, gp=0.0, w=None, h=None)`
+- `win.tre_see(node, index)`, `win.tre_sel(node, indexes)`
+- `win.tre_open(node, index, open)`, `win.tre_cell(node, index, col)`
 - `pg(rows, *, pr=None, bind=None, ch=None, pd=0.0, gp=0.0, w=None, h=None)`
 
 ### Меню и навигация
@@ -141,7 +146,7 @@ GUI-библиотека для Windows на Rust (Direct3D 11 + Direct2D + Dire
 - `term(lines=[], *, pr=None, prompt="$", on=None, pd=0.0, gp=0.0, w=None, h=None)`
 
 ### Диалоги и уведомления
-- `win.dlg()(title, message, buttons, *, on=None)`
+- `win.dlg()(title, message, buttons, *, on=None)` — `on` вызывается ровно один раз: индекс кнопки либо `-1` при отмене (Esc); длинное сообщение прокручивается колесом
 - `dlg.msg(title, message, *, ok="Ок", on=None)`
 - `dlg.alert(message, *, title="Внимание", ok="Ок", on=None)`
 - `win.nt()(title, text, *, secs=4.0, action="", on=None)`
@@ -154,7 +159,17 @@ GUI-библиотека для Windows на Rust (Direct3D 11 + Direct2D + Dire
 - `win.css(text)`, `win.css_hot(path)`
 - `win.grow(node, g)`, `win.align(node, *, justify="st", cross="str")`, `win.pin(node, *, l=None, t=None, r=None, b=None)`
 - `win.ghost(node, on=True)`, `win.front(node, on=True)`
-- `win.bindv/bindb/bindl/bindt/bindz(node, callback)`
+- `win.bindv/bindb/bindl/bindt/bindz(node, callback)` — `bindv` задаёт также страницу `stk` и активную вкладку `tab`
+- `win.screen()`, `win.size()`, `win.move(x, y)`, `win.on_resize(f)`
+
+### Потоки, время и ввод
+- `win.post()(f)` — вызов в UI-потоке из любого потока
+- `win.after(ms, f)`, `win.every(ms, f)`, `win.cancel(tid)`
+- `win.hotkey(spec, f)` — `"ctrl+c"`, `"ctrl+shift+a"`, `"f2"`, `"delete"`
+- `win.wheel(node, f)`, `win.rmb(node, f)`
+- `win.clip()` — `get()`, `set(text)`
+- `win.file()` — `open(...)`, `save(...)`, `dir(...)`
+- `win.pop(x=, y=, w=, h=, on_close=None)`, `win.pop_at(node)`, `win.pop_off()`
 
 ## Сокращения
 
@@ -173,6 +188,8 @@ GUI-библиотека для Windows на Rust (Direct3D 11 + Direct2D + Dire
 ### Управление узлом
 - tip(tooltip); cls(class); pl(place); gr(grid); pk(pack); dep(depth)
 - css(css); rt(root); thm(theme); fx(effects); dlg(dialog); nt(notification)
+- fnt(font); clip(clipboard); file(file dialogs); pop(popup layer)
+- rmb(right mouse button); hotkey(hotkey); post(post to UI thread)
 
 ### Параметры (общие для многих виджетов)
 - pr(parent) — не путать с методом `pr` (progress bar), различаются по контексту
