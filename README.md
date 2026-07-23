@@ -43,16 +43,6 @@ if __name__ == "__main__":
     main()
 ```
 
-## Сборка из исходников
-
-```bash
-python -m venv .venv
-.venv\Scripts\activate
-pip install maturin
-maturin develop
-python python/examples/showcase.py
-```
-
 ## Документация
 
 Полный список виджетов, параметров и статус разработки —
