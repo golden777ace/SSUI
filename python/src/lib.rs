@@ -91,7 +91,7 @@ fn pair_cb(f: PyObject, texts: Bindings, values: Bindings) -> PointerCb {
     Box::new(move |t, i, c, _| {
         Python::with_gil(|py| {
             if let Err(e) = f.bind(py).call1((i, c as i64)) {
-                e.print(py);
+                report(py, e);
             }
             refresh_all(py, t, &texts, &values);
         });
@@ -173,6 +173,47 @@ struct Share {
 }
 
 static POSTS: Mutex<Vec<(u64, Py<PyAny>)>> = Mutex::new(Vec::new());
+thread_local! {
+    static ERR_HOOK: RefCell<Option<PyObject>> = const { RefCell::new(None) };
+}
+
+/// Собирает traceback исключения в строку.
+fn format_exc(py: Python, e: &PyErr) -> String {
+    let tb = match py.import("traceback") {
+        Ok(m) => m,
+        Err(_) => return e.to_string(),
+    };
+    let value = e.value(py);
+    let args = (value.get_type(), value, e.traceback(py));
+    match tb.call_method1("format_exception", args) {
+        Ok(list) => match list.extract::<Vec<String>>() {
+            Ok(parts) => parts.concat(),
+            Err(_) => e.to_string(),
+        },
+        Err(_) => e.to_string(),
+    }
+}
+
+/// Отдаёт исключение хуку `on_error`; иначе печатает в stderr.
+fn report(py: Python, e: PyErr) {
+    let sent = ERR_HOOK.with(|h| {
+        let hook = h.borrow().as_ref().map(|f| f.clone_ref(py));
+        match hook {
+            Some(cb) => {
+                let text = format_exc(py, &e);
+                if let Err(inner) = cb.bind(py).call1((text,)) {
+                    inner.print(py);
+                }
+                true
+            }
+            None => false,
+        }
+    });
+    if !sent {
+        e.print(py);
+    }
+}
+
 static WIN_SEQ: AtomicU64 = AtomicU64::new(0);
 static TIMER_SEQ: AtomicU64 = AtomicU64::new(0);
 static MEM_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -207,7 +248,7 @@ fn drain_posts(share: &Share, t: &mut Tree, texts: &Bindings, values: &Bindings)
     Python::with_gil(|py| {
         for f in mine {
             if let Err(e) = f.bind(py).call0() {
-                e.print(py);
+                report(py, e);
             }
         }
         refresh_all(py, t, texts, values);
@@ -389,7 +430,7 @@ fn run_binding<'py>(py: Python<'py>, f: &Py<PyAny>) -> Option<Bound<'py, PyAny>>
     match r {
         Ok(v) => Some(v),
         Err(e) => {
-            e.print(py);
+            report(py, e);
             None
         }
     }
@@ -560,7 +601,7 @@ impl Fl {
             Python::with_gil(|py| {
                 if let Some(f) = &on {
                     if let Err(e) = f.bind(py).call1((path,)) {
-                        e.print(py);
+                        report(py, e);
                     }
                 }
                 refresh_all(py, t, &texts, &values);
@@ -678,7 +719,7 @@ impl Note {
             Some(f) => Some(Box::new(move |t: &mut Tree| {
                 Python::with_gil(|py| {
                     if let Err(e) = f.bind(py).call0() {
-                        e.print(py);
+                        report(py, e);
                     }
                     refresh_all(py, t, &texts, &values);
                 });
@@ -755,14 +796,14 @@ impl Dlg {
                 Python::with_gil(|py| {
                     if let Some(cb) = &on {
                         if let Err(e) = cb.bind(py).call1((i as i64,)) {
-                            e.print(py);
+                            report(py, e);
                         }
                     }
                     refresh_all(py, t, &texts, &values);
                 });
             }),
         };
-        *self.queue.borrow_mut() = Some(data);
+        self.queue.borrow_mut().push(data);
         Ok(())
     }
 
@@ -1027,7 +1068,7 @@ impl PyWindow {
             if let Some(cb) = &done {
                 Python::with_gil(|py| {
                     if let Err(e) = cb.bind(py).call0() {
-                        e.print(py);
+                        report(py, e);
                     }
                 });
             }
@@ -1217,7 +1258,7 @@ impl PyWindow {
         let cb: WheelCb = Box::new(move |t, d, x, y| {
             Python::with_gil(|py| {
                 if let Err(e) = f.bind(py).call1((d, x, y)) {
-                    e.print(py);
+                    report(py, e);
                 }
                 refresh_all(py, t, &texts, &values);
             });
@@ -1234,7 +1275,7 @@ impl PyWindow {
         tree.set_on_change(node.id, move |t, v| {
             Python::with_gil(|py| {
                 if let Err(e) = f.bind(py).call1((v as i64,)) {
-                    e.print(py);
+                    report(py, e);
                 }
                 refresh_all(py, t, &texts, &values);
             });
@@ -1546,7 +1587,7 @@ impl PyWindow {
             Python::with_gil(|py| {
                 if let Some(cb) = &clk {
                     if let Err(e) = cb.bind(py).call0() {
-                        e.print(py);
+                        report(py, e);
                     }
                 }
                 refresh_all(py, t, &texts, &values);
@@ -1689,7 +1730,7 @@ impl PyWindow {
             Python::with_gil(|py| {
                 if let Some(cb) = &clk {
                     if let Err(e) = cb.bind(py).call0() {
-                        e.print(py);
+                        report(py, e);
                     }
                 }
                 refresh_all(py, t, &texts, &values);
@@ -1720,7 +1761,7 @@ impl PyWindow {
             Python::with_gil(|py| {
                 if let Some(cb) = &ch {
                     if let Err(e) = cb.bind(py).call1((v,)) {
-                        e.print(py);
+                        report(py, e);
                     }
                 }
                 refresh_all(py, t, &texts, &values);
@@ -1797,7 +1838,7 @@ impl PyWindow {
             Python::with_gil(|py| {
                 if let Some(cb) = &on {
                     if let Err(e) = cb.bind(py).call1((list,)) {
-                        e.print(py);
+                        report(py, e);
                     }
                 }
                 refresh_all(py, t, &texts, &values);
@@ -1846,7 +1887,7 @@ impl PyWindow {
                                 }
                             }
                         }
-                        Err(e) => e.print(py),
+                        Err(e) => report(py, e),
                     }
                 }
                 refresh_all(py, t, &texts, &values);
@@ -1917,7 +1958,7 @@ impl PyWindow {
             Python::with_gil(|py| {
                 if let Some(cb) = &ch {
                     if let Err(e) = cb.bind(py).call1((v as i64,)) {
-                        e.print(py);
+                        report(py, e);
                     }
                 }
                 refresh_all(py, t, &ct, &cvl);
@@ -1993,7 +2034,7 @@ impl PyWindow {
             let cb: PointerCb = Box::new(move |t, _, _, _| {
                 Python::with_gil(|py| {
                     if let Err(e) = f.bind(py).call0() {
-                        e.print(py);
+                        report(py, e);
                     }
                     refresh_all(py, t, &texts, &values);
                 });
@@ -2074,7 +2115,7 @@ impl PyWindow {
             Python::with_gil(|py| {
                 if let Some(cb) = &ch {
                     if let Err(e) = cb.bind(py).call1((i,)) {
-                        e.print(py);
+                        report(py, e);
                     }
                 }
                 refresh_all(py, t, &texts, &values);
@@ -2116,7 +2157,7 @@ impl PyWindow {
             Python::with_gil(|py| {
                 if let Some(cb) = &ch {
                     if let Err(e) = cb.bind(py).call1((i,)) {
-                        e.print(py);
+                        report(py, e);
                     }
                 }
                 refresh_all(py, t, &texts, &values);
@@ -2192,7 +2233,7 @@ impl PyWindow {
             Python::with_gil(|py| {
                 if let Some(cb) = &ch {
                     if let Err(e) = cb.bind(py).call1((i,)) {
-                        e.print(py);
+                        report(py, e);
                     }
                 }
                 refresh_all(py, t, &texts, &values);
@@ -2251,7 +2292,7 @@ impl PyWindow {
             Python::with_gil(|py| {
                 if let Some(cb) = &ch {
                     if let Err(e) = cb.bind(py).call1((hh, mm)) {
-                        e.print(py);
+                        report(py, e);
                     }
                 }
                 refresh_all(py, t, &texts, &values);
@@ -2302,7 +2343,7 @@ impl PyWindow {
             Python::with_gil(|py| {
                 if let Some(cb) = &ch {
                     if let Err(e) = cb.bind(py).call1((i,)) {
-                        e.print(py);
+                        report(py, e);
                     }
                 }
                 refresh_all(py, t, &texts, &values);
@@ -2351,7 +2392,7 @@ impl PyWindow {
             Python::with_gil(|py| {
                 if let Some(cb) = &ch {
                     if let Err(e) = cb.bind(py).call1((y, m, d)) {
-                        e.print(py);
+                        report(py, e);
                     }
                 }
                 refresh_all(py, t, &texts, &values);
@@ -2395,7 +2436,7 @@ impl PyWindow {
             Python::with_gil(|py| {
                 if let Some(cb) = &ch {
                     if let Err(e) = cb.bind(py).call1((hex.as_str(),)) {
-                        e.print(py);
+                        report(py, e);
                     }
                 }
                 refresh_all(py, t, &texts, &values);
@@ -2441,7 +2482,7 @@ impl PyWindow {
             Python::with_gil(|py| {
                 if let Some(cb) = &ch {
                     if let Err(e) = cb.bind(py).call1((v,)) {
-                        e.print(py);
+                        report(py, e);
                     }
                 }
                 refresh_all(py, t, &texts, &values);
@@ -2509,7 +2550,7 @@ impl PyWindow {
             Python::with_gil(|py| {
                 if let Some(cb) = &ch_one {
                     if let Err(e) = cb.bind(py).call1((i,)) {
-                        e.print(py);
+                        report(py, e);
                     }
                 }
                 refresh_all(py, t, &texts, &values);
@@ -2522,7 +2563,7 @@ impl PyWindow {
                 let list = t.tree_multi(id);
                 Python::with_gil(|py| {
                     if let Err(e) = f.bind(py).call1((list,)) {
-                        e.print(py);
+                        report(py, e);
                     }
                     refresh_all(py, t, &ct, &cv);
                 });
@@ -2579,7 +2620,7 @@ impl PyWindow {
             Python::with_gil(|py| {
                 if let Some(cb) = &clk {
                     if let Err(e) = cb.bind(py).call0() {
-                        e.print(py);
+                        report(py, e);
                     }
                 }
                 refresh_all(py, t, &texts, &values);
@@ -2590,7 +2631,7 @@ impl PyWindow {
             Python::with_gil(|py| {
                 if let Some(cb) = &ch {
                     if let Err(e) = cb.bind(py).call1((i as i64,)) {
-                        e.print(py);
+                        report(py, e);
                     }
                 }
                 refresh_all(py, t, &texts2, &values2);
@@ -2629,7 +2670,7 @@ impl PyWindow {
             Python::with_gil(|py| {
                 if let Some(cb) = &on_select {
                     if let Err(e) = cb.bind(py).call1((m as i64, i as i64)) {
-                        e.print(py);
+                        report(py, e);
                     }
                 }
                 refresh_all(py, t, &texts, &values);
@@ -2670,7 +2711,7 @@ impl PyWindow {
             Python::with_gil(|py| {
                 if let Some(cb) = &ch {
                     if let Err(e) = cb.bind(py).call1((a, b)) {
-                        e.print(py);
+                        report(py, e);
                     }
                 }
                 refresh_all(py, t, &texts, &values);
@@ -2888,7 +2929,7 @@ impl PyWindow {
             Python::with_gil(|py| {
                 if let Some(cb) = &clk {
                     if let Err(e) = cb.bind(py).call0() {
-                        e.print(py);
+                        report(py, e);
                     }
                 }
                 refresh_all(py, t, &texts, &values);
@@ -2920,7 +2961,7 @@ impl PyWindow {
             Python::with_gil(|py| {
                 if let Some(cb) = &clk {
                     if let Err(e) = cb.bind(py).call1((v >= 0.5,)) {
-                        e.print(py);
+                        report(py, e);
                     }
                 }
                 refresh_all(py, t, &texts, &values);
@@ -2963,7 +3004,7 @@ impl PyWindow {
             Python::with_gil(|py| {
                 if let Some(cb) = &clk {
                     if let Err(e) = cb.bind(py).call0() {
-                        e.print(py);
+                        report(py, e);
                     }
                 }
                 refresh_all(py, t, &texts, &values);
@@ -3001,7 +3042,7 @@ impl PyWindow {
             Python::with_gil(|py| {
                 if let Some(cb) = &clk {
                     if let Err(e) = cb.bind(py).call1((v >= 0.5,)) {
-                        e.print(py);
+                        report(py, e);
                     }
                 }
                 refresh_all(py, t, &texts, &values);
@@ -3071,7 +3112,7 @@ impl PyWindow {
             tree.set_on_input(id, move |t, text| {
                 Python::with_gil(|py| {
                     if let Err(e) = sig.bind(py).call_method1("st", (text,)) {
-                        e.print(py);
+                        report(py, e);
                     }
                     refresh_all(py, t, &texts, &values);
                 });
@@ -3114,7 +3155,7 @@ impl PyWindow {
             tree.set_on_input(id, move |t, text| {
                 Python::with_gil(|py| {
                     if let Err(e) = sig.bind(py).call_method1("st", (text,)) {
-                        e.print(py);
+                        report(py, e);
                     }
                     refresh_all(py, t, &texts, &values);
                 });
@@ -3179,7 +3220,7 @@ impl PyWindow {
             Python::with_gil(|py| {
                 if let Some(cb) = ch1.as_ref() {
                     if let Err(e) = cb.bind(py).call1((nv,)) {
-                        e.print(py);
+                        report(py, e);
                     }
                 }
                 refresh_all(py, t, &t1, &v1);
@@ -3197,7 +3238,7 @@ impl PyWindow {
             Python::with_gil(|py| {
                 if let Some(cb) = ch2.as_ref() {
                     if let Err(e) = cb.bind(py).call1((nv,)) {
-                        e.print(py);
+                        report(py, e);
                     }
                 }
                 refresh_all(py, t, &t2, &v2);
@@ -3245,7 +3286,7 @@ impl PyWindow {
             Python::with_gil(|py| {
                 if let Some(cb) = &ch {
                     if let Err(e) = cb.bind(py).call1((v as i64,)) {
-                        e.print(py);
+                        report(py, e);
                     }
                 }
                 refresh_all(py, t, &texts, &values);
@@ -3285,7 +3326,7 @@ impl PyWindow {
             Python::with_gil(|py| {
                 if let Some(cb) = &ch {
                     if let Err(e) = cb.bind(py).call1((v as i64,)) {
-                        e.print(py);
+                        report(py, e);
                     }
                 }
                 refresh_all(py, t, &texts, &values);
@@ -3432,7 +3473,7 @@ impl PyWindow {
             Python::with_gil(|py| {
                 if let Some(cb) = &ch_one {
                     if let Err(e) = cb.bind(py).call1((v as i64,)) {
-                        e.print(py);
+                        report(py, e);
                     }
                 }
                 refresh_all(py, t, &texts, &values);
@@ -3445,7 +3486,7 @@ impl PyWindow {
                 let list = t.list_multi(id);
                 Python::with_gil(|py| {
                     if let Err(e) = f.bind(py).call1((list,)) {
-                        e.print(py);
+                        report(py, e);
                     }
                     refresh_all(py, t, &ct, &cv);
                 });
@@ -3477,7 +3518,7 @@ impl PyWindow {
         tree.add_hotkey(mods, vk, move |t| {
             Python::with_gil(|py| {
                 if let Err(e) = f.bind(py).call0() {
-                    e.print(py);
+                    report(py, e);
                 }
                 refresh_all(py, t, &texts, &values);
             });
@@ -3488,6 +3529,12 @@ impl PyWindow {
     /// Возвращает контроллер буфера обмена.
     fn clip(&self) -> Clip {
         Clip
+    }
+
+    /// Хук необработанных исключений колбэков; `f(text)` с traceback.
+    fn on_error(&self, f: PyObject) -> PyResult<()> {
+        ERR_HOOK.with(|h| *h.borrow_mut() = Some(f));
+        Ok(())
     }
 
     /// Возвращает контроллер файловых диалогов.
@@ -3508,7 +3555,7 @@ impl PyWindow {
         let cb: PointerCb = Box::new(move |t, _, x, y| {
             Python::with_gil(|py| {
                 if let Err(e) = f.bind(py).call1((x, y)) {
-                    e.print(py);
+                    report(py, e);
                 }
                 refresh_all(py, t, &texts, &values);
             });
@@ -3543,7 +3590,7 @@ impl PyWindow {
         tree.set_resize_cb(move |t, w, h| {
             Python::with_gil(|py| {
                 if let Err(e) = f.bind(py).call1((w, h)) {
-                    e.print(py);
+                    report(py, e);
                 }
                 refresh_all(py, t, &texts, &values);
             });
@@ -3601,7 +3648,7 @@ impl PyWindow {
             Python::with_gil(|py| {
                 if let Some(cb) = &ch_one {
                     if let Err(e) = cb.bind(py).call1((v as i64,)) {
-                        e.print(py);
+                        report(py, e);
                     }
                 }
                 refresh_all(py, t, &texts, &values);
@@ -3636,7 +3683,7 @@ impl PyWindow {
             Python::with_gil(|py| {
                 if let Some(cb) = &on_select {
                     if let Err(e) = cb.bind(py).call1((v as i64,)) {
-                        e.print(py);
+                        report(py, e);
                     }
                 }
                 refresh_all(py, t, &texts, &values);
@@ -3700,7 +3747,7 @@ impl PyWindow {
             cb: Box::new(move |t| {
                 Python::with_gil(|py| {
                     if let Err(e) = f.bind(py).call0() {
-                        e.print(py);
+                        report(py, e);
                     }
                     refresh_all(py, t, &texts, &values);
                 });
@@ -3902,7 +3949,7 @@ fn point_cb(f: PyObject, texts: Bindings, values: Bindings) -> PointerCb {
     Box::new(move |t, i, x, y| {
         Python::with_gil(|py| {
             if let Err(e) = f.bind(py).call1((i, x, y)) {
-                e.print(py);
+                report(py, e);
             }
             refresh_all(py, t, &texts, &values);
         });
@@ -3919,14 +3966,14 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
                 Ok((x, y, w, h)) => {
                     t.set_place(*id, Some(x), Some(y), None, None, Some(w), Some(h))
                 }
-                Err(e) => e.print(py),
+                Err(e) => report(py, e),
             }
         }
         for (id, f) in e.src.borrow().iter() {
             let Some(r) = run_binding(py, f) else { continue };
             match r.extract::<String>() {
                 Ok(p) => t.set_image_path(*id, &p),
-                Err(e) => e.print(py),
+                Err(e) => report(py, e),
             }
         }
     }
@@ -3934,7 +3981,7 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
         let Some(r) = run_binding(py, f) else { continue };
         match r.extract::<String>() {
             Ok(s) => t.set_label_text(*id, utf16(&s)),
-            Err(e) => e.print(py),
+            Err(e) => report(py, e),
         }
     }
     for (id, f) in values.borrow().iter() {
@@ -3953,7 +4000,7 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
                     t.set_stack_page(*id, v.max(0.0) as usize);
                 }
             }
-            Err(e) => e.print(py),
+            Err(e) => report(py, e),
         }
     }
     DEPTH_BINDINGS.with(|c| {
@@ -3961,7 +4008,7 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
             let Some(r) = run_binding(py, f) else { continue };
             match r.extract::<f32>() {
                 Ok(v) => t.set_depth(*id, v as i32),
-                Err(e) => e.print(py),
+                Err(e) => report(py, e),
             }
         }
     });
@@ -3970,7 +4017,7 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
             let Some(r) = run_binding(py, f) else { continue };
             match r.extract::<(f32, f32)>() {
                 Ok((pd, gp)) => t.set_box(*id, pd, gp),
-                Err(e) => e.print(py),
+                Err(e) => report(py, e),
             }
         }
     });
@@ -3982,7 +4029,7 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
                     let data = rows.iter().map(|s| utf16(s)).collect();
                     t.set_list_items(*id, data);
                 }
-                Err(e) => e.print(py),
+                Err(e) => report(py, e),
             }
         }
     });
@@ -3997,7 +4044,7 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
                         .collect();
                     t.set_table_rows(*id, data);
                 }
-                Err(e) => e.print(py),
+                Err(e) => report(py, e),
             }
         }
     });
@@ -4006,7 +4053,7 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
             let Some(r) = run_binding(py, f) else { continue };
             match r.extract::<Vec<f32>>() {
                 Ok(v) => t.set_chart_values(*id, v),
-                Err(e) => e.print(py),
+                Err(e) => report(py, e),
             }
         }
     });
@@ -4015,7 +4062,7 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
             let Some(r) = run_binding(py, f) else { continue };
             match r.extract::<Vec<ShapeSpec>>() {
                 Ok(items) => t.set_canvas_shapes(*id, make_shapes(items)),
-                Err(e) => e.print(py),
+                Err(e) => report(py, e),
             }
         }
     });
@@ -4030,7 +4077,7 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
                         .collect::<Vec<_>>();
                     t.set_prop_rows(*id, data);
                 }
-                Err(e) => e.print(py),
+                Err(e) => report(py, e),
             }
         }
     });
@@ -4039,7 +4086,7 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
             let Some(r) = run_binding(py, f) else { continue };
             match tree_rows(&r) {
                 Ok(rows) => t.set_tree_items(*id, rows),
-                Err(e) => e.print(py),
+                Err(e) => report(py, e),
             }
         }
     });
@@ -4051,7 +4098,7 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
                     let data = list.iter().map(|(k, s)| (*k, hexa(s))).collect();
                     t.set_table_cbg(*id, data);
                 }
-                Err(e) => e.print(py),
+                Err(e) => report(py, e),
             }
         }
     });
@@ -4061,7 +4108,7 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
             let v = match r.extract::<f32>() {
                 Ok(v) => v,
                 Err(e) => {
-                    e.print(py);
+                    report(py, e);
                     continue;
                 }
             };

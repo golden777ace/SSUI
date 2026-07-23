@@ -46,8 +46,10 @@ if __name__ == "__main__":
 ## Документация
 
 Полный список виджетов, параметров и статус разработки —
-[DESC.md](./DESC.md). Примеры — в каталоге `python/examples`.
+[DESC.md](https://github.com/golden777ace/SSUI/blob/main/DESC.md).
+Примеры — в каталоге `python/examples`.
 
 ## Лицензия
 
-MIT © 2026 Sergievskiy Sergey. Полный текст — [LICENSE](./LICENSE).
+MIT © 2026 Sergievskiy Sergey. Полный текст —
+[LICENSE](https://github.com/golden777ace/SSUI/blob/main/LICENSE).

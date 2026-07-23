@@ -698,7 +698,7 @@ pub struct DialogData {
     pub cb: Box<dyn FnMut(&mut Tree, i32)>,
 }
 
-pub type DialogQueue = Rc<RefCell<Option<DialogData>>>;
+pub type DialogQueue = Rc<RefCell<Vec<DialogData>>>;
 
 pub struct NoteData {
     pub title: Vec<u16>,
@@ -866,7 +866,7 @@ impl Tree {
             anims: Vec::new(),
             pending: Rc::new(RefCell::new(Vec::new())),
             menu_items: Vec::new(),
-            pending_dialog: Rc::new(RefCell::new(None)),
+            pending_dialog: Rc::new(RefCell::new(Vec::new())),
             pending_notes: Rc::new(RefCell::new(Vec::new())),
             pending_theme: Rc::new(RefCell::new(None)),
             pending_font: Rc::new(RefCell::new(None)),
@@ -2125,9 +2125,14 @@ impl Tree {
         std::mem::take(&mut *q)
     }
 
-    /// Забирает отложенный запрос диалога.
+    /// Забирает самый ранний отложенный запрос диалога.
     pub fn take_pending_dialog(&mut self) -> Option<DialogData> {
-        self.pending_dialog.borrow_mut().take()
+        let mut q = self.pending_dialog.borrow_mut();
+        if q.is_empty() {
+            None
+        } else {
+            Some(q.remove(0))
+        }
     }
 
     /// Устанавливает колбэк активного диалога.
