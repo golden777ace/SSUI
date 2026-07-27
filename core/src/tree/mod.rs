@@ -86,6 +86,10 @@ pub struct Props {
     pub fill: u8,
     pub expand: bool,
     pub z: i32,
+    pub min_w: f32,
+    pub min_h: f32,
+    pub max_w: f32,
+    pub max_h: f32,
 }
 
 impl Default for Props {
@@ -113,6 +117,10 @@ impl Default for Props {
             fill: 0,
             expand: false,
             z: 0,
+            min_w: 0.0,
+            min_h: 0.0,
+            max_w: f32::INFINITY,
+            max_h: f32::INFINITY,
         }
     }
 }
@@ -1197,6 +1205,37 @@ impl Tree {
         self.dirty = true;
     }
 
+    /// Задаёт пределы размеров узла; ноль в максимуме снимает его.
+    pub fn set_limits(
+        &mut self,
+        id: NodeId,
+        min_w: Option<f32>,
+        min_h: Option<f32>,
+        max_w: Option<f32>,
+        max_h: Option<f32>,
+    ) {
+        let p = &mut self.nodes[id.0].props;
+        if let Some(v) = min_w {
+            p.min_w = v.max(0.0);
+        }
+        if let Some(v) = min_h {
+            p.min_h = v.max(0.0);
+        }
+        if let Some(v) = max_w {
+            p.max_w = if v > 0.0 { v } else { f32::INFINITY };
+        }
+        if let Some(v) = max_h {
+            p.max_h = if v > 0.0 { v } else { f32::INFINITY };
+        }
+        self.dirty = true;
+    }
+
+    /// Возвращает пределы узла: `(min_w, min_h, max_w, max_h)`.
+    pub fn limits(&self, id: NodeId) -> (f32, f32, f32, f32) {
+        let p = self.nodes[id.0].props;
+        (p.min_w, p.min_h, p.max_w, p.max_h)
+    }
+
     /// Задаёт глубину узла: больше `z` — ближе к зрителю.
     pub fn set_depth(&mut self, id: NodeId, z: i32) {
         self.nodes[id.0].props.z = z;
@@ -1352,7 +1391,15 @@ impl Tree {
                 4 => self.set_acc_open(id, a >= 0.5),
                 5 => self.set_hidden(id, a < 0.5),
                 6 => self.set_ghost(id, a >= 0.5),
-                _ => self.set_front(id, a >= 0.5),
+                7 => self.set_front(id, a >= 0.5),
+                8 => self.set_split_ratio(id, a),
+                _ => self.set_limits(
+                    id,
+                    (a >= 0.0).then_some(a),
+                    (b >= 0.0).then_some(b),
+                    (c >= 0.0).then_some(c),
+                    (d >= 0.0).then_some(d),
+                ),
             }
         }
         true
@@ -3526,7 +3573,7 @@ impl Tree {
         }
         let props = self.nodes[id.0].props;
         if let Some(h) = props.height {
-            return Some(h);
+            return Some(clamp_span(h, props.min_h, props.max_h));
         }
         if props.abs || props.mode != 0 {
             return None;
@@ -3534,8 +3581,14 @@ impl Tree {
         let head = match &self.nodes[id.0].kind {
             NodeKind::Container | NodeKind::Frame { .. } => 0.0,
             NodeKind::Group { .. } => GROUP_HEADER,
-            NodeKind::Accordion { open, .. } if *open => return self.acc_natural(id),
-            NodeKind::Accordion { .. } => return Some(ACC_HEADER),
+            NodeKind::Accordion { open, .. } if *open => {
+                return self
+                    .acc_natural(id)
+                    .map(|v| clamp_span(v, props.min_h, props.max_h))
+            }
+            NodeKind::Accordion { .. } => {
+                return Some(clamp_span(ACC_HEADER, props.min_h, props.max_h))
+            }
             _ => return None,
         };
         let kids: Vec<NodeId> = self.nodes[id.0]
@@ -3558,7 +3611,11 @@ impl Tree {
                 total = total.max(self.natural_height(c)?);
             }
         }
-        Some(total + 2.0 * props.padding + head)
+        Some(clamp_span(
+            total + 2.0 * props.padding + head,
+            props.min_h,
+            props.max_h,
+        ))
     }
 
     fn acc_natural(&self, id: NodeId) -> Option<f32> {
@@ -3593,7 +3650,7 @@ impl Tree {
         let rect = if self.hidden.contains(&id.0) {
             OFF_RECT
         } else {
-            rect
+            clamp_rect(rect, self.nodes[id.0].props)
         };
         self.nodes[id.0].rect = rect;
         let props = self.nodes[id.0].props;
@@ -3642,23 +3699,56 @@ impl Tree {
             return;
         }
 
-        if let NodeKind::Splitter { ratio, vertical } = &self.nodes[id.0].kind {
-            let ratio = *ratio;
-            let vertical = *vertical;
+        if self.is_splitter(id) {
+            let vertical = self.split_vertical(id);
+            let ratio = self.split_ratio(id);
+            let avail = if vertical {
+                (rect.width - SPLIT_W).max(0.0)
+            } else {
+                (rect.height - SPLIT_W).max(0.0)
+            };
+            let mut first = avail * ratio;
+            if let Some(&c) = children.first() {
+                let p = self.nodes[c.0].props;
+                let (lo, hi) = if vertical {
+                    (p.min_w, p.max_w)
+                } else {
+                    (p.min_h, p.max_h)
+                };
+                first = clamp_span(first, lo, hi);
+            }
+            if let Some(&c) = children.get(1) {
+                let p = self.nodes[c.0].props;
+                let (lo, hi) = if vertical {
+                    (p.min_w, p.max_w)
+                } else {
+                    (p.min_h, p.max_h)
+                };
+                first = first.min((avail - lo).max(0.0));
+                if hi.is_finite() {
+                    first = first.max((avail - hi).max(0.0));
+                }
+            }
+            let first = first.clamp(0.0, avail);
+            if avail > 0.0 {
+                let eff = first / avail;
+                if (eff - ratio).abs() > 0.0005 {
+                    if let NodeKind::Splitter { ratio: r, .. } = &mut self.nodes[id.0].kind {
+                        *r = eff;
+                    }
+                }
+            }
+            let second = (avail - first).max(0.0);
             let off = OFF_RECT;
             let (r1, r2) = if vertical {
-                let w1 = (rect.width - SPLIT_W) * ratio;
-                let w2 = (rect.width - SPLIT_W - w1).max(0.0);
                 (
-                    Rect::new(rect.x, rect.y, w1.max(0.0), rect.height),
-                    Rect::new(rect.x + w1 + SPLIT_W, rect.y, w2, rect.height),
+                    Rect::new(rect.x, rect.y, first, rect.height),
+                    Rect::new(rect.x + first + SPLIT_W, rect.y, second, rect.height),
                 )
             } else {
-                let h1 = (rect.height - SPLIT_W) * ratio;
-                let h2 = (rect.height - SPLIT_W - h1).max(0.0);
                 (
-                    Rect::new(rect.x, rect.y, rect.width, h1.max(0.0)),
-                    Rect::new(rect.x, rect.y + h1 + SPLIT_W, rect.width, h2),
+                    Rect::new(rect.x, rect.y, rect.width, first),
+                    Rect::new(rect.x, rect.y + first + SPLIT_W, rect.width, second),
                 )
             };
             for (i, &c) in children.iter().enumerate() {
@@ -3688,7 +3778,12 @@ impl Tree {
                     self.layout_node(c, off);
                     continue;
                 }
-                let ch = self.natural_height(c).unwrap_or(36.0);
+                let cp = self.nodes[c.0].props;
+                let ch = clamp_span(
+                    self.natural_height(c).unwrap_or(36.0),
+                    cp.min_h,
+                    cp.max_h,
+                );
                 self.layout_node(c, Rect::new(body.x, cursor, body.width, ch));
                 cursor += ch + props.gap;
             }
@@ -3707,7 +3802,12 @@ impl Tree {
                     self.layout_node(c, OFF_RECT);
                     continue;
                 }
-                let ch = self.natural_height(c).unwrap_or(40.0);
+                let cp = self.nodes[c.0].props;
+                let ch = clamp_span(
+                    self.natural_height(c).unwrap_or(40.0),
+                    cp.min_h,
+                    cp.max_h,
+                );
                 self.layout_node(c, Rect::new(rect.x + pad, cursor, inner_w, ch));
                 cursor += ch + gap;
                 total += ch + gap;
@@ -3808,11 +3908,30 @@ impl Tree {
                     }
                 }
             };
+            let main_size = if vertical {
+                clamp_span(main_size, cp.min_h, cp.max_h)
+            } else {
+                clamp_span(main_size, cp.min_w, cp.max_w)
+            };
             let cross_fixed = if vertical { cp.width } else { cp.height };
+            let cross_lo = if vertical { cp.min_w } else { cp.min_h };
+            let cross_hi = if vertical { cp.max_w } else { cp.max_h };
             let (cx_off, cx_size) = match cross_fixed {
-                None => (0.0, inner_cross),
+                None => {
+                    let s = clamp_span(inner_cross, cross_lo, cross_hi);
+                    let off = if s < inner_cross {
+                        match props.cross {
+                            2 => (inner_cross - s) / 2.0,
+                            3 => inner_cross - s,
+                            _ => 0.0,
+                        }
+                    } else {
+                        0.0
+                    };
+                    (off, s)
+                }
                 Some(s) => {
-                    let s = s.min(inner_cross);
+                    let s = clamp_span(s.min(inner_cross), cross_lo, cross_hi);
                     let off = match props.cross {
                         2 => (inner_cross - s) / 2.0,
                         3 => inner_cross - s,
@@ -3865,12 +3984,16 @@ impl Tree {
         for &c in flow {
             let cp = self.nodes[c.0].props;
             if cp.side >= 2 {
-                need_h += cp.width.unwrap_or(0.0) + gap;
+                need_h += clamp_span(cp.width.unwrap_or(0.0), cp.min_w, cp.max_w) + gap;
                 if cp.expand {
                     exp_h += 1;
                 }
             } else {
-                need_v += self.natural_height(c).unwrap_or(0.0) + gap;
+                need_v += clamp_span(
+                    self.natural_height(c).unwrap_or(0.0),
+                    cp.min_h,
+                    cp.max_h,
+                ) + gap;
                 if cp.expand {
                     exp_v += 1;
                 }
@@ -3891,7 +4014,12 @@ impl Tree {
         let mut cav = inner;
         for &c in flow {
             let cp = self.nodes[c.0].props;
-            let nh = self.natural_height(c).unwrap_or(0.0);
+            let nh = clamp_span(
+                self.natural_height(c).unwrap_or(0.0),
+                cp.min_h,
+                cp.max_h,
+            );
+            let nw = clamp_span(cp.width.unwrap_or(0.0), cp.min_w, cp.max_w);
             let rect = match cp.side {
                 1 => {
                     let mut h = nh;
@@ -3904,7 +4032,7 @@ impl Tree {
                     out
                 }
                 2 => {
-                    let mut w = cp.width.unwrap_or(0.0);
+                    let mut w = nw;
                     if cp.expand {
                         w += add_h;
                     }
@@ -3919,7 +4047,7 @@ impl Tree {
                     out
                 }
                 3 => {
-                    let mut w = cp.width.unwrap_or(0.0);
+                    let mut w = nw;
                     if cp.expand {
                         w += add_h;
                     }
@@ -3987,6 +4115,19 @@ impl Default for Tree {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn clamp_span(v: f32, lo: f32, hi: f32) -> f32 {
+    v.max(lo).min(hi.max(lo))
+}
+
+fn clamp_rect(r: Rect, p: Props) -> Rect {
+    Rect::new(
+        r.x,
+        r.y,
+        clamp_span(r.width, p.min_w, p.max_w),
+        clamp_span(r.height, p.min_h, p.max_h),
+    )
 }
 
 fn pack_fill(rect: Rect, cp: Props) -> Rect {

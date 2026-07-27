@@ -3445,6 +3445,45 @@ impl PyWindow {
         Ok(())
     }
 
+    /// Пределы размеров узла: `lim(node, min_w=200.0)`.
+    #[pyo3(signature = (n, *, min_w=None, min_h=None, max_w=None, max_h=None))]
+    fn lim(
+        &mut self,
+        n: PyNode,
+        min_w: Option<f32>,
+        min_h: Option<f32>,
+        max_w: Option<f32>,
+        max_h: Option<f32>,
+    ) -> PyResult<()> {
+        match self.tree.as_mut() {
+            Some(tree) => tree.set_limits(n.id, min_w, min_h, max_w, max_h),
+            None => {
+                let v = |x: Option<f32>| x.unwrap_or(-1.0);
+                self.canvas_queue.borrow_mut().push((
+                    n.id,
+                    9,
+                    v(min_w),
+                    v(min_h),
+                    v(max_w),
+                    v(max_h),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Задаёт долю первой области разделителя: `spl_ratio(node, 0.3)`.
+    fn spl_ratio(&mut self, n: PyNode, ratio: f32) -> PyResult<()> {
+        match self.tree.as_mut() {
+            Some(tree) => tree.set_split_ratio(n.id, ratio),
+            None => self
+                .canvas_queue
+                .borrow_mut()
+                .push((n.id, 8, ratio, 0.0, 0.0, 0.0)),
+        }
+        Ok(())
+    }
+
     /// Задаёт глубину узла: больше `z` — ближе к зрителю (`dep(node, 2)`).
     #[pyo3(signature = (n, z=0))]
     fn dep(&mut self, n: PyNode, z: i32) -> PyResult<()> {
