@@ -165,10 +165,21 @@ def main():
             with win.grp("Группа", gp=8.0, h=160.0):
                 win.ch("Флажок", h=32.0)
                 win.sw("Свитч", h=36.0)
-        elif name == "Accordion":
-            with win.acc("Секция", h=180.0):
-                win.lb("Содержимое секции", h=32.0)
-                win.bt("Кнопка", h=40.0)
+                elif name == "Accordion":
+                secs = []
+                for nm in ("Первая", "Вторая", "Третья"):
+                    with win.acc(nm, grp=7, h=150.0,
+                                 ch=lambda v, n=nm: log.st(
+                                     f"{n} — {'открыта' if v else 'закрыта'}")) as a:
+                        secs.append(a)
+                        win.lb(f"Содержимое: {nm}", h=32.0)
+                        win.bt("Кнопка", h=40.0)
+                with win.bx(ax="h", gp=8.0, h=52.0) as arow:
+                    win.cls(arow, "clear")
+                    win.bt("Открыть первую", h=44.0,
+                           clk=lambda: win.acc_open(secs[0], True))
+                    win.bt("Свернуть все", h=44.0,
+                           clk=lambda: [win.acc_open(s, False) for s in secs])
         elif name == "ScrollArea":
             with win.scr(h=240.0):
                 for i in range(14):

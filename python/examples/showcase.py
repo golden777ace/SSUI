@@ -454,17 +454,22 @@ def main():
             with win.bx(pr=tabs, ax="h", pd=8.0, gp=16.0) as pacc:
                 win.cls(pacc, "clear")
                 with win.bx(pd=12.0, gp=8.0, w=420.0):
-                    win.lb("Аккордеон — клик по заголовку", h=26.0)
-                    with win.acc("Общие", open=True, h=180.0):
+                    win.lb("Аккордеон — открыта одна секция (grp)", h=26.0)
+                    with win.acc("Общие", open=True, grp=1, h=180.0,
+                                 ch=lambda v: act.st(f"Общие: {int(v)}")):
                         win.sw("Автозапуск", h=36.0)
                         win.ch("Показывать подсказки", chk=True, h=32.0)
                         win.sl(0.5, h=36.0)
-                    with win.acc("Сеть", h=140.0):
+                    with win.acc("Сеть", grp=1, h=140.0,
+                                 ch=lambda v: act.st(f"Сеть: {int(v)}")) as anet:
                         win.tgl("Прокси", h=40.0)
                         win.tx("proxy.local:8080", h=44.0)
-                    with win.acc("О программе", h=110.0):
+                    with win.acc("О программе", grp=1, h=110.0,
+                                 ch=lambda v: act.st(f"О программе: {int(v)}")):
                         win.lb("SSUI — GPU-GUI для Windows", h=26.0)
                         win.lnk("github.com/golden777ace/SSUI")
+                    win.bt("Открыть «Сеть» из кода", h=40.0,
+                           clk=lambda: win.acc_open(anet, True))
                 with win.bx(pd=12.0, gp=8.0):
                     win.lb("Область прокрутки — колесо мыши", h=26.0)
                     with win.scr(h=460.0):

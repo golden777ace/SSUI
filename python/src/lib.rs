@@ -10,10 +10,10 @@ use pyo3::wrap_pyfunction;
 
 use ssui_core::platform::{dpi, Window as CoreWindow, WindowOpts};
 use ssui_core::tree::{
-    Anim, AnimQueue, Axis, DialogData, DialogQueue, Ease, FileQueue, FileReq, FocusQueue,
-    NodeId, NodeKind, CanvasQueue, NoteData, NoteQueue, PointerCb, Props, RectTable, Shape,
-    TextState, TimerKill, TimerQueue, TimerReq, Tree, TreeGeom, TreeItem, TreeQueue, WheelCb,
-    LIST_ROW, OFF_COORD,
+    Anim, AnimQueue, Axis, BuildQueue, CssQueue, DialogData, DialogQueue, Ease, FileQueue,
+    FileReq, FocusQueue, NodeId, NodeKind, CanvasQueue, NoteData, NoteQueue, PointerCb,
+    Props, RectTable, Shape, TextState, TimerKill, TimerQueue, TimerReq, Tree, TreeGeom,
+    TreeItem, TreeQueue, WheelCb, LIST_ROW, OFF_COORD,
 };
 use pyo3::types::PyAnyMethods;
 
@@ -854,6 +854,8 @@ struct PyWindow {
     kill_timers: TimerKill,
     canvas_queue: CanvasQueue,
     tree_queue: TreeQueue,
+    css_queue: CssQueue,
+    build_queue: BuildQueue,
     tree_geom: TreeGeom,
     file_queue: FileQueue,
     extra: Rc<Extra>,
@@ -921,6 +923,8 @@ impl PyWindow {
         let kill_timers = tree.kill_queue();
         let canvas_queue = tree.canvas_queue();
         let tree_queue = tree.tree_queue();
+        let css_queue = tree.css_queue();
+        let build_queue = tree.build_queue();
         let tree_geom = tree.tree_geom();
         let file_queue = tree.file_queue();
         let bindings: Bindings = Rc::new(RefCell::new(Vec::new()));
@@ -950,6 +954,8 @@ impl PyWindow {
             kill_timers,
             canvas_queue,
             tree_queue,
+            css_queue,
+            build_queue,
             tree_geom,
             file_queue,
             extra,
@@ -1041,8 +1047,21 @@ impl PyWindow {
         Ok(())
     }
 
-    /// Показывает окно, не блокируя цикл сообщений.
-    fn show(slf: &Bound<'_, Self>) -> PyResult<()> {
+    /// Показывает окно; с узлом — управляет его видимостью.
+    #[pyo3(signature = (node=None, on=true))]
+    fn show(slf: &Bound<'_, Self>, node: Option<PyNode>, on: bool) -> PyResult<()> {
+        if let Some(n) = node {
+            let mut me = slf.borrow_mut();
+            if let Some(tree) = me.tree.as_mut() {
+                tree.set_hidden(n.id, !on);
+            } else {
+                let v = if on { 1.0 } else { 0.0 };
+                me.canvas_queue
+                    .borrow_mut()
+                    .push((n.id, 5, v, 0.0, 0.0, 0.0));
+            }
+            return Ok(());
+        }
         let (tree, title, width, height, mut opts, cell, done, parent, share) = {
             let mut me = slf.borrow_mut();
             let tree = me.tree.take().ok_or_else(consumed)?;
@@ -1131,16 +1150,28 @@ impl PyWindow {
     /// Делает узел прозрачным для мыши; клики проходят насквозь.
     #[pyo3(signature = (node, on=true))]
     fn ghost(&mut self, node: PyNode, on: bool) -> PyResult<()> {
-        let tree = self.tree.as_mut().ok_or_else(consumed)?;
-        tree.set_ghost(node.id, on);
+        let v = if on { 1.0 } else { 0.0 };
+        match self.tree.as_mut() {
+            Some(tree) => tree.set_ghost(node.id, on),
+            None => self
+                .canvas_queue
+                .borrow_mut()
+                .push((node.id, 6, v, 0.0, 0.0, 0.0)),
+        }
         Ok(())
     }
 
     /// Поднимает узел поверх соседей при нажатии внутри него.
     #[pyo3(signature = (node, on=true))]
     fn front(&mut self, node: PyNode, on: bool) -> PyResult<()> {
-        let tree = self.tree.as_mut().ok_or_else(consumed)?;
-        tree.set_front(node.id, on);
+        let v = if on { 1.0 } else { 0.0 };
+        match self.tree.as_mut() {
+            Some(tree) => tree.set_front(node.id, on),
+            None => self
+                .canvas_queue
+                .borrow_mut()
+                .push((node.id, 7, v, 0.0, 0.0, 0.0)),
+        }
         Ok(())
     }
 
@@ -1477,12 +1508,18 @@ impl PyWindow {
     }
 
     /// Секция аккордеона как контекст: `with win.acc("Имя"):`.
-    #[pyo3(signature = (title="", *, pr=None, open=false, rad=10.0, pd=8.0, gp=8.0, w=None, h=None))]
+    #[pyo3(signature = (
+        title="", *, pr=None, open=false, grp=0, ch=None,
+        rad=10.0, pd=8.0, gp=8.0, w=None, h=None
+    ))]
+    #[allow(clippy::too_many_arguments)]
     fn acc(
         &mut self,
         title: &str,
         pr: Option<PyNode>,
         open: bool,
+        grp: u32,
+        ch: Option<PyObject>,
         rad: f32,
         pd: f32,
         gp: f32,
@@ -1491,6 +1528,8 @@ impl PyWindow {
     ) -> PyResult<Ctx> {
         let props = make_props("v", pd, gp, w, h);
         let parent = self.parent_of(pr);
+        let texts = self.bindings.clone();
+        let values = self.value_bindings.clone();
         let tree = self.tree.as_mut().ok_or_else(consumed)?;
         let id = tree.add_child(
             parent,
@@ -1498,9 +1537,20 @@ impl PyWindow {
                 title: utf16(title),
                 open,
                 radius: rad,
+                group: grp,
             },
             props,
         );
+        tree.set_on_change(id, move |t, v| {
+            Python::with_gil(|py| {
+                if let Some(cb) = &ch {
+                    if let Err(e) = cb.bind(py).call1((v >= 0.5,)) {
+                        report(py, e);
+                    }
+                }
+                refresh_all(py, t, &texts, &values);
+            });
+        });
         Ok(Ctx {
             stack: self.stack.clone(),
             node: id,
@@ -2059,6 +2109,16 @@ impl PyWindow {
         self.canvas_queue
             .borrow_mut()
             .push((node.id, 3, 0.0, 0.0, 0.0, 0.0));
+        Ok(())
+    }
+
+    /// Открывает или сворачивает секцию аккордеона из кода.
+    #[pyo3(signature = (node, on=true))]
+    fn acc_open(&self, node: PyNode, on: bool) -> PyResult<()> {
+        let v = if on { 1.0 } else { 0.0 };
+        self.canvas_queue
+            .borrow_mut()
+            .push((node.id, 4, v, 0.0, 0.0, 0.0));
         Ok(())
     }
 
@@ -3394,18 +3454,43 @@ impl PyWindow {
     }
 
     /// Применяет CSS-подмножество из строки.
-    fn css(&mut self, text: &str) -> PyResult<()> {
-        let tree = self.tree.as_mut().ok_or_else(consumed)?;
-        tree.apply_css(text);
+    #[pyo3(signature = (text, *, replace=false))]
+    fn css(&mut self, text: &str, replace: bool) -> PyResult<()> {
+        self.push_css(text, replace);
         Ok(())
     }
 
     /// Применяет CSS из файла по пути.
-    fn css_file(&mut self, path: &str) -> PyResult<()> {
+    #[pyo3(signature = (path, *, replace=false))]
+    fn css_file(&mut self, path: &str, replace: bool) -> PyResult<()> {
         let text = std::fs::read_to_string(path)
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-        let tree = self.tree.as_mut().ok_or_else(consumed)?;
-        tree.apply_css(&text);
+        self.push_css(&text, replace);
+        Ok(())
+    }
+
+    /// Достраивает дерево виджетов; работает и после показа окна.
+    fn build(slf: &Bound<'_, Self>, f: PyObject) -> PyResult<()> {
+        if slf.borrow().tree.is_some() {
+            f.bind(slf.py()).call0()?;
+            return Ok(());
+        }
+        let queue = slf.borrow().build_queue.clone();
+        let win: Py<Self> = slf.clone().unbind();
+        queue.borrow_mut().push(Box::new(move |t: &mut Tree| {
+            Python::with_gil(|py| {
+                let mut spare = Tree::new();
+                std::mem::swap(t, &mut spare);
+                win.borrow_mut(py).tree = Some(spare);
+                if let Err(e) = f.bind(py).call0() {
+                    report(py, e);
+                }
+                let back = win.borrow_mut(py).tree.take();
+                if let Some(real) = back {
+                    *t = real;
+                }
+            });
+        }));
         Ok(())
     }
 
@@ -3737,12 +3822,28 @@ impl PyWindow {
         _v: Option<PyObject>,
         _tb: Option<PyObject>,
     ) -> PyResult<bool> {
-        PyWindow::show(slf)?;
+        PyWindow::show(slf, None, true)?;
         Ok(false)
     }
 }
 
 impl PyWindow {
+    fn push_css(&mut self, text: &str, replace: bool) {
+        match self.tree.as_mut() {
+            Some(tree) => {
+                if replace {
+                    tree.replace_css(text);
+                } else {
+                    tree.apply_css(text);
+                }
+            }
+            None => self
+                .css_queue
+                .borrow_mut()
+                .push((text.to_string(), replace)),
+        }
+    }
+
     /// Кладёт таймер в очередь и будит цикл; возвращает идентификатор.
     fn push_timer(&self, ms: f32, once: bool, f: PyObject) -> u64 {
         let id = TIMER_SEQ.fetch_add(1, Ordering::Relaxed) + 1;

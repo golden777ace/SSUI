@@ -40,6 +40,11 @@ pub fn add_source(tree: &mut Tree, css: &str) {
     recompute(tree);
 }
 
+pub fn set_source(tree: &mut Tree, css: &str) {
+    STATIC_CSS.with(|s| *s.borrow_mut() = css.to_string());
+    recompute(tree);
+}
+
 pub fn watch(tree: &mut Tree, path: &str) {
     let text = std::fs::read_to_string(path).unwrap_or_default();
     let stamp = mtime(path);

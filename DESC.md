@@ -83,7 +83,8 @@ GUI-библиотека для Windows на Rust (Direct3D 11 + Direct2D + Dire
 - `scr(*, pr=None, pd=8.0, gp=8.0, w=None, h=None)`
 - `spl(*, pr=None, ratio=0.5, vertical=True, w=None, h=None)`
 - `tab(labels, *, pr=None, sel=0, ch=None, pd=0.0, gp=0.0, w=None, h=None)`
-- `acc(title="", *, pr=None, open=False, rad=10.0, pd=8.0, gp=8.0, w=None, h=None)`
+- `acc(title="", *, pr=None, open=False, grp=0, ch=None, rad=10.0, pd=8.0, gp=8.0, w=None, h=None)`
+- `win.acc_open(node, on=True)` — открыть или свернуть секцию из кода
 - `stk(*, pr=None, page=0, bind=None, w=None, h=None)`
 - `cv(shapes=[], *, pr=None, bind=None, scroll=False, down=None, move=None, up=None, dbl=None, pd=0.0, gp=0.0, w=None, h=None)`
 - `win.cv_region(node, x1, y1, x2, y2)`, `win.cv_view(node, x, y)`
@@ -156,9 +157,11 @@ GUI-библиотека для Windows на Rust (Direct3D 11 + Direct2D + Dire
 - `win.thm()("wht"/"lit"/"drk"/"blk")`
 - `win.fx()(sig, to, *, frm=None, dur=0.3, ease="out")`
 - `win.tint(sig)`, `win.blur(sig)`, `win.blur_mode(sig)`, `win.drag_smooth(sig)`
-- `win.css(text)`, `win.css_hot(path)`
+- `win.css(text, *, replace=False)`, `win.css_file(path, *, replace=False)`, `win.css_hot(path)`
+- `win.build(f)` — достройка дерева после показа окна; внутри работают все строители
 - `win.grow(node, g)`, `win.align(node, *, justify="st", cross="str")`, `win.pin(node, *, l=None, t=None, r=None, b=None)`
-- `win.ghost(node, on=True)`, `win.front(node, on=True)`
+- Контейнер без `h` берёт высоту по детям: в `scr`, теле `acc` и упаковке `pk` — как размер, в обычном потоке — как нижняя граница
+- `win.ghost(node, on=True)`, `win.front(node, on=True)`, `win.show(node, on=True)`
 - `win.bindv/bindb/bindl/bindt/bindz(node, callback)` — `bindv` задаёт также страницу `stk` и активную вкладку `tab`
 - `win.screen()`, `win.size()`, `win.move(x, y)`, `win.on_resize(f)`
 

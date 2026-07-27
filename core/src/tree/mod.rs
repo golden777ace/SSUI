@@ -381,6 +381,7 @@ pub enum NodeKind {
         title: Vec<u16>,
         open: bool,
         radius: f32,
+        group: u32,
     },
     Scroll {
         offset: f32,
@@ -745,6 +746,12 @@ pub type CanvasQueue = Rc<RefCell<Vec<(NodeId, u8, f32, f32, f32, f32)>>>;
 /// Операция: 0 — выделение, 1 — показать строку, 2 — раскрыть, 3 — свернуть.
 pub type TreeQueue = Rc<RefCell<Vec<(NodeId, u8, Vec<usize>)>>>;
 
+/// Заявка на CSS: текст и флаг полной замены накопленного источника.
+pub type CssQueue = Rc<RefCell<Vec<(String, bool)>>>;
+
+/// Заявка на достройку дерева: вызывается с живым деревом в начале кадра.
+pub type BuildQueue = Rc<RefCell<Vec<Box<dyn FnOnce(&mut Tree)>>>>;
+
 /// Запрос файлового диалога: режим 0 — открыть, 1 — сохранить, 2 — папка.
 pub struct FileReq {
     pub mode: u8,
@@ -815,6 +822,8 @@ pub struct Tree {
     kill_timers: TimerKill,
     pending_canvas: CanvasQueue,
     pending_tree: TreeQueue,
+    pending_css: CssQueue,
+    pending_build: BuildQueue,
     pending_files: FileQueue,
     geom_tree: TreeGeom,
     popup_layer: Option<NodeId>,
@@ -824,6 +833,7 @@ pub struct Tree {
     insp: bool,
     img_dirty: bool,
     ghosts: HashSet<usize>,
+    hidden: HashSet<usize>,
     fronts: HashSet<usize>,
     placeholders: HashMap<usize, Vec<u16>>,
     image_bytes: HashMap<String, Vec<u8>>,
@@ -878,6 +888,8 @@ impl Tree {
             kill_timers: Rc::new(RefCell::new(Vec::new())),
             pending_canvas: Rc::new(RefCell::new(Vec::new())),
             pending_tree: Rc::new(RefCell::new(Vec::new())),
+            pending_css: Rc::new(RefCell::new(Vec::new())),
+            pending_build: Rc::new(RefCell::new(Vec::new())),
             pending_files: Rc::new(RefCell::new(Vec::new())),
             geom_tree: Rc::new(RefCell::new(HashMap::new())),
             popup_layer: None,
@@ -887,6 +899,7 @@ impl Tree {
             insp: false,
             img_dirty: false,
             ghosts: HashSet::new(),
+            hidden: HashSet::new(),
             fronts: HashSet::new(),
             placeholders: HashMap::new(),
             image_bytes: HashMap::new(),
@@ -1335,7 +1348,11 @@ impl Tree {
                 0 => self.set_canvas_region(id, a, b, c, d),
                 1 => self.set_canvas_view(id, a, b),
                 2 => self.show_popup(id, a, b, c, d),
-                _ => self.hide_popup(id),
+                3 => self.hide_popup(id),
+                4 => self.set_acc_open(id, a >= 0.5),
+                5 => self.set_hidden(id, a < 0.5),
+                6 => self.set_ghost(id, a >= 0.5),
+                _ => self.set_front(id, a >= 0.5),
             }
         }
         true
@@ -2214,12 +2231,55 @@ impl Tree {
         matches!(&self.nodes[id.0].kind, NodeKind::Accordion { open, .. } if *open)
     }
 
-    /// Переключает раскрытие секции аккордеона.
-    pub fn toggle_acc(&mut self, id: NodeId) {
+    /// Группа взаимного исключения секции; 0 — без группы.
+    pub fn acc_group(&self, id: NodeId) -> u32 {
+        if let NodeKind::Accordion { group, .. } = &self.nodes[id.0].kind {
+            *group
+        } else {
+            0
+        }
+    }
+
+    /// Открывает или сворачивает секцию с учётом группы исключения.
+    pub fn set_acc_open(&mut self, id: NodeId, on: bool) {
+        if !self.is_accordion(id) || self.acc_open(id) == on {
+            return;
+        }
+        let group = self.acc_group(id);
+        let mut closed: Vec<NodeId> = Vec::new();
+        if on && group != 0 {
+            for i in 0..self.nodes.len() {
+                if i == id.0 {
+                    continue;
+                }
+                let hit = matches!(
+                    &self.nodes[i].kind,
+                    NodeKind::Accordion { open, group: g, .. } if *open && *g == group
+                );
+                if hit {
+                    closed.push(NodeId(i));
+                }
+            }
+        }
+        for c in &closed {
+            if let NodeKind::Accordion { open, .. } = &mut self.nodes[c.0].kind {
+                *open = false;
+            }
+        }
         if let NodeKind::Accordion { open, .. } = &mut self.nodes[id.0].kind {
-            *open = !*open;
+            *open = on;
         }
         self.dirty = true;
+        for c in closed {
+            self.fire_change(c, 0.0);
+        }
+        self.fire_change(id, if on { 1.0 } else { 0.0 });
+    }
+
+    /// Переключает раскрытие секции аккордеона.
+    pub fn toggle_acc(&mut self, id: NodeId) {
+        let on = !self.acc_open(id);
+        self.set_acc_open(id, on);
     }
 
     /// Является ли узел областью прокрутки.
@@ -2546,6 +2606,52 @@ impl Tree {
     /// Вызывает колбэк файлового диалога с выбранным путём.
     pub fn deliver_file(&mut self, mut req: FileReq, path: String) {
         (req.cb)(self, path);
+    }
+
+    /// Возвращает очередь заявок на CSS для внешнего управления.
+    pub fn css_queue(&self) -> CssQueue {
+        self.pending_css.clone()
+    }
+
+    /// Возвращает очередь достройки дерева для внешнего управления.
+    pub fn build_queue(&self) -> BuildQueue {
+        self.pending_build.clone()
+    }
+
+    /// Применяет отложенный CSS; true — что-то изменилось.
+    pub fn apply_css_queue(&mut self) -> bool {
+        let list = std::mem::take(&mut *self.pending_css.borrow_mut());
+        if list.is_empty() {
+            return false;
+        }
+        for (text, replace) in list {
+            if replace {
+                css::set_source(self, &text);
+            } else {
+                css::add_source(self, &text);
+            }
+        }
+        self.dirty = true;
+        true
+    }
+
+    /// Выполняет отложенные достройки дерева; true — что-то изменилось.
+    pub fn apply_build_queue(&mut self) -> bool {
+        let list = std::mem::take(&mut *self.pending_build.borrow_mut());
+        if list.is_empty() {
+            return false;
+        }
+        for f in list {
+            f(self);
+        }
+        self.dirty = true;
+        true
+    }
+
+    /// Заменяет весь накопленный CSS новым и пересчитывает каскад.
+    pub fn replace_css(&mut self, css: &str) {
+        css::set_source(self, css);
+        self.dirty = true;
     }
 
     /// Применяет накопленные заявки дереву; true — что-то изменилось.
@@ -3309,6 +3415,23 @@ impl Tree {
         }
     }
 
+    /// Убирает узел из раскладки: место не резервируется.
+    pub fn set_hidden(&mut self, id: NodeId, on: bool) {
+        let changed = if on {
+            self.hidden.insert(id.0)
+        } else {
+            self.hidden.remove(&id.0)
+        };
+        if changed {
+            self.dirty = true;
+        }
+    }
+
+    /// Скрыт ли узел вместе со своим местом в раскладке.
+    pub fn is_hidden(&self, id: NodeId) -> bool {
+        self.hidden.contains(&id.0)
+    }
+
     /// Поднимать ли узел поверх соседей при нажатии внутри него.
     pub fn set_front(&mut self, id: NodeId, on: bool) {
         if on {
@@ -3396,6 +3519,66 @@ impl Tree {
         self.dirty = true;
     }
 
+    /// Естественная высота узла по его детям; `None` — определить нельзя.
+    pub fn natural_height(&self, id: NodeId) -> Option<f32> {
+        if self.hidden.contains(&id.0) {
+            return Some(0.0);
+        }
+        let props = self.nodes[id.0].props;
+        if let Some(h) = props.height {
+            return Some(h);
+        }
+        if props.abs || props.mode != 0 {
+            return None;
+        }
+        let head = match &self.nodes[id.0].kind {
+            NodeKind::Container | NodeKind::Frame { .. } => 0.0,
+            NodeKind::Group { .. } => GROUP_HEADER,
+            NodeKind::Accordion { open, .. } if *open => return self.acc_natural(id),
+            NodeKind::Accordion { .. } => return Some(ACC_HEADER),
+            _ => return None,
+        };
+        let kids: Vec<NodeId> = self.nodes[id.0]
+            .children
+            .iter()
+            .copied()
+            .filter(|c| !self.nodes[c.0].props.abs && !self.hidden.contains(&c.0))
+            .collect();
+        if kids.is_empty() {
+            return None;
+        }
+        let mut total = 0.0f32;
+        if matches!(props.axis, Axis::Vertical) {
+            for &c in &kids {
+                total += self.natural_height(c)?;
+            }
+            total += props.gap * (kids.len() - 1) as f32;
+        } else {
+            for &c in &kids {
+                total = total.max(self.natural_height(c)?);
+            }
+        }
+        Some(total + 2.0 * props.padding + head)
+    }
+
+    fn acc_natural(&self, id: NodeId) -> Option<f32> {
+        let props = self.nodes[id.0].props;
+        let kids: Vec<NodeId> = self.nodes[id.0]
+            .children
+            .iter()
+            .copied()
+            .filter(|c| !self.hidden.contains(&c.0))
+            .collect();
+        if kids.is_empty() {
+            return Some(ACC_HEADER + props.padding);
+        }
+        let mut total = props.gap * (kids.len() - 1) as f32;
+        for &c in &kids {
+            total += self.natural_height(c).unwrap_or(36.0);
+        }
+        Some(total + ACC_HEADER + props.padding)
+    }
+
     /// Вычисляет прямоугольники узлов; пропускает расчёт, если ничего не менялось.
     pub fn layout(&mut self, root_rect: Rect) {
         if !self.dirty && self.last_root == Some(root_rect) {
@@ -3407,6 +3590,11 @@ impl Tree {
     }
 
     fn layout_node(&mut self, id: NodeId, rect: Rect) {
+        let rect = if self.hidden.contains(&id.0) {
+            OFF_RECT
+        } else {
+            rect
+        };
         self.nodes[id.0].rect = rect;
         let props = self.nodes[id.0].props;
         let children = self.nodes[id.0].children.clone();
@@ -3496,11 +3684,11 @@ impl Tree {
             let off = OFF_RECT;
             let mut cursor = body.y;
             for &c in &children {
-                if !open {
+                if !open || self.hidden.contains(&c.0) {
                     self.layout_node(c, off);
                     continue;
                 }
-                let ch = self.nodes[c.0].props.height.unwrap_or(36.0);
+                let ch = self.natural_height(c).unwrap_or(36.0);
                 self.layout_node(c, Rect::new(body.x, cursor, body.width, ch));
                 cursor += ch + props.gap;
             }
@@ -3515,7 +3703,11 @@ impl Tree {
             let mut cursor = rect.y + pad - offset;
             let mut total = pad;
             for &c in &children {
-                let ch = self.nodes[c.0].props.height.unwrap_or(40.0);
+                if self.hidden.contains(&c.0) {
+                    self.layout_node(c, OFF_RECT);
+                    continue;
+                }
+                let ch = self.natural_height(c).unwrap_or(40.0);
                 self.layout_node(c, Rect::new(rect.x + pad, cursor, inner_w, ch));
                 cursor += ch + gap;
                 total += ch + gap;
@@ -3544,6 +3736,10 @@ impl Tree {
             (rect.height - 2.0 * pad - head).max(0.0),
         );
         for &c in &children {
+            if self.hidden.contains(&c.0) {
+                self.layout_node(c, OFF_RECT);
+                continue;
+            }
             let cp = self.nodes[c.0].props;
             if !cp.abs {
                 continue;
@@ -3555,7 +3751,7 @@ impl Tree {
         let flow: Vec<NodeId> = children
             .iter()
             .copied()
-            .filter(|c| !self.nodes[c.0].props.abs)
+            .filter(|c| !self.nodes[c.0].props.abs && !self.hidden.contains(&c.0))
             .collect();
         if props.mode == 1 {
             self.layout_grid(&flow, inner, props);
@@ -3603,7 +3799,14 @@ impl Tree {
             let main_fixed = if vertical { cp.height } else { cp.width };
             let main_size = match main_fixed {
                 Some(v) => v,
-                None => unit * if cp.grow > 0.0 { cp.grow } else { 1.0 },
+                None => {
+                    let share = unit * if cp.grow > 0.0 { cp.grow } else { 1.0 };
+                    if vertical {
+                        share.max(self.natural_height(c).unwrap_or(0.0))
+                    } else {
+                        share
+                    }
+                }
             };
             let cross_fixed = if vertical { cp.width } else { cp.height };
             let (cx_off, cx_size) = match cross_fixed {
@@ -3667,7 +3870,7 @@ impl Tree {
                     exp_h += 1;
                 }
             } else {
-                need_v += cp.height.unwrap_or(0.0) + gap;
+                need_v += self.natural_height(c).unwrap_or(0.0) + gap;
                 if cp.expand {
                     exp_v += 1;
                 }
@@ -3688,9 +3891,10 @@ impl Tree {
         let mut cav = inner;
         for &c in flow {
             let cp = self.nodes[c.0].props;
+            let nh = self.natural_height(c).unwrap_or(0.0);
             let rect = match cp.side {
                 1 => {
-                    let mut h = cp.height.unwrap_or(0.0);
+                    let mut h = nh;
                     if cp.expand {
                         h += add_v;
                     }
@@ -3725,7 +3929,7 @@ impl Tree {
                     out
                 }
                 _ => {
-                    let mut h = cp.height.unwrap_or(0.0);
+                    let mut h = nh;
                     if cp.expand {
                         h += add_v;
                     }
