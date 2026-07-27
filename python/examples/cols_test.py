@@ -149,8 +149,19 @@ def main():
             win.cls(t4, "head")
             win.lb(bind=lambda: f"Доля: {ratio():.2f}", h=24.0)
             win.sl(0.55, h=32.0,
-                   ch=lambda v: (ratio.st(0.1 + v * 0.8),
-                                 win.spl_ratio(sp, ratio())))
+                   ch=lambda v: (ratio.st(v), win.spl_ratio(sp, v)))
+            with win.bx(ax="h", gp=8.0, h=52.0) as hrow:
+                win.cls(hrow, "clear")
+                win.bt("Скрыть таблицу", h=44.0,
+                       clk=lambda: (win.show(ltop, False),
+                                    log.st("таблица убрана")))
+                win.bt("Скрыть дерево", h=44.0,
+                       clk=lambda: (win.show(rtop, False),
+                                    log.st("дерево убрано")))
+                win.bt("Вернуть обе", h=44.0,
+                       clk=lambda: (win.show(ltop, True),
+                                    win.show(rtop, True),
+                                    log.st("обе на месте")))
 
             win.sep()
             win.lb(bind=lambda: f"Событие: {log()}", h=44.0, wrap=True)

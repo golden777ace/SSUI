@@ -2571,10 +2571,10 @@ impl Tree {
         }
     }
 
-    /// Задаёт долю первой области разделителя.
+    /// Задаёт долю первой области разделителя, 0..1.
     pub fn set_split_ratio(&mut self, id: NodeId, value: f32) {
         if let NodeKind::Splitter { ratio, .. } = &mut self.nodes[id.0].kind {
-            *ratio = value.clamp(0.1, 0.9);
+            *ratio = value.clamp(0.0, 1.0);
         }
         self.dirty = true;
     }
@@ -3939,12 +3939,27 @@ impl Tree {
         if self.is_splitter(id) {
             let vertical = self.split_vertical(id);
             let ratio = self.split_ratio(id);
+            let hide0 = children
+                .first()
+                .map(|c| self.hidden.contains(&c.0))
+                .unwrap_or(false);
+            let hide1 = children
+                .get(1)
+                .map(|c| self.hidden.contains(&c.0))
+                .unwrap_or(false);
+            let bar = if hide0 || hide1 { 0.0 } else { SPLIT_W };
             let avail = if vertical {
-                (rect.width - SPLIT_W).max(0.0)
+                (rect.width - bar).max(0.0)
             } else {
-                (rect.height - SPLIT_W).max(0.0)
+                (rect.height - bar).max(0.0)
             };
-            let mut first = avail * ratio;
+            let mut first = if hide0 {
+                0.0
+            } else if hide1 {
+                avail
+            } else {
+                avail * ratio
+            };
             if let Some(&c) = children.first() {
                 let p = self.nodes[c.0].props;
                 let (lo, hi) = if vertical {
@@ -3980,12 +3995,12 @@ impl Tree {
             let (r1, r2) = if vertical {
                 (
                     Rect::new(rect.x, rect.y, first, rect.height),
-                    Rect::new(rect.x + first + SPLIT_W, rect.y, second, rect.height),
+                    Rect::new(rect.x + first + bar, rect.y, second, rect.height),
                 )
             } else {
                 (
                     Rect::new(rect.x, rect.y, rect.width, first),
-                    Rect::new(rect.x, rect.y + first + SPLIT_W, rect.width, second),
+                    Rect::new(rect.x, rect.y + first + bar, rect.width, second),
                 )
             };
             for (i, &c) in children.iter().enumerate() {
