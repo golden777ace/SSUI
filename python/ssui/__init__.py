@@ -4,6 +4,8 @@
 Публичный API описан в `__init__.pyi`.
 """
 
+from typing import TypedDict
+
 from ._ssui import Ctx as Ctx
 from ._ssui import Dlg as Dlg
 from ._ssui import Fnt as Fnt
@@ -14,6 +16,22 @@ from ._ssui import S as S
 from ._ssui import W as W
 from ._ssui import sgnl as sgnl
 
+
+class TreeRow(TypedDict, total=False):
+    """Строка дерева; все поля необязательны."""
+
+    depth: int
+    text: str
+    leaf: bool
+    open: bool
+    values: list[str]
+    bg: str
+    fg: str
+    icon: str
+    cbg: list[str]
+    cfg: list[str]
+
+
 __all__ = [
     "W",
     "S",
@@ -23,7 +41,8 @@ __all__ = [
     "Fnt",
     "Dlg",
     "Rct",
+    "TreeRow",
     "sgnl",
 ]
 
-__version__ = "1.8.0"
+__version__ = "1.8.1"
