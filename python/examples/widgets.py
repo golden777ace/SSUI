@@ -194,10 +194,17 @@ def main():
                 win.lb("Страница 1", h=40.0)
                 win.lb("Страница 2", h=40.0)
             win.bindv(st, lambda: float(pg()))
-        elif name == "Splitter":
-            with win.spl(h=240.0):
-                win.lb("Слева", h=40.0)
-                win.lb("Справа", h=40.0)
+            elif name == "Splitter":
+            with win.spl(h=240.0) as sp:
+                left = win.lb("Слева · min_w 160", h=40.0)
+                right = win.lb("Справа · min_w 120", h=40.0)
+            win.lim(left, min_w=160.0)
+            win.lim(right, min_w=120.0)
+            with win.bx(ax="h", gp=8.0, h=52.0) as srow:
+                win.cls(srow, "clear")
+                win.bt("30 %", h=44.0, clk=lambda: win.spl_ratio(sp, 0.3))
+                win.bt("50 %", h=44.0, clk=lambda: win.spl_ratio(sp, 0.5))
+                win.bt("70 %", h=44.0, clk=lambda: win.spl_ratio(sp, 0.7))
         elif name == "Tabs":
             with win.tab(["А", "Б"], h=220.0) as tabs:
                 with win.bx(pr=tabs, pd=10.0):

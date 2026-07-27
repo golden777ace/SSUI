@@ -2599,6 +2599,7 @@ impl PyWindow {
                 scroll: 0.0,
                 cols: heads,
                 widths: widths.unwrap_or_default(),
+                mins: Vec::new(),
                 multi: Vec::new(),
                 msel: multi,
             },
@@ -3768,6 +3769,8 @@ impl PyWindow {
                 hline: hl,
                 vline: vl,
                 cbg: Vec::new(),
+                widths: Vec::new(),
+                mins: Vec::new(),
             },
             props,
         );
@@ -3794,6 +3797,26 @@ impl PyWindow {
             self.extra.tbg.borrow_mut().push((id, f));
         }
         Ok(PyNode { id })
+    }
+
+    /// Ширины и минимумы колонок таблицы или дерева, в пикселях.
+    #[pyo3(signature = (node, *, widths=None, mins=None))]
+    fn cols(
+        &self,
+        node: PyNode,
+        widths: Option<Vec<f32>>,
+        mins: Option<Vec<f32>>,
+    ) -> PyResult<()> {
+        let px = |v: Vec<f32>| -> Vec<usize> {
+            v.iter().map(|x| x.max(0.0).round() as usize).collect()
+        };
+        if let Some(v) = widths {
+            self.tree_queue.borrow_mut().push((node.id, 6, px(v)));
+        }
+        if let Some(v) = mins {
+            self.tree_queue.borrow_mut().push((node.id, 7, px(v)));
+        }
+        Ok(())
     }
 
     /// Прокручивает таблицу к строке.

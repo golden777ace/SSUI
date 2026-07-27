@@ -350,6 +350,8 @@ pub enum NodeKind {
         hline: f32,
         vline: f32,
         cbg: Vec<((usize, usize), u32)>,
+        widths: Vec<f32>,
+        mins: Vec<f32>,
     },
     Image {
         path: String,
@@ -442,6 +444,7 @@ pub enum NodeKind {
         scroll: f32,
         cols: Vec<Vec<u16>>,
         widths: Vec<f32>,
+        mins: Vec<f32>,
         multi: Vec<usize>,
         msel: bool,
     },
@@ -541,22 +544,47 @@ impl TreeItem {
 /// Высота заголовка колонок дерева в пикселях.
 pub const TREE_HEADER: f32 = 34.0;
 
-/// Границы колонок дерева: `(x, ширина)` в оконных координатах.
+/// Минимум свободной колонки, когда свой минимум не задан.
+pub const COL_MIN: f32 = 40.0;
+
+/// Границы колонок: `(x, ширина)` в оконных координатах.
 pub fn column_bounds(r: Rect, ncol: usize, widths: &[f32]) -> Vec<(f32, f32)> {
+    column_bounds_min(r, ncol, widths, &[])
+}
+
+/// То же с минимумами колонок; ноль в `mins` означает «по умолчанию».
+pub fn column_bounds_min(
+    r: Rect,
+    ncol: usize,
+    widths: &[f32],
+    mins: &[f32],
+) -> Vec<(f32, f32)> {
     let n = ncol.max(1);
     let avail = (r.width - SCROLLBAR_W - 4.0).max(1.0);
+    let lo = |i: usize, free: bool| -> f32 {
+        let m = mins.get(i).copied().unwrap_or(0.0);
+        if m > 0.0 {
+            m
+        } else if free {
+            COL_MIN
+        } else {
+            0.0
+        }
+    };
     let mut fixed = 0.0;
+    let mut free_lo = 0.0;
     let mut free = 0usize;
     for i in 0..n {
         let w = widths.get(i).copied().unwrap_or(0.0);
         if w > 0.0 {
-            fixed += w;
+            fixed += w.max(lo(i, false));
         } else {
             free += 1;
+            free_lo += lo(i, true);
         }
     }
-    let rest = if free > 0 {
-        ((avail - fixed) / free as f32).max(40.0)
+    let extra = if free > 0 {
+        ((avail - fixed - free_lo) / free as f32).max(0.0)
     } else {
         0.0
     };
@@ -564,7 +592,11 @@ pub fn column_bounds(r: Rect, ncol: usize, widths: &[f32]) -> Vec<(f32, f32)> {
     let mut x = r.x;
     for i in 0..n {
         let w = widths.get(i).copied().unwrap_or(0.0);
-        let w = if w > 0.0 { w } else { rest };
+        let w = if w > 0.0 {
+            w.max(lo(i, false))
+        } else {
+            lo(i, true) + extra
+        };
         out.push((x, w));
         x += w;
     }
@@ -1230,10 +1262,174 @@ impl Tree {
         self.dirty = true;
     }
 
-    /// Возвращает пределы узла: `(min_w, min_h, max_w, max_h)`.
+    /// Возвращает заданные пределы узла: `(min_w, min_h, max_w, max_h)`.
     pub fn limits(&self, id: NodeId) -> (f32, f32, f32, f32) {
         let p = self.nodes[id.0].props;
         (p.min_w, p.min_h, p.max_w, p.max_h)
+    }
+
+    /// Минимальная ширина: явная либо поднятая из содержимого.
+    pub fn min_width(&self, id: NodeId) -> f32 {
+        if self.hidden.contains(&id.0) {
+            return 0.0;
+        }
+        let p = self.nodes[id.0].props;
+        if p.min_w > 0.0 {
+            return p.min_w;
+        }
+        if p.abs {
+            return 0.0;
+        }
+        self.content_min(id, false)
+    }
+
+    /// Минимальная высота: явная либо поднятая из содержимого.
+    pub fn min_height(&self, id: NodeId) -> f32 {
+        if self.hidden.contains(&id.0) {
+            return 0.0;
+        }
+        let p = self.nodes[id.0].props;
+        if p.min_h > 0.0 {
+            return p.min_h;
+        }
+        if p.abs {
+            return 0.0;
+        }
+        self.content_min(id, true)
+    }
+
+    fn kid_min(&self, c: NodeId, vert: bool) -> f32 {
+        if vert {
+            self.min_height(c)
+        } else {
+            self.min_width(c)
+        }
+    }
+
+    fn content_min(&self, id: NodeId, vert: bool) -> f32 {
+        let p = self.nodes[id.0].props;
+        let kids: Vec<NodeId> = self.nodes[id.0]
+            .children
+            .iter()
+            .copied()
+            .filter(|c| !self.nodes[c.0].props.abs && !self.hidden.contains(&c.0))
+            .collect();
+        let sum = || -> f32 {
+            let mut t = 0.0f32;
+            for &c in &kids {
+                t += self.kid_min(c, vert);
+            }
+            if t > 0.0 {
+                t + p.gap * kids.len().saturating_sub(1) as f32
+            } else {
+                0.0
+            }
+        };
+        let max = || -> f32 {
+            let mut t = 0.0f32;
+            for &c in &kids {
+                t = t.max(self.kid_min(c, vert));
+            }
+            t
+        };
+        match &self.nodes[id.0].kind {
+            NodeKind::Table {
+                columns,
+                widths,
+                mins,
+                ..
+            } => {
+                if vert {
+                    0.0
+                } else {
+                    column_min_total(columns.len().max(1), widths, mins)
+                }
+            }
+            NodeKind::TreeView {
+                cols,
+                widths,
+                mins,
+                ..
+            } => {
+                if vert {
+                    0.0
+                } else {
+                    column_min_total(cols.len().max(1), widths, mins)
+                }
+            }
+            NodeKind::Splitter { vertical, .. } => {
+                let a = kids.first().map(|c| self.kid_min(*c, vert)).unwrap_or(0.0);
+                let b = kids.get(1).map(|c| self.kid_min(*c, vert)).unwrap_or(0.0);
+                if *vertical == !vert {
+                    if a > 0.0 || b > 0.0 {
+                        a + SPLIT_W + b
+                    } else {
+                        0.0
+                    }
+                } else {
+                    a.max(b)
+                }
+            }
+            NodeKind::Scroll { .. } => {
+                if vert {
+                    0.0
+                } else {
+                    let inner = max();
+                    if inner > 0.0 {
+                        inner + 2.0 * p.padding + SCROLLBAR_W + 4.0
+                    } else {
+                        0.0
+                    }
+                }
+            }
+            NodeKind::Accordion { open, .. } => {
+                if !vert {
+                    let inner = max();
+                    return if inner > 0.0 {
+                        inner + 2.0 * p.padding
+                    } else {
+                        0.0
+                    };
+                }
+                if !*open {
+                    return 0.0;
+                }
+                let inner = sum();
+                if inner > 0.0 {
+                    inner + ACC_HEADER + p.padding
+                } else {
+                    0.0
+                }
+            }
+            NodeKind::Tabs { .. } => {
+                let inner = max();
+                if inner <= 0.0 {
+                    0.0
+                } else if vert {
+                    inner + TAB_HEADER
+                } else {
+                    inner
+                }
+            }
+            NodeKind::Stack { .. } => max(),
+            NodeKind::Container | NodeKind::Frame { .. } | NodeKind::Group { .. } => {
+                if p.mode != 0 {
+                    return 0.0;
+                }
+                let along = vert == matches!(p.axis, Axis::Vertical);
+                let inner = if along { sum() } else { max() };
+                if inner <= 0.0 {
+                    return 0.0;
+                }
+                let head = if matches!(self.nodes[id.0].kind, NodeKind::Group { .. }) && vert {
+                    GROUP_HEADER
+                } else {
+                    0.0
+                };
+                inner + 2.0 * p.padding + head
+            }
+            _ => 0.0,
+        }
     }
 
     /// Задаёт глубину узла: больше `z` — ближе к зрителю.
@@ -2134,13 +2330,13 @@ impl Tree {
 
     /// Индекс колонки таблицы под точкой окна.
     pub fn table_col_at(&self, id: NodeId, x: f32) -> usize {
-        let r = self.nodes[id.0].rect;
-        let ncol = self.table_cols(id);
-        let cw = r.width / ncol as f32;
-        if cw <= 0.0 {
-            return 0;
+        let b = self.table_bounds(id);
+        for (i, (cx, cw)) in b.iter().enumerate() {
+            if x >= *cx && x < *cx + *cw {
+                return i;
+            }
         }
-        (((x - r.x) / cw).floor() as i32).clamp(0, ncol as i32 - 1) as usize
+        b.len().saturating_sub(1)
     }
 
     /// Прокручивает таблицу так, чтобы строка была видна.
@@ -2628,11 +2824,45 @@ impl Tree {
 
     /// Границы колонок дерева в оконных координатах.
     pub fn tree_bounds(&self, id: NodeId) -> Vec<(f32, f32)> {
-        if let NodeKind::TreeView { cols, widths, .. } = &self.nodes[id.0].kind {
-            column_bounds(self.nodes[id.0].rect, cols.len().max(1), widths)
+        if let NodeKind::TreeView {
+            cols, widths, mins, ..
+        } = &self.nodes[id.0].kind
+        {
+            column_bounds_min(self.nodes[id.0].rect, cols.len().max(1), widths, mins)
         } else {
             Vec::new()
         }
+    }
+
+    /// Границы колонок таблицы в оконных координатах.
+    pub fn table_bounds(&self, id: NodeId) -> Vec<(f32, f32)> {
+        if let NodeKind::Table {
+            columns,
+            widths,
+            mins,
+            ..
+        } = &self.nodes[id.0].kind
+        {
+            column_bounds_min(self.nodes[id.0].rect, columns.len().max(1), widths, mins)
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Задаёт ширины или минимумы колонок таблицы либо дерева.
+    pub fn set_columns(&mut self, id: NodeId, mins_only: bool, data: Vec<f32>) {
+        match &mut self.nodes[id.0].kind {
+            NodeKind::Table { widths, mins, .. }
+            | NodeKind::TreeView { widths, mins, .. } => {
+                if mins_only {
+                    *mins = data;
+                } else {
+                    *widths = data;
+                }
+            }
+            _ => {}
+        }
+        self.dirty = true;
     }
 
     /// Возвращает очередь заявок дереву.
@@ -2736,6 +2966,10 @@ impl Tree {
                     if let Some(i) = first {
                         self.reveal_list(id, i);
                     }
+                }
+                6 | 7 => {
+                    let data: Vec<f32> = arg.iter().map(|v| *v as f32).collect();
+                    self.set_columns(id, op == 7, data);
                 }
                 _ => {
                     let on = op == 2;
@@ -3572,8 +3806,9 @@ impl Tree {
             return Some(0.0);
         }
         let props = self.nodes[id.0].props;
+        let lo = self.min_height(id);
         if let Some(h) = props.height {
-            return Some(clamp_span(h, props.min_h, props.max_h));
+            return Some(clamp_span(h, lo, props.max_h));
         }
         if props.abs || props.mode != 0 {
             return None;
@@ -3584,10 +3819,10 @@ impl Tree {
             NodeKind::Accordion { open, .. } if *open => {
                 return self
                     .acc_natural(id)
-                    .map(|v| clamp_span(v, props.min_h, props.max_h))
+                    .map(|v| clamp_span(v, lo, props.max_h))
             }
             NodeKind::Accordion { .. } => {
-                return Some(clamp_span(ACC_HEADER, props.min_h, props.max_h))
+                return Some(clamp_span(ACC_HEADER, lo, props.max_h))
             }
             _ => return None,
         };
@@ -3611,11 +3846,7 @@ impl Tree {
                 total = total.max(self.natural_height(c)?);
             }
         }
-        Some(clamp_span(
-            total + 2.0 * props.padding + head,
-            props.min_h,
-            props.max_h,
-        ))
+        Some(clamp_span(total + 2.0 * props.padding + head, lo, props.max_h))
     }
 
     fn acc_natural(&self, id: NodeId) -> Option<f32> {
@@ -3650,7 +3881,13 @@ impl Tree {
         let rect = if self.hidden.contains(&id.0) {
             OFF_RECT
         } else {
-            clamp_rect(rect, self.nodes[id.0].props)
+            let p = self.nodes[id.0].props;
+            Rect::new(
+                rect.x,
+                rect.y,
+                clamp_span(rect.width, self.min_width(id), p.max_w),
+                clamp_span(rect.height, self.min_height(id), p.max_h),
+            )
         };
         self.nodes[id.0].rect = rect;
         let props = self.nodes[id.0].props;
@@ -3711,18 +3948,18 @@ impl Tree {
             if let Some(&c) = children.first() {
                 let p = self.nodes[c.0].props;
                 let (lo, hi) = if vertical {
-                    (p.min_w, p.max_w)
+                    (self.min_width(c), p.max_w)
                 } else {
-                    (p.min_h, p.max_h)
+                    (self.min_height(c), p.max_h)
                 };
                 first = clamp_span(first, lo, hi);
             }
             if let Some(&c) = children.get(1) {
                 let p = self.nodes[c.0].props;
                 let (lo, hi) = if vertical {
-                    (p.min_w, p.max_w)
+                    (self.min_width(c), p.max_w)
                 } else {
-                    (p.min_h, p.max_h)
+                    (self.min_height(c), p.max_h)
                 };
                 first = first.min((avail - lo).max(0.0));
                 if hi.is_finite() {
@@ -3781,7 +4018,7 @@ impl Tree {
                 let cp = self.nodes[c.0].props;
                 let ch = clamp_span(
                     self.natural_height(c).unwrap_or(36.0),
-                    cp.min_h,
+                    self.min_height(c),
                     cp.max_h,
                 );
                 self.layout_node(c, Rect::new(body.x, cursor, body.width, ch));
@@ -3805,7 +4042,7 @@ impl Tree {
                 let cp = self.nodes[c.0].props;
                 let ch = clamp_span(
                     self.natural_height(c).unwrap_or(40.0),
-                    cp.min_h,
+                    self.min_height(c),
                     cp.max_h,
                 );
                 self.layout_node(c, Rect::new(rect.x + pad, cursor, inner_w, ch));
@@ -3908,13 +4145,15 @@ impl Tree {
                     }
                 }
             };
+            let lo_w = self.min_width(c);
+            let lo_h = self.min_height(c);
             let main_size = if vertical {
-                clamp_span(main_size, cp.min_h, cp.max_h)
+                clamp_span(main_size, lo_h, cp.max_h)
             } else {
-                clamp_span(main_size, cp.min_w, cp.max_w)
+                clamp_span(main_size, lo_w, cp.max_w)
             };
             let cross_fixed = if vertical { cp.width } else { cp.height };
-            let cross_lo = if vertical { cp.min_w } else { cp.min_h };
+            let cross_lo = if vertical { lo_w } else { lo_h };
             let cross_hi = if vertical { cp.max_w } else { cp.max_h };
             let (cx_off, cx_size) = match cross_fixed {
                 None => {
@@ -3984,14 +4223,14 @@ impl Tree {
         for &c in flow {
             let cp = self.nodes[c.0].props;
             if cp.side >= 2 {
-                need_h += clamp_span(cp.width.unwrap_or(0.0), cp.min_w, cp.max_w) + gap;
+                need_h += clamp_span(cp.width.unwrap_or(0.0), self.min_width(c), cp.max_w) + gap;
                 if cp.expand {
                     exp_h += 1;
                 }
             } else {
                 need_v += clamp_span(
                     self.natural_height(c).unwrap_or(0.0),
-                    cp.min_h,
+                    self.min_height(c),
                     cp.max_h,
                 ) + gap;
                 if cp.expand {
@@ -4016,10 +4255,10 @@ impl Tree {
             let cp = self.nodes[c.0].props;
             let nh = clamp_span(
                 self.natural_height(c).unwrap_or(0.0),
-                cp.min_h,
+                self.min_height(c),
                 cp.max_h,
             );
-            let nw = clamp_span(cp.width.unwrap_or(0.0), cp.min_w, cp.max_w);
+            let nw = clamp_span(cp.width.unwrap_or(0.0), self.min_width(c), cp.max_w);
             let rect = match cp.side {
                 1 => {
                     let mut h = nh;
@@ -4121,13 +4360,30 @@ fn clamp_span(v: f32, lo: f32, hi: f32) -> f32 {
     v.max(lo).min(hi.max(lo))
 }
 
-fn clamp_rect(r: Rect, p: Props) -> Rect {
-    Rect::new(
-        r.x,
-        r.y,
-        clamp_span(r.width, p.min_w, p.max_w),
-        clamp_span(r.height, p.min_h, p.max_h),
-    )
+/// Суммарная минимальная ширина колонок; ноль — минимумы не заданы.
+pub fn column_min_total(ncol: usize, widths: &[f32], mins: &[f32]) -> f32 {
+    let n = ncol.max(1);
+    let mut total = 0.0f32;
+    let mut any = false;
+    for i in 0..n {
+        let m = mins.get(i).copied().unwrap_or(0.0).max(0.0);
+        let w = widths.get(i).copied().unwrap_or(0.0).max(0.0);
+        if m > 0.0 || w > 0.0 {
+            any = true;
+        }
+        total += if w > 0.0 {
+            w.max(m)
+        } else if m > 0.0 {
+            m
+        } else {
+            COL_MIN
+        };
+    }
+    if any {
+        total + SCROLLBAR_W + 4.0
+    } else {
+        0.0
+    }
 }
 
 fn pack_fill(rect: Rect, cp: Props) -> Rect {

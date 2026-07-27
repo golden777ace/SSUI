@@ -82,6 +82,7 @@ GUI-библиотека для Windows на Rust (Direct3D 11 + Direct2D + Dire
 - `grp(title="", *, pr=None, rad=12.0, ax="v", pd=12.0, gp=8.0, w=None, h=None)`
 - `scr(*, pr=None, pd=8.0, gp=8.0, w=None, h=None)`
 - `spl(*, pr=None, ratio=0.5, vertical=True, w=None, h=None)`
+- `win.spl_ratio(node, ratio)` — положение разделителя из кода, 0.1..0.9
 - `tab(labels, *, pr=None, sel=0, ch=None, pd=0.0, gp=0.0, w=None, h=None)`
 - `acc(title="", *, pr=None, open=False, grp=0, ch=None, rad=10.0, pd=8.0, gp=8.0, w=None, h=None)`
 - `win.acc_open(node, on=True)` — открыть или свернуть секцию из кода
@@ -126,6 +127,7 @@ GUI-библиотека для Windows на Rust (Direct3D 11 + Direct2D + Dire
 - `win.lst_sel(node, indexes)`
 - `tbl(columns, rows, *, pr=None, ch=None, bg=None, hl=0.0, vl=0.0, pd=0.0, gp=0.0, w=None, h=None)`
 - `win.tbl_see(node, row)`
+- `win.cols(node, *, widths=None, mins=None)` — ширины и минимумы колонок `tbl` и `tre`
 - `tre(items, *, pr=None, cols=None, widths=None, multi=False, bind=None, ch=None, clk=None, dbl=None, pd=0.0, gp=0.0, w=None, h=None)`
 - `win.tre_see(node, index)`, `win.tre_sel(node, indexes)`
 - `win.tre_open(node, index, open)`, `win.tre_cell(node, index, col)`
@@ -161,6 +163,9 @@ GUI-библиотека для Windows на Rust (Direct3D 11 + Direct2D + Dire
 - `win.build(f)` — достройка дерева после показа окна; внутри работают все строители
 - `win.grow(node, g)`, `win.align(node, *, justify="st", cross="str")`, `win.pin(node, *, l=None, t=None, r=None, b=None)`
 - Контейнер без `h` берёт высоту по детям: в `scr`, теле `acc` и упаковке `pk` — как размер, в обычном потоке — как нижняя граница
+- `win.lim(node, *, min_w=None, min_h=None, max_w=None, max_h=None)` — пределы размеров; ноль в максимуме снимает его
+- Узел без явного `lim` берёт минимум из содержимого: вдоль своей оси суммой, поперёк максимумом; `tbl` и `tre` отдают сумму минимумов колонок
+- Явный `lim` подъём отменяет; прокрутка при нехватке места не появляется — для неё нужен `scr`
 - `win.ghost(node, on=True)`, `win.front(node, on=True)`, `win.show(node, on=True)`
 - `win.bindv/bindb/bindl/bindt/bindz(node, callback)` — `bindv` задаёт также страницу `stk` и активную вкладку `tab`
 - `win.screen()`, `win.size()`, `win.move(x, y)`, `win.on_resize(f)`
@@ -190,6 +195,7 @@ GUI-библиотека для Windows на Rust (Direct3D 11 + Direct2D + Dire
 
 ### Управление узлом
 - tip(tooltip); cls(class); pl(place); gr(grid); pk(pack); dep(depth)
+- lim(limits — пределы размеров); cols(columns — колонки таблицы и дерева)
 - css(css); rt(root); thm(theme); fx(effects); dlg(dialog); nt(notification)
 - fnt(font); clip(clipboard); file(file dialogs); pop(popup layer)
 - rmb(right mouse button); hotkey(hotkey); post(post to UI thread)

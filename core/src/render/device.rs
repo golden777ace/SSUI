@@ -4284,13 +4284,15 @@ impl Renderer {
                         hline,
                         vline,
                         cbg,
+                        widths,
+                        mins,
                     } => {
                         let r = node.rect;
                         canvas.push_clip(r);
                         let bg = style.fill.unwrap_or(theme.surface);
                         canvas.fill_rounded_rect(r, 8.0, bg);
                         let ncol = columns.len().max(1);
-                        let col_w = r.width / ncol as f32;
+                        let bnd = crate::tree::column_bounds_min(r, ncol, widths, mins);
                         let top = r.y + TABLE_HEADER;
                         let hover_row = if hot == Some(id) && mouse.1 >= top {
                             let ri = ((mouse.1 - top + *scroll) / TABLE_ROW).floor();
@@ -4316,7 +4318,10 @@ impl Renderer {
                                 canvas.fill_rounded_rect(row_rect, 0.0, theme.track);
                             }
                             for (c, cell) in row.iter().enumerate() {
-                                let cx = r.x + col_w * c as f32;
+                                let (cx, col_w) = match bnd.get(c) {
+                                    Some(v) => *v,
+                                    None => continue,
+                                };
                                 if let Some((_, col)) =
                                     cbg.iter().find(|((rr, cc), _)| *rr == ri && *cc == c)
                                 {
@@ -4345,7 +4350,10 @@ impl Renderer {
                         }
                         if *vline > 0.0 {
                             for c in 1..ncol {
-                                let cx = r.x + col_w * c as f32;
+                                let cx = match bnd.get(c) {
+                                    Some((x, _)) => *x,
+                                    None => continue,
+                                };
                                 canvas.fill_rounded_rect(
                                     Rect::new(cx, r.y, *vline, r.height),
                                     0.0,
@@ -4356,7 +4364,10 @@ impl Renderer {
                         let header = Rect::new(r.x, r.y, r.width, TABLE_HEADER);
                         canvas.fill_rounded_rect(header, 8.0, theme.track);
                         for (c, col) in columns.iter().enumerate() {
-                            let cx = r.x + col_w * c as f32;
+                            let (cx, col_w) = match bnd.get(c) {
+                                Some(v) => *v,
+                                None => continue,
+                            };
                             let hr =
                                 Rect::new(cx + 10.0, r.y, (col_w - 20.0).max(0.0), TABLE_HEADER);
                             canvas.draw_text(col, format_left, hr, theme.content);
