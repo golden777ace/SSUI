@@ -12,12 +12,15 @@ use ssui_core::platform::{dpi, Window as CoreWindow, WindowOpts};
 use ssui_core::tree::{
     Anim, AnimQueue, Axis, BuildQueue, CssQueue, DialogData, DialogQueue, Ease, FileQueue,
     FileReq, FocusQueue, NodeId, NodeKind, CanvasQueue, NoteData, NoteQueue, PointerCb,
-    Props, RectTable, Shape, TextState, TimerKill, TimerQueue, TimerReq, Tree, TreeGeom,
-    TreeItem, TreeQueue, WheelCb, LIST_ROW, OFF_COORD,
+    Props, RectTable, Shape, TextQueue, TextState, TimerKill, TimerQueue, TimerReq, Tree,
+    TreeGeom, TreeItem, TreeQueue, WheelCb, LIST_ROW, OFF_COORD,
 };
 use pyo3::types::PyAnyMethods;
 
 type ShapeSpec = (String, Vec<f32>, String, String);
+
+/// Числовое поле: контейнер, надпись, значение, минимум, максимум, шаг.
+type SpinTable = Rc<RefCell<Vec<(NodeId, NodeId, Rc<Cell<f32>>, f32, f32, f32)>>>;
 
 fn hexa(s: &str) -> u32 {
     ssui_core::render::parse_hex(s)
@@ -301,6 +304,7 @@ struct Extra {
     src: BindVec,
     tre: BindVec,
     tbg: BindVec,
+    inp3: BindVec,
 }
 
 impl Extra {
@@ -316,6 +320,7 @@ impl Extra {
             7 => &self.pos,
             9 => &self.tre,
             10 => &self.tbg,
+            11 => &self.inp3,
             _ => &self.src,
         }
     }
@@ -855,6 +860,8 @@ struct PyWindow {
     canvas_queue: CanvasQueue,
     tree_queue: TreeQueue,
     css_queue: CssQueue,
+    str_queue: TextQueue,
+    spins: SpinTable,
     build_queue: BuildQueue,
     tree_geom: TreeGeom,
     file_queue: FileQueue,
@@ -925,6 +932,7 @@ impl PyWindow {
         let tree_queue = tree.tree_queue();
         let css_queue = tree.css_queue();
         let build_queue = tree.build_queue();
+        let str_queue = tree.text_queue();
         let tree_geom = tree.tree_geom();
         let file_queue = tree.file_queue();
         let bindings: Bindings = Rc::new(RefCell::new(Vec::new()));
@@ -956,6 +964,8 @@ impl PyWindow {
             tree_queue,
             css_queue,
             build_queue,
+            str_queue,
+            spins: Rc::new(RefCell::new(Vec::new())),
             tree_geom,
             file_queue,
             extra,
@@ -1790,12 +1800,14 @@ impl PyWindow {
     }
 
     /// Добавляет ползунок 0..1; `ch(value)` при перетаскивании.
-    #[pyo3(signature = (vl=0.5, *, pr=None, ch=None, pd=0.0, gp=0.0, w=None, h=None))]
+    #[pyo3(signature = (vl=0.5, *, pr=None, ch=None, sig=None, pd=0.0, gp=0.0, w=None, h=None))]
+    #[allow(clippy::too_many_arguments)]
     fn sl(
         &mut self,
         vl: f32,
         pr: Option<PyNode>,
         ch: Option<PyObject>,
+        sig: Option<PyObject>,
         pd: f32,
         gp: f32,
         w: Option<f32>,
@@ -1805,10 +1817,16 @@ impl PyWindow {
         let parent = self.parent_of(pr);
         let texts = self.bindings.clone();
         let values = self.value_bindings.clone();
+        let back = sig.as_ref().map(|s| Python::with_gil(|py| s.clone_ref(py)));
         let tree = self.tree.as_mut().ok_or_else(consumed)?;
         let id = tree.add_child(parent, NodeKind::Slider { value: vl }, props);
         tree.set_on_change(id, move |t, v| {
             Python::with_gil(|py| {
+                if let Some(s) = &sig {
+                    if let Err(e) = s.bind(py).call_method1("st", (v,)) {
+                        report(py, e);
+                    }
+                }
                 if let Some(cb) = &ch {
                     if let Err(e) = cb.bind(py).call1((v,)) {
                         report(py, e);
@@ -1817,6 +1835,9 @@ impl PyWindow {
                 refresh_all(py, t, &texts, &values);
             });
         });
+        if let Some(f) = back {
+            self.value_bindings.borrow_mut().push((id, f));
+        }
         Ok(PyNode { id })
     }
 
@@ -2185,13 +2206,15 @@ impl PyWindow {
     }
 
     /// Оценка звёздами; `ch(value)` при клике.
-    #[pyo3(signature = (vl=0, *, pr=None, max=5, ch=None, pd=0.0, gp=0.0, w=None, h=None))]
+    #[pyo3(signature = (vl=0, *, pr=None, max=5, ch=None, sig=None, pd=0.0, gp=0.0, w=None, h=None))]
+    #[allow(clippy::too_many_arguments)]
     fn rat(
         &mut self,
         vl: usize,
         pr: Option<PyNode>,
         max: usize,
         ch: Option<PyObject>,
+        sig: Option<PyObject>,
         pd: f32,
         gp: f32,
         w: Option<f32>,
@@ -2202,6 +2225,7 @@ impl PyWindow {
         let parent = self.parent_of(pr);
         let texts = self.bindings.clone();
         let values = self.value_bindings.clone();
+        let back = sig.as_ref().map(|s| Python::with_gil(|py| s.clone_ref(py)));
         let tree = self.tree.as_mut().ok_or_else(consumed)?;
         let max = max.max(1);
         let id = tree.add_child(
@@ -2215,6 +2239,11 @@ impl PyWindow {
         tree.set_on_change(id, move |t, v| {
             let i = v.max(0.0) as i64;
             Python::with_gil(|py| {
+                if let Some(s) = &sig {
+                    if let Err(e) = s.bind(py).call_method1("st", (i,)) {
+                        report(py, e);
+                    }
+                }
                 if let Some(cb) = &ch {
                     if let Err(e) = cb.bind(py).call1((i,)) {
                         report(py, e);
@@ -2223,6 +2252,9 @@ impl PyWindow {
                 refresh_all(py, t, &texts, &values);
             });
         });
+        if let Some(f) = back {
+            self.value_bindings.borrow_mut().push((id, f));
+        }
         Ok(PyNode { id })
     }
 
@@ -2320,13 +2352,15 @@ impl PyWindow {
     }
 
     /// Выбор времени; клики по половинам, `ch(часы, минуты)`.
-    #[pyo3(signature = (hour=12, minute=0, *, pr=None, ch=None, pd=0.0, gp=0.0, w=None, h=None))]
+    #[pyo3(signature = (hour=12, minute=0, *, pr=None, ch=None, sig=None, pd=0.0, gp=0.0, w=None, h=None))]
+    #[allow(clippy::too_many_arguments)]
     fn tm(
         &mut self,
         hour: u32,
         minute: u32,
         pr: Option<PyNode>,
         ch: Option<PyObject>,
+        sig: Option<PyObject>,
         pd: f32,
         gp: f32,
         w: Option<f32>,
@@ -2337,6 +2371,7 @@ impl PyWindow {
         let parent = self.parent_of(pr);
         let texts = self.bindings.clone();
         let values = self.value_bindings.clone();
+        let back = sig.as_ref().map(|s| Python::with_gil(|py| s.clone_ref(py)));
         let tree = self.tree.as_mut().ok_or_else(consumed)?;
         let id = tree.add_child(
             parent,
@@ -2350,6 +2385,11 @@ impl PyWindow {
             let code = v.max(0.0) as i64;
             let (hh, mm) = (code / 100, code % 100);
             Python::with_gil(|py| {
+                if let Some(s) = &sig {
+                    if let Err(e) = s.bind(py).call_method1("st", ((hh, mm),)) {
+                        report(py, e);
+                    }
+                }
                 if let Some(cb) = &ch {
                     if let Err(e) = cb.bind(py).call1((hh, mm)) {
                         report(py, e);
@@ -2358,6 +2398,9 @@ impl PyWindow {
                 refresh_all(py, t, &texts, &values);
             });
         });
+        if let Some(f) = back {
+            self.extra.inp3.borrow_mut().push((id, f));
+        }
         Ok(PyNode { id })
     }
 
@@ -2416,7 +2459,8 @@ impl PyWindow {
     }
 
     /// Календарь; `ch(год, месяц, день)` при выборе даты.
-    #[pyo3(signature = (year=2026, month=7, day=1, *, pr=None, ch=None, pd=0.0, gp=0.0, w=None, h=None))]
+    #[pyo3(signature = (year=2026, month=7, day=1, *, pr=None, ch=None, sig=None, pd=0.0, gp=0.0, w=None, h=None))]
+    #[allow(clippy::too_many_arguments)]
     fn cal(
         &mut self,
         year: i32,
@@ -2424,6 +2468,7 @@ impl PyWindow {
         day: u32,
         pr: Option<PyNode>,
         ch: Option<PyObject>,
+        sig: Option<PyObject>,
         pd: f32,
         gp: f32,
         w: Option<f32>,
@@ -2434,6 +2479,7 @@ impl PyWindow {
         let parent = self.parent_of(pr);
         let texts = self.bindings.clone();
         let values = self.value_bindings.clone();
+        let back = sig.as_ref().map(|s| Python::with_gil(|py| s.clone_ref(py)));
         let tree = self.tree.as_mut().ok_or_else(consumed)?;
         let id = tree.add_child(
             parent,
@@ -2450,6 +2496,11 @@ impl PyWindow {
             let m = (code / 100) % 100;
             let d = code % 100;
             Python::with_gil(|py| {
+                if let Some(s) = &sig {
+                    if let Err(e) = s.bind(py).call_method1("st", ((y, m, d),)) {
+                        report(py, e);
+                    }
+                }
                 if let Some(cb) = &ch {
                     if let Err(e) = cb.bind(py).call1((y, m, d)) {
                         report(py, e);
@@ -2458,11 +2509,15 @@ impl PyWindow {
                 refresh_all(py, t, &texts, &values);
             });
         });
+        if let Some(f) = back {
+            self.extra.inp3.borrow_mut().push((id, f));
+        }
         Ok(PyNode { id })
     }
 
     /// Палитра цвета (HSV); `ch("#RRGGBB")` при выборе.
-    #[pyo3(signature = (hue=0.58, sat=0.75, val=0.96, *, pr=None, ch=None, pd=0.0, gp=0.0, w=None, h=None))]
+    #[pyo3(signature = (hue=0.58, sat=0.75, val=0.96, *, pr=None, ch=None, sig=None, pd=0.0, gp=0.0, w=None, h=None))]
+    #[allow(clippy::too_many_arguments)]
     fn clr(
         &mut self,
         hue: f32,
@@ -2470,6 +2525,7 @@ impl PyWindow {
         val: f32,
         pr: Option<PyNode>,
         ch: Option<PyObject>,
+        sig: Option<PyObject>,
         pd: f32,
         gp: f32,
         w: Option<f32>,
@@ -2480,6 +2536,7 @@ impl PyWindow {
         let parent = self.parent_of(pr);
         let texts = self.bindings.clone();
         let values = self.value_bindings.clone();
+        let back = sig.as_ref().map(|s| Python::with_gil(|py| s.clone_ref(py)));
         let tree = self.tree.as_mut().ok_or_else(consumed)?;
         let id = tree.add_child(
             parent,
@@ -2493,7 +2550,13 @@ impl PyWindow {
         tree.set_on_change(id, move |t, v| {
             let code = v.max(0.0) as u32;
             let hex = format!("#{:06X}", code);
+            let hsv = t.color_hsv(id);
             Python::with_gil(|py| {
+                if let Some(s) = &sig {
+                    if let Err(e) = s.bind(py).call_method1("st", (hsv,)) {
+                        report(py, e);
+                    }
+                }
                 if let Some(cb) = &ch {
                     if let Err(e) = cb.bind(py).call1((hex.as_str(),)) {
                         report(py, e);
@@ -2502,6 +2565,9 @@ impl PyWindow {
                 refresh_all(py, t, &texts, &values);
             });
         });
+        if let Some(f) = back {
+            self.extra.inp3.borrow_mut().push((id, f));
+        }
         Ok(PyNode { id })
     }
 
@@ -2741,13 +2807,15 @@ impl PyWindow {
     }
 
     /// Диапазонный ползунок 0..1; `ch(lo, hi)` при перетаскивании.
-    #[pyo3(signature = (lo=0.25, hi=0.75, *, pr=None, ch=None, pd=0.0, gp=0.0, w=None, h=None))]
+    #[pyo3(signature = (lo=0.25, hi=0.75, *, pr=None, ch=None, sig=None, pd=0.0, gp=0.0, w=None, h=None))]
+    #[allow(clippy::too_many_arguments)]
     fn rsl(
         &mut self,
         lo: f32,
         hi: f32,
         pr: Option<PyNode>,
         ch: Option<PyObject>,
+        sig: Option<PyObject>,
         pd: f32,
         gp: f32,
         w: Option<f32>,
@@ -2758,6 +2826,7 @@ impl PyWindow {
         let parent = self.parent_of(pr);
         let texts = self.bindings.clone();
         let values = self.value_bindings.clone();
+        let back = sig.as_ref().map(|s| Python::with_gil(|py| s.clone_ref(py)));
         let tree = self.tree.as_mut().ok_or_else(consumed)?;
         let id = tree.add_child(
             parent,
@@ -2770,6 +2839,11 @@ impl PyWindow {
         tree.set_on_change(id, move |t, _v| {
             let (a, b) = t.range_values(id);
             Python::with_gil(|py| {
+                if let Some(s) = &sig {
+                    if let Err(e) = s.bind(py).call_method1("st", ((a, b),)) {
+                        report(py, e);
+                    }
+                }
                 if let Some(cb) = &ch {
                     if let Err(e) = cb.bind(py).call1((a, b)) {
                         report(py, e);
@@ -2778,6 +2852,9 @@ impl PyWindow {
                 refresh_all(py, t, &texts, &values);
             });
         });
+        if let Some(f) = back {
+            self.extra.inp3.borrow_mut().push((id, f));
+        }
         Ok(PyNode { id })
     }
 
@@ -2961,13 +3038,15 @@ impl PyWindow {
     }
 
     /// Добавляет флажок; `clk` вызывается после переключения.
-    #[pyo3(signature = (lb="", *, pr=None, chk=false, clk=None, pd=0.0, gp=0.0, w=None, h=None))]
+    #[pyo3(signature = (lb="", *, pr=None, chk=false, clk=None, sig=None, pd=0.0, gp=0.0, w=None, h=None))]
+    #[allow(clippy::too_many_arguments)]
     fn ch(
         &mut self,
         lb: &str,
         pr: Option<PyNode>,
         chk: bool,
         clk: Option<PyObject>,
+        sig: Option<PyObject>,
         pd: f32,
         gp: f32,
         w: Option<f32>,
@@ -2977,6 +3056,7 @@ impl PyWindow {
         let parent = self.parent_of(pr);
         let texts = self.bindings.clone();
         let values = self.value_bindings.clone();
+        let back = sig.as_ref().map(|s| Python::with_gil(|py| s.clone_ref(py)));
         let tree = self.tree.as_mut().ok_or_else(consumed)?;
         let id = tree.add_child(
             parent,
@@ -2987,7 +3067,13 @@ impl PyWindow {
             props,
         );
         tree.set_on_click(id, move |t| {
+            let on = matches!(&t.get(id).kind, NodeKind::Checkbox { checked, .. } if *checked);
             Python::with_gil(|py| {
+                if let Some(s) = &sig {
+                    if let Err(e) = s.bind(py).call_method1("st", (on,)) {
+                        report(py, e);
+                    }
+                }
                 if let Some(cb) = &clk {
                     if let Err(e) = cb.bind(py).call0() {
                         report(py, e);
@@ -2996,17 +3082,22 @@ impl PyWindow {
                 refresh_all(py, t, &texts, &values);
             });
         });
+        if let Some(f) = back {
+            self.value_bindings.borrow_mut().push((id, f));
+        }
         Ok(PyNode { id })
     }
 
     /// Добавляет переключатель; `clk(on)` при смене состояния.
-    #[pyo3(signature = (lb="", *, pr=None, on=false, clk=None, pd=0.0, gp=0.0, w=None, h=None))]
+    #[pyo3(signature = (lb="", *, pr=None, on=false, clk=None, sig=None, pd=0.0, gp=0.0, w=None, h=None))]
+    #[allow(clippy::too_many_arguments)]
     fn sw(
         &mut self,
         lb: &str,
         pr: Option<PyNode>,
         on: bool,
         clk: Option<PyObject>,
+        sig: Option<PyObject>,
         pd: f32,
         gp: f32,
         w: Option<f32>,
@@ -3016,10 +3107,16 @@ impl PyWindow {
         let parent = self.parent_of(pr);
         let texts = self.bindings.clone();
         let values = self.value_bindings.clone();
+        let back = sig.as_ref().map(|s| Python::with_gil(|py| s.clone_ref(py)));
         let tree = self.tree.as_mut().ok_or_else(consumed)?;
         let id = tree.add_child(parent, NodeKind::Switch { label: utf16(lb), on }, props);
         tree.set_on_change(id, move |t, v| {
             Python::with_gil(|py| {
+                if let Some(s) = &sig {
+                    if let Err(e) = s.bind(py).call_method1("st", (v >= 0.5,)) {
+                        report(py, e);
+                    }
+                }
                 if let Some(cb) = &clk {
                     if let Err(e) = cb.bind(py).call1((v >= 0.5,)) {
                         report(py, e);
@@ -3028,6 +3125,9 @@ impl PyWindow {
                 refresh_all(py, t, &texts, &values);
             });
         });
+        if let Some(f) = back {
+            self.value_bindings.borrow_mut().push((id, f));
+        }
         Ok(PyNode { id })
     }
 
@@ -3081,13 +3181,15 @@ impl PyWindow {
     }
 
     /// Добавляет кнопку-переключатель; `clk(on)` при смене состояния.
-    #[pyo3(signature = (lb="", *, pr=None, on=false, clk=None, pd=0.0, gp=0.0, w=None, h=None))]
+    #[pyo3(signature = (lb="", *, pr=None, on=false, clk=None, sig=None, pd=0.0, gp=0.0, w=None, h=None))]
+    #[allow(clippy::too_many_arguments)]
     fn tgl(
         &mut self,
         lb: &str,
         pr: Option<PyNode>,
         on: bool,
         clk: Option<PyObject>,
+        sig: Option<PyObject>,
         pd: f32,
         gp: f32,
         w: Option<f32>,
@@ -3097,10 +3199,16 @@ impl PyWindow {
         let parent = self.parent_of(pr);
         let texts = self.bindings.clone();
         let values = self.value_bindings.clone();
+        let back = sig.as_ref().map(|s| Python::with_gil(|py| s.clone_ref(py)));
         let tree = self.tree.as_mut().ok_or_else(consumed)?;
         let id = tree.add_child(parent, NodeKind::Toggle { label: utf16(lb), on }, props);
         tree.set_on_change(id, move |t, v| {
             Python::with_gil(|py| {
+                if let Some(s) = &sig {
+                    if let Err(e) = s.bind(py).call_method1("st", (v >= 0.5,)) {
+                        report(py, e);
+                    }
+                }
                 if let Some(cb) = &clk {
                     if let Err(e) = cb.bind(py).call1((v >= 0.5,)) {
                         report(py, e);
@@ -3109,6 +3217,9 @@ impl PyWindow {
                 refresh_all(py, t, &texts, &values);
             });
         });
+        if let Some(f) = back {
+            self.value_bindings.borrow_mut().push((id, f));
+        }
         Ok(PyNode { id })
     }
 
@@ -3169,7 +3280,9 @@ impl PyWindow {
         if !ph.is_empty() {
             tree.set_placeholder(id, utf16(ph));
         }
+        let mut back = None;
         if let Some(sig) = sig {
+            back = Some(Python::with_gil(|py| sig.clone_ref(py)));
             tree.set_on_input(id, move |t, text| {
                 Python::with_gil(|py| {
                     if let Err(e) = sig.bind(py).call_method1("st", (text,)) {
@@ -3178,6 +3291,9 @@ impl PyWindow {
                     refresh_all(py, t, &texts, &values);
                 });
             });
+        }
+        if let Some(f) = back {
+            self.bindings.borrow_mut().push((id, f));
         }
         Ok(PyNode { id })
     }
@@ -3212,7 +3328,9 @@ impl PyWindow {
         if !ph.is_empty() {
             tree.set_placeholder(id, utf16(ph));
         }
+        let mut back = None;
         if let Some(sig) = sig {
+            back = Some(Python::with_gil(|py| sig.clone_ref(py)));
             tree.set_on_input(id, move |t, text| {
                 Python::with_gil(|py| {
                     if let Err(e) = sig.bind(py).call_method1("st", (text,)) {
@@ -3221,6 +3339,9 @@ impl PyWindow {
                     refresh_all(py, t, &texts, &values);
                 });
             });
+        }
+        if let Some(f) = back {
+            self.bindings.borrow_mut().push((id, f));
         }
         Ok(PyNode { id })
     }
@@ -3306,6 +3427,9 @@ impl PyWindow {
             });
         });
 
+        self.spins
+            .borrow_mut()
+            .push((box_id, lbl, cur.clone(), min, max, step));
         Ok(PyNode { id: box_id })
     }
 
@@ -3316,13 +3440,15 @@ impl PyWindow {
     }
 
     /// Добавляет выпадающий список; `ch(index)` при выборе.
-    #[pyo3(signature = (options, *, pr=None, sel=0, ch=None, pd=0.0, gp=0.0, w=None, h=None))]
+    #[pyo3(signature = (options, *, pr=None, sel=0, ch=None, sig=None, pd=0.0, gp=0.0, w=None, h=None))]
+    #[allow(clippy::too_many_arguments)]
     fn dd(
         &mut self,
         options: Vec<String>,
         pr: Option<PyNode>,
         sel: usize,
         ch: Option<PyObject>,
+        sig: Option<PyObject>,
         pd: f32,
         gp: f32,
         w: Option<f32>,
@@ -3333,6 +3459,7 @@ impl PyWindow {
         let parent = self.parent_of(pr);
         let texts = self.bindings.clone();
         let values = self.value_bindings.clone();
+        let back = sig.as_ref().map(|s| Python::with_gil(|py| s.clone_ref(py)));
         let tree = self.tree.as_mut().ok_or_else(consumed)?;
         let id = tree.add_child(
             parent,
@@ -3345,6 +3472,11 @@ impl PyWindow {
         );
         tree.set_on_change(id, move |t, v| {
             Python::with_gil(|py| {
+                if let Some(s) = &sig {
+                    if let Err(e) = s.bind(py).call_method1("st", (v as i64,)) {
+                        report(py, e);
+                    }
+                }
                 if let Some(cb) = &ch {
                     if let Err(e) = cb.bind(py).call1((v as i64,)) {
                         report(py, e);
@@ -3353,6 +3485,9 @@ impl PyWindow {
                 refresh_all(py, t, &texts, &values);
             });
         });
+        if let Some(f) = back {
+            self.value_bindings.borrow_mut().push((id, f));
+        }
         Ok(PyNode { id })
     }
 
@@ -3481,6 +3616,85 @@ impl PyWindow {
                 .canvas_queue
                 .borrow_mut()
                 .push((n.id, 8, ratio, 0.0, 0.0, 0.0)),
+        }
+        Ok(())
+    }
+
+    /// Задаёт числовое состояние виджета; колбэк не вызывается.
+    fn val(&mut self, n: PyNode, value: f32) -> PyResult<()> {
+        let spin = self
+            .spins
+            .borrow()
+            .iter()
+            .find(|(b, ..)| *b == n.id)
+            .map(|(_, l, c, mn, mx, sp)| (*l, c.clone(), *mn, *mx, *sp));
+        if let Some((lbl, cur, mn, mx, sp)) = spin {
+            let v = value.clamp(mn, mx);
+            cur.set(v);
+            let u = utf16(&fmt_num(v, sp));
+            match self.tree.as_mut() {
+                Some(tree) => tree.set_label_text(lbl, u),
+                None => self.str_queue.borrow_mut().push((lbl, 2, vec![u])),
+            }
+            return Ok(());
+        }
+        match self.tree.as_mut() {
+            Some(tree) => tree.set_input(n.id, value),
+            None => self
+                .canvas_queue
+                .borrow_mut()
+                .push((n.id, 10, value, 0.0, 0.0, 0.0)),
+        }
+        Ok(())
+    }
+
+    /// Состояние флажка, переключателя, тумблера или радиокнопки.
+    #[pyo3(signature = (n, on=true))]
+    fn chk(&mut self, n: PyNode, on: bool) -> PyResult<()> {
+        self.val(n, if on { 1.0 } else { 0.0 })
+    }
+
+    /// Выбранный пункт выпадающего списка, вкладки или списка.
+    fn dd_sel(&mut self, n: PyNode, index: i64) -> PyResult<()> {
+        self.val(n, index as f32)
+    }
+
+    /// Дата календаря.
+    fn cal_set(&mut self, n: PyNode, y: i32, m: u32, d: u32) -> PyResult<()> {
+        self.set3(n, y as f32, m as f32, d as f32)
+    }
+
+    /// Время часов и минут.
+    fn tm_set(&mut self, n: PyNode, h: u32, m: u32) -> PyResult<()> {
+        self.set3(n, h as f32, m as f32, 0.0)
+    }
+
+    /// Цвет палитры в HSV, каждый канал 0..1.
+    fn clr_set(&mut self, n: PyNode, hue: f32, sat: f32, val: f32) -> PyResult<()> {
+        self.set3(n, hue, sat, val)
+    }
+
+    /// Границы двойного ползунка, 0..1.
+    fn rsl_set(&mut self, n: PyNode, lo: f32, hi: f32) -> PyResult<()> {
+        self.set3(n, lo, hi, 0.0)
+    }
+
+    /// Текст поля ввода; каретка встаёт в конец, выделение снимается.
+    fn txt(&mut self, n: PyNode, text: &str) -> PyResult<()> {
+        let u = utf16(text);
+        match self.tree.as_mut() {
+            Some(tree) => tree.set_text_input(n.id, u),
+            None => self.str_queue.borrow_mut().push((n.id, 0, vec![u])),
+        }
+        Ok(())
+    }
+
+    /// Пункты выпадающего списка или списка; выбор сбрасывается.
+    fn items(&mut self, n: PyNode, items: Vec<String>) -> PyResult<()> {
+        let data: Vec<Vec<u16>> = items.iter().map(|s| utf16(s)).collect();
+        match self.tree.as_mut() {
+            Some(tree) => tree.set_items(n.id, data),
+            None => self.str_queue.borrow_mut().push((n.id, 1, data)),
         }
         Ok(())
     }
@@ -3890,6 +4104,17 @@ impl PyWindow {
 }
 
 impl PyWindow {
+    fn set3(&mut self, n: PyNode, a: f32, b: f32, c: f32) -> PyResult<()> {
+        match self.tree.as_mut() {
+            Some(tree) => tree.set_input3(n.id, a, b, c),
+            None => self
+                .canvas_queue
+                .borrow_mut()
+                .push((n.id, 11, a, b, c, 0.0)),
+        }
+        Ok(())
+    }
+
     fn push_css(&mut self, text: &str, replace: bool) {
         match self.tree.as_mut() {
             Some(tree) => {
@@ -4147,11 +4372,25 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
                 Err(e) => report(py, e),
             }
         }
+        for (id, f) in e.inp3.borrow().iter() {
+            let Some(r) = run_binding(py, f) else { continue };
+            match r.extract::<Vec<f32>>() {
+                Ok(v) => {
+                    let g = |i: usize| v.get(i).copied().unwrap_or(0.0);
+                    t.set_input3(*id, g(0), g(1), g(2))
+                }
+                Err(e) => report(py, e),
+            }
+        }
     }
     for (id, f) in texts.borrow().iter() {
         let Some(r) = run_binding(py, f) else { continue };
         match r.extract::<String>() {
-            Ok(s) => t.set_label_text(*id, utf16(&s)),
+            Ok(s) => {
+                let u = utf16(&s);
+                t.set_text_input(*id, u.clone());
+                t.set_label_text(*id, u);
+            }
             Err(e) => report(py, e),
         }
     }
@@ -4159,6 +4398,7 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
         let Some(r) = run_binding(py, f) else { continue };
         match r.extract::<f32>() {
             Ok(v) => {
+                t.set_input(*id, v);
                 t.set_slider_value(*id, v);
                 t.set_progress_value(*id, v);
                 t.set_gauge_value(*id, v);

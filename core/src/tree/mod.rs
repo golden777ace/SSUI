@@ -789,6 +789,10 @@ pub type TreeQueue = Rc<RefCell<Vec<(NodeId, u8, Vec<usize>)>>>;
 /// Заявка на CSS: текст и флаг полной замены накопленного источника.
 pub type CssQueue = Rc<RefCell<Vec<(String, bool)>>>;
 
+/// Заявка со строками: узел, операция, набор строк.
+/// Операция: 0 — текст поля ввода, 1 — пункты списка.
+pub type TextQueue = Rc<RefCell<Vec<(NodeId, u8, Vec<Vec<u16>>)>>>;
+
 /// Заявка на достройку дерева: вызывается с живым деревом в начале кадра.
 pub type BuildQueue = Rc<RefCell<Vec<Box<dyn FnOnce(&mut Tree)>>>>;
 
@@ -864,6 +868,7 @@ pub struct Tree {
     pending_tree: TreeQueue,
     pending_css: CssQueue,
     pending_build: BuildQueue,
+    pending_text: TextQueue,
     pending_files: FileQueue,
     geom_tree: TreeGeom,
     popup_layer: Option<NodeId>,
@@ -930,6 +935,7 @@ impl Tree {
             pending_tree: Rc::new(RefCell::new(Vec::new())),
             pending_css: Rc::new(RefCell::new(Vec::new())),
             pending_build: Rc::new(RefCell::new(Vec::new())),
+            pending_text: Rc::new(RefCell::new(Vec::new())),
             pending_files: Rc::new(RefCell::new(Vec::new())),
             geom_tree: Rc::new(RefCell::new(HashMap::new())),
             popup_layer: None,
@@ -1589,13 +1595,15 @@ impl Tree {
                 6 => self.set_ghost(id, a >= 0.5),
                 7 => self.set_front(id, a >= 0.5),
                 8 => self.set_split_ratio(id, a),
-                _ => self.set_limits(
+                9 => self.set_limits(
                     id,
                     (a >= 0.0).then_some(a),
                     (b >= 0.0).then_some(b),
                     (c >= 0.0).then_some(c),
                     (d >= 0.0).then_some(d),
                 ),
+                10 => self.set_input(id, a),
+                _ => self.set_input3(id, a, b, c),
             }
         }
         true
@@ -2893,6 +2901,227 @@ impl Tree {
     /// Возвращает очередь достройки дерева для внешнего управления.
     pub fn build_queue(&self) -> BuildQueue {
         self.pending_build.clone()
+    }
+
+    /// Возвращает очередь строковых заявок для внешнего управления.
+    pub fn text_queue(&self) -> TextQueue {
+        self.pending_text.clone()
+    }
+
+    /// Применяет строковые заявки; true — что-то изменилось.
+    pub fn apply_text_queue(&mut self) -> bool {
+        let list = std::mem::take(&mut *self.pending_text.borrow_mut());
+        if list.is_empty() {
+            return false;
+        }
+        for (id, op, data) in list {
+            match op {
+                0 => self.set_text_input(id, data.into_iter().next().unwrap_or_default()),
+                2 => self.set_label_text(id, data.into_iter().next().unwrap_or_default()),
+                _ => self.set_items(id, data),
+            }
+        }
+        true
+    }
+
+    /// Задаёт текст поля ввода; каретка встаёт в конец, выделение снимается.
+    pub fn set_text_input(&mut self, id: NodeId, text: Vec<u16>) {
+        if let NodeKind::TextBox { state } = &mut self.nodes[id.0].kind {
+            if state.text == text {
+                return;
+            }
+            state.text = text;
+            state.caret = state.text.len();
+            state.anchor = state.caret;
+            state.scroll = 0.0;
+            self.dirty = true;
+        }
+    }
+
+    /// Заменяет пункты выпадающего списка или списка; выбор сбрасывается.
+    pub fn set_items(&mut self, id: NodeId, data: Vec<Vec<u16>>) {
+        match &mut self.nodes[id.0].kind {
+            NodeKind::Dropdown {
+                options, selected, ..
+            } => {
+                if *options == data {
+                    return;
+                }
+                *options = data;
+                *selected = 0;
+            }
+            NodeKind::List {
+                items,
+                selected,
+                multi,
+                ..
+            } => {
+                if *items == data {
+                    return;
+                }
+                *items = data;
+                *selected = None;
+                multi.clear();
+            }
+            _ => return,
+        }
+        self.dirty = true;
+    }
+
+    /// Задаёт числовое состояние вводимого узла; колбэки не вызываются.
+    pub fn set_input(&mut self, id: NodeId, v: f32) {
+        let changed;
+        let mut radio_group = None;
+        match &mut self.nodes[id.0].kind {
+            NodeKind::Slider { value } => {
+                let n = v.clamp(0.0, 1.0);
+                changed = *value != n;
+                *value = n;
+            }
+            NodeKind::Progress { value } => {
+                let n = v.clamp(0.0, 1.0);
+                changed = *value != n;
+                *value = n;
+            }
+            NodeKind::Gauge { value, .. } => {
+                changed = *value != v;
+                *value = v;
+            }
+            NodeKind::Meter { value, .. } => {
+                changed = *value != v;
+                *value = v;
+            }
+            NodeKind::Dial { value, .. } => {
+                changed = *value != v;
+                *value = v;
+            }
+            NodeKind::Checkbox { checked, .. } => {
+                let n = v >= 0.5;
+                changed = *checked != n;
+                *checked = n;
+            }
+            NodeKind::Switch { on, .. } => {
+                let n = v >= 0.5;
+                changed = *on != n;
+                *on = n;
+            }
+            NodeKind::Toggle { on, .. } => {
+                let n = v >= 0.5;
+                changed = *on != n;
+                *on = n;
+            }
+            NodeKind::Radio { on, group, .. } => {
+                let n = v >= 0.5;
+                changed = *on != n;
+                *on = n;
+                if n && changed {
+                    radio_group = Some(*group);
+                }
+            }
+            NodeKind::Dropdown {
+                selected, options, ..
+            } => {
+                let len = options.len();
+                let n = if len == 0 {
+                    0
+                } else {
+                    (v.max(0.0) as usize).min(len - 1)
+                };
+                changed = *selected != n;
+                *selected = n;
+            }
+            NodeKind::Tabs { selected, labels } => {
+                let len = labels.len();
+                let n = if len == 0 {
+                    0
+                } else {
+                    (v.max(0.0) as usize).min(len - 1)
+                };
+                changed = *selected != n;
+                *selected = n;
+            }
+            NodeKind::Stack { page } => {
+                let n = v.max(0.0) as usize;
+                changed = *page != n;
+                *page = n;
+            }
+            NodeKind::Pager { page, total } => {
+                let n = (v.max(0.0) as usize).min(total.saturating_sub(1));
+                changed = *page != n;
+                *page = n;
+            }
+            NodeKind::Rating { value, max } => {
+                let n = (v.max(0.0) as usize).min(*max);
+                changed = *value != n;
+                *value = n;
+            }
+            NodeKind::List {
+                selected, items, ..
+            } => {
+                let i = v as i64;
+                let n = if i < 0 || items.is_empty() {
+                    None
+                } else {
+                    Some((i as usize).min(items.len() - 1))
+                };
+                changed = *selected != n;
+                *selected = n;
+            }
+            _ => return,
+        }
+        if let Some(g) = radio_group {
+            for i in 0..self.nodes.len() {
+                if i == id.0 {
+                    continue;
+                }
+                if let NodeKind::Radio { on, group, .. } = &mut self.nodes[i].kind {
+                    if *group == g {
+                        *on = false;
+                    }
+                }
+            }
+        }
+        if changed {
+            self.dirty = true;
+        }
+    }
+
+    /// Задаёт составное состояние: дата, время, цвет или границы диапазона.
+    pub fn set_input3(&mut self, id: NodeId, a: f32, b: f32, c: f32) {
+        let changed;
+        match &mut self.nodes[id.0].kind {
+            NodeKind::Calendar { year, month, day } => {
+                let (y, m, d) = (a as i32, (b as u32).clamp(1, 12), (c as u32).clamp(1, 31));
+                changed = *year != y || *month != m || *day != d;
+                *year = y;
+                *month = m;
+                *day = d;
+            }
+            NodeKind::Time { hour, minute } => {
+                let (hh, mm) = ((a.max(0.0) as u32) % 24, (b.max(0.0) as u32) % 60);
+                changed = *hour != hh || *minute != mm;
+                *hour = hh;
+                *minute = mm;
+            }
+            NodeKind::Color { hue, sat, val } => {
+                let (x, y, z) = (a.clamp(0.0, 1.0), b.clamp(0.0, 1.0), c.clamp(0.0, 1.0));
+                changed = *hue != x || *sat != y || *val != z;
+                *hue = x;
+                *sat = y;
+                *val = z;
+            }
+            NodeKind::Range { lo, hi } => {
+                let x = a.clamp(0.0, 1.0).min(b);
+                let y = b.clamp(0.0, 1.0).max(a);
+                changed = *lo != x || *hi != y;
+                *lo = x;
+                *hi = y;
+            }
+            _ => return,
+        }
+        if changed {
+            self.dirty = true;
+        }
     }
 
     /// Применяет отложенный CSS; true — что-то изменилось.

@@ -525,7 +525,9 @@ impl Renderer {
     /// Продвигает анимации, таймеры и спиннеры; true — нужна перерисовка.
     pub fn pump(&mut self) -> bool {
         let posted = self.tree.fire_frame();
-        let built = self.tree.apply_build_queue() | self.tree.apply_css_queue();
+        let built = self.tree.apply_build_queue()
+            | self.tree.apply_css_queue()
+            | self.tree.apply_text_queue();
         let scrolled =
             self.tree.apply_canvas_queue() | self.tree.apply_tree_queue() | built;
         self.tree.sync_tree_geom();

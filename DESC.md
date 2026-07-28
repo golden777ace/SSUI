@@ -128,6 +128,18 @@ GUI-библиотека для Windows на Rust (Direct3D 11 + Direct2D + Dire
 - `tbl(columns, rows, *, pr=None, ch=None, bg=None, hl=0.0, vl=0.0, pd=0.0, gp=0.0, w=None, h=None)`
 - `win.tbl_see(node, row)`
 - `win.cols(node, *, widths=None, mins=None)` — ширины и минимумы колонок `tbl` и `tre`
+
+### Управление состоянием ввода
+- `win.val(node, value)` — числовое состояние: `sl`, `pb`, `gau`, `mtr`, `dial`, `ch`, `sw`, `tgl`, `rd`, `dd`, `tab`, `stk`, `lst`, `pgr`, `rat`, `spin`
+- `win.chk(node, on=True)` — состояние флажка, переключателя, тумблера, радиокнопки
+- `win.dd_sel(node, index)` — выбранный пункт `dd`, `tab`, `stk`, `lst`
+- `win.txt(node, text)` — текст `tx` и `ta`; каретка в конец, выделение снимается
+- `win.items(node, items)` — пункты `dd` и `lst`; выбор сбрасывается
+- `win.cal_set(node, y, m, d)`, `win.tm_set(node, h, m)`, `win.clr_set(node, hue, sat, val)`, `win.rsl_set(node, lo, hi)`
+- Колбэки при программной установке не вызываются; все методы безопасны после показа окна и из колбэков
+- `sig=` двусторонний у `tx`, `ta`, `dd`, `ch`, `sw`, `tgl`, `sl`, `rat`, `rsl`, `cal`, `tm`, `clr`: ввод пишет в сигнал, запись в сигнал меняет виджет
+- Совпадающее значение не применяется, поэтому обратная запись не сбивает набор с клавиатуры
+- У `rd` параметра `sig` нет: сигнал одной кнопки не узнаёт, что её погасил выбор соседа — держите один сигнал на группу и `win.bindv(btn, lambda k=k: float(sel() == k))`
 - `tre(items, *, pr=None, cols=None, widths=None, multi=False, bind=None, ch=None, clk=None, dbl=None, pd=0.0, gp=0.0, w=None, h=None)`
 - `win.tre_see(node, index)`, `win.tre_sel(node, indexes)`
 - `win.tre_open(node, index, open)`, `win.tre_cell(node, index, col)`

@@ -421,6 +421,46 @@ class W:
         self, n: Node, side: str = "t", *, fill: Optional[str] = None, exp: bool = False
     ) -> None:
         """Прижимает узел к стороне контейнера: side — t/b/l/r; fill — x/y/both."""
+    def val(self, n: Node, value: float) -> None:
+        """Задаёт числовое состояние виджета; колбэк не вызывается.
+
+        Понимает `sl`, `pb`, `gau`, `mtr`, `dial`, `ch`, `sw`, `tgl`,
+        `rd`, `dd`, `tab`, `stk`, `lst`, `pgr`, `rat` и `spin`. Для
+        `rd` включение гасит остальные кнопки той же группы.
+
+        У `spin` значение подрезается его собственными `min` и `max`,
+        надпись перерисовывается по заданному `step`. Двусторонней
+        связи через `bindv` у `spin` нет: это составной узел, а не
+        отдельный виджет, — обновляйте его через `val`.
+        """
+    def chk(self, n: Node, on: bool = True) -> None:
+        """Состояние флажка, переключателя, тумблера, радиокнопки."""
+    def dd_sel(self, n: Node, index: int) -> None:
+        """Выбранный пункт `dd`, `tab`, `stk` или `lst`.
+
+        Индекс подрезается по длине набора; для `lst` отрицательное
+        значение снимает выбор.
+        """
+    def cal_set(self, n: Node, y: int, m: int, d: int) -> None:
+        """Дата календаря."""
+    def tm_set(self, n: Node, h: int, m: int) -> None:
+        """Время часов и минут."""
+    def clr_set(self, n: Node, hue: float, sat: float, val: float) -> None:
+        """Цвет палитры в HSV, каждый канал 0..1."""
+    def rsl_set(self, n: Node, lo: float, hi: float) -> None:
+        """Границы двойного ползунка, 0..1."""
+    def txt(self, n: Node, text: str) -> None:
+        """Текст поля ввода `tx` или `ta`.
+
+        Каретка встаёт в конец, выделение снимается, прокрутка
+        сбрасывается. Совпадающий текст не применяется, поэтому
+        вызов в каждом кадре не мешает набору.
+        """
+    def items(self, n: Node, items: list[str]) -> None:
+        """Пункты `dd` или `lst`; выбор сбрасывается.
+
+        Совпадающий набор не применяется.
+        """
     def dep(self, n: Node, z: int = 0) -> None:
         """Задаёт глубину узла по оси z; больше — ближе к зрителю."""
     def lim(
@@ -515,15 +555,28 @@ class W:
         pad_y: float = 5.0,
     ) -> None:
         """Оформление тултипа: радиус и отступы вокруг текста."""
+    def bind(self, node: Node, f: Callable[[], str]) -> None:
+        """Привязывает текст узла к колбэку.
 
+        У `lb` меняет надпись, у `tx` и `ta` — содержимое поля.
+        Второе и даёт двусторонний `sig`: `win.bind(fld, sig)`
+        рядом с `sig=` замыкает цикл, а совпадающий текст не
+        применяется, поэтому набор с клавиатуры не сбивается.
+        """
     def bindv(self, node: Node, f: Callable[[], float]) -> None:
-        """Привязывает числовой колбэк к узлу.
+        """Привязывает числовое состояние узла к колбэку.
 
-        Значение применяется по типу узла: положение слайдера,
-        прогресса, шкалы или циферблата; страница стопки `stk`;
-        активная вкладка `tab`. Так вкладку переключают из кода —
-        свяжите `tab` с сигналом и меняйте сигнал; клик по вкладке
-        по-прежнему шлёт `ch`.
+        Работает на всём, что понимает `val`: положение `sl`, `pb`,
+        `gau`, `mtr` и `dial`; страница `stk`; активная вкладка
+        `tab`; выбор `dd` и `lst`; состояние `ch`, `sw`, `tgl`, `rd`.
+
+        Это и есть двусторонняя связь: `win.bindv(node, sig)` рядом
+        с `sig=` у виджета даёт полный цикл. Пользователь щёлкает —
+        виджет пишет в сигнал; внешний код пишет в сигнал — виджет
+        перечитывает его в начале кадра. Конфликта нет: значения
+        сравниваются, и совпадающее не применяется.
+
+        Клик по-прежнему шлёт `ch`, а запись в сигнал — нет.
         """
     def bindb(self, node: Node, f: Callable[[], tuple[float, float]]) -> None:
         """Привязывает (padding, gap) контейнера к колбэку."""
@@ -988,25 +1041,35 @@ class W:
         pr: Optional[Node] = None,
         on: bool = False,
         clk: Optional[Callable[[bool], None]] = None,
+        sig: Optional[S] = None,
         pd: float = 0.0,
         gp: float = 0.0,
         w: Optional[float] = None,
         h: Optional[float] = None,
     ) -> Node:
-        """Кнопка-переключатель (двухпозиционная)."""
+        """Кнопка-переключатель (двухпозиционная).
+
+        `sig` хранит состояние и связан в обе стороны.
+        """
     def dd(
         self,
         options: list[str],
         *,
         pr: Optional[Node] = None,
-        sel: int = 0,
-        ch: Optional[Callable[[int], None]] = None,
-        pd: float = 0.0,
-        gp: float = 0.0,
-        w: Optional[float] = None,
-        h: Optional[float] = None,
+            sel: int = 0,
+            ch: Optional[Callable[[int], None]] = None,
+            sig: Optional[S] = None,
+            pd: float = 0.0,
+            gp: float = 0.0,
+            w: Optional[float] = None,
+            h: Optional[float] = None,
     ) -> Node:
-        """Выпадающий список (ComboBox)."""
+        """Выпадающий список (ComboBox).
+
+        `sig` хранит индекс выбранного пункта и связан в обе
+        стороны: выбор мышью пишет в сигнал, `sig.st(2)` меняет
+        выбор. Обратная запись `ch` не вызывает.
+        """
     def lnk(
         self,
         lb: str = "",
@@ -1048,7 +1111,18 @@ class W:
         w: Optional[float] = None,
         h: Optional[float] = None,
     ) -> Node:
-        """Однострочное поле ввода. `sig` — сигнал текста, `ph` — плейсхолдер."""
+        """Однострочное поле ввода. `sig` — сигнал текста, `ph` — плейсхолдер.
+
+        `sig` связывает поле с сигналом в обе стороны. Набор с
+        клавиатуры пишет в сигнал, а `sig.st("текст")` из любого
+        места — в том числе из колбэка таймера, из `post` и после
+        показа окна — меняет содержимое поля: каретка встаёт в
+        конец, выделение снимается.
+
+        Совпадающий текст не применяется, поэтому обратная запись
+        не мешает набору: пока пользователь печатает, сигнал и поле
+        совпадают. Внешняя запись видна со следующего кадра.
+        """
     def ta(
         self,
         txt: str = "",
@@ -1067,22 +1141,33 @@ class W:
         lb: str = "",
         *,
         pr: Optional[Node] = None,
-        chk: bool = False,
-        clk: Optional[Callable[[], None]] = None,
-        pd: float = 0.0,
-        gp: float = 0.0,
-        w: Optional[float] = None,
-        h: Optional[float] = None,
+            chk: bool = False,
+            clk: Optional[Callable[[], None]] = None,
+            sig: Optional[S] = None,
+            pd: float = 0.0,
+            gp: float = 0.0,
+            w: Optional[float] = None,
+            h: Optional[float] = None,
     ) -> Node:
-        """Флажок (CheckBox)."""
+        """Флажок (CheckBox).
+
+        `sig` хранит состояние и связан в обе стороны: клик пишет
+        в сигнал, `sig.st(True)` ставит галку. Обратная запись
+        `clk` не вызывает.
+        """
     def rd(
         self,
         lb: str = "",
         *,
         pr: Optional[Node] = None,
-        grp: int = 0,
-        on: bool = False,
-        clk: Optional[Callable[[], None]] = None,
+            grp: int = 0,
+            on: bool = False,
+            clk: Optional[Callable[[], None]] = None,
+            # `sig` у `rd` нет: сигнал одной кнопки не узнаёт о том,
+            # что её погасил выбор соседа. Для группы держите один
+            # сигнал с номером выбранной и свяжите каждую кнопку так:
+            #     win.bindv(btn, lambda k=k: float(sel() == k))
+            # а в `clk` пишите `sel.st(k)`. Программно — `win.chk`.
         pd: float = 0.0,
         gp: float = 0.0,
         w: Optional[float] = None,
@@ -1094,26 +1179,34 @@ class W:
         lb: str = "",
         *,
         pr: Optional[Node] = None,
-        on: bool = False,
-        clk: Optional[Callable[[bool], None]] = None,
-        pd: float = 0.0,
-        gp: float = 0.0,
-        w: Optional[float] = None,
-        h: Optional[float] = None,
+            on: bool = False,
+            clk: Optional[Callable[[bool], None]] = None,
+            sig: Optional[S] = None,
+            pd: float = 0.0,
+            gp: float = 0.0,
+            w: Optional[float] = None,
+            h: Optional[float] = None,
     ) -> Node:
-        """Переключатель (Switch)."""
+        """Переключатель (Switch).
+
+        `sig` хранит состояние и связан в обе стороны.
+        """
     def sl(
         self,
         vl: float = 0.5,
         *,
         pr: Optional[Node] = None,
-        ch: Optional[Callable[[float], None]] = None,
-        pd: float = 0.0,
-        gp: float = 0.0,
-        w: Optional[float] = None,
-        h: Optional[float] = None,
+            ch: Optional[Callable[[float], None]] = None,
+            sig: Optional[S] = None,
+            pd: float = 0.0,
+            gp: float = 0.0,
+            w: Optional[float] = None,
+            h: Optional[float] = None,
     ) -> Node:
-        """Ползунок 0..1."""
+        """Ползунок 0..1.
+
+        `sig` хранит значение и связан в обе стороны.
+        """
     def spin(
         self,
         value: float = 0.0,
@@ -1135,13 +1228,17 @@ class W:
         hi: float = 0.75,
         *,
         pr: Optional[Node] = None,
-        ch: Optional[Callable[[float, float], None]] = None,
-        pd: float = 0.0,
-        gp: float = 0.0,
-        w: Optional[float] = None,
-        h: Optional[float] = None,
+            ch: Optional[Callable[[float, float], None]] = None,
+            sig: Optional[S] = None,
+            pd: float = 0.0,
+            gp: float = 0.0,
+            w: Optional[float] = None,
+            h: Optional[float] = None,
     ) -> Node:
-        """Диапазонный ползунок двумя ручками."""
+        """Диапазонный ползунок двумя ручками.
+
+        `sig` хранит пару `(lo, hi)` и связан в обе стороны.
+        """
     def dl(
         self,
         vl: float = 0.5,
@@ -1399,14 +1496,18 @@ class W:
         vl: int = 0,
         *,
         pr: Optional[Node] = None,
-        max: int = 5,
-        ch: Optional[Callable[[int], None]] = None,
-        pd: float = 0.0,
-        gp: float = 0.0,
-        w: Optional[float] = None,
-        h: Optional[float] = None,
+            max: int = 5,
+            ch: Optional[Callable[[int], None]] = None,
+            sig: Optional[S] = None,
+            pd: float = 0.0,
+            gp: float = 0.0,
+            w: Optional[float] = None,
+            h: Optional[float] = None,
     ) -> Node:
-        """Оценка звёздами."""
+        """Оценка звёздами.
+
+        `sig` хранит число звёзд и связан в обе стороны.
+        """
 
     # --- Выбор значений ---
     def cal(
@@ -1416,13 +1517,18 @@ class W:
         day: int = 1,
         *,
         pr: Optional[Node] = None,
-        ch: Optional[Callable[[int, int, int], None]] = None,
-        pd: float = 0.0,
-        gp: float = 0.0,
-        w: Optional[float] = None,
-        h: Optional[float] = None,
+            ch: Optional[Callable[[int, int, int], None]] = None,
+            sig: Optional[S] = None,
+            pd: float = 0.0,
+            gp: float = 0.0,
+            w: Optional[float] = None,
+            h: Optional[float] = None,
     ) -> Node:
-        """Выбор даты."""
+        """Выбор даты.
+
+        `sig` хранит кортеж `(год, месяц, день)` и связан в обе
+        стороны.
+        """
     def clr(
         self,
         hue: float = 0.58,
@@ -1430,26 +1536,36 @@ class W:
         val: float = 0.96,
         *,
         pr: Optional[Node] = None,
-        ch: Optional[Callable[[str], None]] = None,
-        pd: float = 0.0,
-        gp: float = 0.0,
-        w: Optional[float] = None,
-        h: Optional[float] = None,
+            ch: Optional[Callable[[str], None]] = None,
+            sig: Optional[S] = None,
+            pd: float = 0.0,
+            gp: float = 0.0,
+            w: Optional[float] = None,
+            h: Optional[float] = None,
     ) -> Node:
-        """Палитра цвета HSV; `ch` возвращает `#RRGGBB`."""
+        """Палитра цвета HSV; `ch` возвращает `#RRGGBB`.
+
+        `sig` хранит кортеж `(hue, sat, val)`, каждый канал 0..1, и
+        связан в обе стороны. Формат намеренно отличается от `ch`:
+        именно его принимает `clr_set`.
+        """
     def tm(
         self,
         hour: int = 12,
         minute: int = 0,
         *,
         pr: Optional[Node] = None,
-        ch: Optional[Callable[[int, int], None]] = None,
-        pd: float = 0.0,
-        gp: float = 0.0,
-        w: Optional[float] = None,
-        h: Optional[float] = None,
+            ch: Optional[Callable[[int, int], None]] = None,
+            sig: Optional[S] = None,
+            pd: float = 0.0,
+            gp: float = 0.0,
+            w: Optional[float] = None,
+            h: Optional[float] = None,
     ) -> Node:
-        """Выбор времени."""
+        """Выбор времени.
+
+        `sig` хранит кортеж `(часы, минуты)` и связан в обе стороны.
+        """
 
     # --- Терминал ---
     def term(
