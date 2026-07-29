@@ -42,7 +42,7 @@ TREE = [
 
 def main():
     win = ssui.W("SSUI Showcase", 1600, 1000, thm="drk",
-                 glass=True, tint=0.15, blur=True)
+                 glass=True, tint=0.15, blur=True, insp=True)
     fx = win.fx()
     dlg = win.dlg()
 

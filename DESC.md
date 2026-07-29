@@ -81,6 +81,7 @@ GUI-библиотека для Windows на Rust (Direct3D 11 + Direct2D + Dire
 - `fr(rad=12.0, *, pr=None, ax="v", pd=0.0, gp=0.0, w=None, h=None, elev=0.0)`
 - `grp(title="", *, pr=None, rad=12.0, ax="v", pd=12.0, gp=8.0, w=None, h=None)`
 - `scr(*, pr=None, pd=8.0, gp=8.0, w=None, h=None)`
+- Содержимое `scr` обрезается по его рамке и не ловит мышь за её пределами; обрезка наследуется вложенными узлами
 - `spl(*, pr=None, ratio=0.5, vertical=True, w=None, h=None)`
 - `win.spl_ratio(node, ratio)` — положение разделителя из кода, 0.1..0.9
 - `tab(labels, *, pr=None, sel=0, ch=None, pd=0.0, gp=0.0, w=None, h=None)`
@@ -136,6 +137,8 @@ GUI-библиотека для Windows на Rust (Direct3D 11 + Direct2D + Dire
 - `win.txt(node, text)` — текст `tx` и `ta`; каретка в конец, выделение снимается
 - `win.items(node, items)` — пункты `dd` и `lst`; выбор сбрасывается
 - `win.cal_set(node, y, m, d)`, `win.tm_set(node, h, m)`, `win.clr_set(node, hue, sat, val)`, `win.rsl_set(node, lo, hi)`
+- `win.enable(node, on=True)` — доступность узла и всего поддерева; отключённый не ловит мышь, не берёт фокус, рисуется приглушённым
+- `win.pwd(node, on=True)` — содержимое `tx` и `ta` точками; маскируется только отрисовка, значение остаётся настоящим
 - Колбэки при программной установке не вызываются; все методы безопасны после показа окна и из колбэков
 - `sig=` двусторонний у `tx`, `ta`, `dd`, `ch`, `sw`, `tgl`, `sl`, `rat`, `rsl`, `cal`, `tm`, `clr`: ввод пишет в сигнал, запись в сигнал меняет виджет
 - Совпадающее значение не применяется, поэтому обратная запись не сбивает набор с клавиатуры
@@ -164,7 +167,8 @@ GUI-библиотека для Windows на Rust (Direct3D 11 + Direct2D + Dire
 - `win.dlg()(title, message, buttons, *, on=None)` — `on` вызывается ровно один раз: индекс кнопки либо `-1` при отмене (Esc); длинное сообщение прокручивается колесом
 - `dlg.msg(title, message, *, ok="Ок", on=None)`
 - `dlg.alert(message, *, title="Внимание", ok="Ок", on=None)`
-- `win.nt()(title, text, *, secs=4.0, action="", on=None)`
+- `win.nt()(title, text, *, secs=4.0, action="", corner="tr", on=None)`, `win.nt().snack(text, *, corner="", ...)`
+- `corner` ∈ `tl`, `tr`, `bl`, `br` — отсчёт от углов окна, не экрана; пустой у `snack` оставляет центр внизу
 - `nt.snack(text, *, secs=4.0, action="", on=None)`
 
 ### Управление окном и раскладкой

@@ -747,6 +747,7 @@ pub struct NoteData {
     pub action: Vec<u16>,
     pub secs: f32,
     pub kind: u8,
+    pub corner: u8,
     pub cb: Option<Box<dyn FnMut(&mut Tree)>>,
 }
 
@@ -879,6 +880,10 @@ pub struct Tree {
     img_dirty: bool,
     ghosts: HashSet<usize>,
     hidden: HashSet<usize>,
+    clips: Vec<Option<Rect>>,
+    disabled: HashSet<usize>,
+    pwd: HashSet<usize>,
+    offs: Vec<bool>,
     fronts: HashSet<usize>,
     placeholders: HashMap<usize, Vec<u16>>,
     image_bytes: HashMap<String, Vec<u8>>,
@@ -946,6 +951,10 @@ impl Tree {
             img_dirty: false,
             ghosts: HashSet::new(),
             hidden: HashSet::new(),
+            clips: Vec::new(),
+            disabled: HashSet::new(),
+            pwd: HashSet::new(),
+            offs: Vec::new(),
             fronts: HashSet::new(),
             placeholders: HashMap::new(),
             image_bytes: HashMap::new(),
@@ -1603,7 +1612,9 @@ impl Tree {
                     (d >= 0.0).then_some(d),
                 ),
                 10 => self.set_input(id, a),
-                _ => self.set_input3(id, a, b, c),
+                11 => self.set_input3(id, a, b, c),
+                12 => self.set_enabled(id, a >= 0.5),
+                _ => self.set_password(id, a >= 0.5),
             }
         }
         true
@@ -3900,6 +3911,14 @@ impl Tree {
         if self.nodes[id.0].rect.x <= OFF_LIMIT {
             return;
         }
+        if let Some(c) = self.clip_of(id) {
+            if !contains(c, x, y) {
+                return;
+            }
+        }
+        if self.disabled.contains(&id.0) {
+            return;
+        }
         if contains(self.nodes[id.0].rect, x, y) && !self.ghosts.contains(&id.0) {
             *hit = Some(id);
         }
@@ -4102,8 +4121,86 @@ impl Tree {
             return;
         }
         self.layout_node(self.root, root_rect);
+        self.clips.clear();
+        self.clips.resize(self.nodes.len(), None);
+        self.offs.clear();
+        self.offs.resize(self.nodes.len(), false);
+        self.clip_walk(self.root, None, false);
         self.last_root = Some(root_rect);
         self.dirty = false;
+    }
+
+    fn clip_walk(&mut self, id: NodeId, clip: Option<Rect>, off: bool) {
+        let off = off || self.disabled.contains(&id.0);
+        self.clips[id.0] = clip;
+        self.offs[id.0] = off;
+        let mut inner = clip;
+        if matches!(self.nodes[id.0].kind, NodeKind::Scroll { .. }) {
+            let r = self.nodes[id.0].rect;
+            inner = Some(match clip {
+                Some(c) => intersect_rect(c, r),
+                None => r,
+            });
+        }
+        let kids = self.nodes[id.0].children.clone();
+        for c in kids {
+            self.clip_walk(c, inner, off);
+        }
+    }
+
+    /// Доступен ли узел для мыши и клавиатуры.
+    pub fn set_enabled(&mut self, id: NodeId, on: bool) {
+        let changed = if on {
+            self.disabled.remove(&id.0)
+        } else {
+            self.disabled.insert(id.0)
+        };
+        if changed {
+            self.dirty = true;
+        }
+    }
+
+    /// Отключён ли узел явно либо через предка.
+    pub fn is_off(&self, id: NodeId) -> bool {
+        self.offs.get(id.0).copied().unwrap_or(false) || self.disabled.contains(&id.0)
+    }
+
+    /// Показывать ли содержимое поля точками вместо символов.
+    pub fn set_password(&mut self, id: NodeId, on: bool) {
+        let changed = if on {
+            self.pwd.insert(id.0)
+        } else {
+            self.pwd.remove(&id.0)
+        };
+        if changed {
+            self.dirty = true;
+        }
+    }
+
+    /// Копия карты признаков: бит 0 — отключён, бит 1 — под точками.
+    pub fn flag_map(&self) -> Vec<u8> {
+        (0..self.nodes.len())
+            .map(|i| {
+                let mut f = 0u8;
+                if self.offs.get(i).copied().unwrap_or(false) {
+                    f |= 1;
+                }
+                if self.pwd.contains(&i) {
+                    f |= 2;
+                }
+                f
+            })
+            .collect()
+    }
+
+    /// Прямоугольник обрезки узла, наложенный предками-прокрутками.
+    pub fn clip_of(&self, id: NodeId) -> Option<Rect> {
+        self.clips.get(id.0).copied().flatten()
+    }
+
+    /// Копия карты обрезки по индексам узлов.
+    pub fn clip_map(&self) -> Vec<Option<Rect>> {
+        self.clips.clone()
     }
 
     fn layout_node(&mut self, id: NodeId, rect: Rect) {
@@ -4628,6 +4725,14 @@ pub fn column_min_total(ncol: usize, widths: &[f32], mins: &[f32]) -> f32 {
     } else {
         0.0
     }
+}
+
+fn intersect_rect(a: Rect, b: Rect) -> Rect {
+    let x1 = a.x.max(b.x);
+    let y1 = a.y.max(b.y);
+    let x2 = (a.x + a.width).min(b.x + b.width);
+    let y2 = (a.y + a.height).min(b.y + b.height);
+    Rect::new(x1, y1, (x2 - x1).max(0.0), (y2 - y1).max(0.0))
 }
 
 fn pack_fill(rect: Rect, cp: Props) -> Rect {

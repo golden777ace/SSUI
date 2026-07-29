@@ -1,6 +1,6 @@
 [package]
 name = "ssui-core"
-version = "1.9.0"
+version = "1.10.0"
 edition = "2021"
 license = "MIT"
 description = "Нативное ядро SSUI (Windows, Direct3D 11)."

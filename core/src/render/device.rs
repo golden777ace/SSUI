@@ -180,6 +180,7 @@ struct NoteView {
     text: Vec<u16>,
     action: Vec<u16>,
     kind: u8,
+    corner: u8,
     secs: f32,
     born: Instant,
     cb: Option<Box<dyn FnMut(&mut Tree)>>,
@@ -2602,6 +2603,7 @@ impl Renderer {
                 text: data.text,
                 action: data.action,
                 kind: data.kind,
+                corner: data.corner,
                 secs: data.secs,
                 born: Instant::now(),
                 cb: data.cb,
@@ -2613,28 +2615,44 @@ impl Renderer {
 
     fn note_rects(&self) -> Vec<(usize, Rect, Rect)> {
         let mut out = Vec::new();
-        let mut top = 0usize;
-        let mut bot = 0usize;
+        let mut stack = [0usize; 5];
         for i in 0..self.notes.len() {
             let kind = self.notes[i].kind;
-            let (r, act) = if kind == 1 {
+            let corner = self.notes[i].corner.min(4);
+            let (r, act) = if kind == 1 && corner == 4 {
                 let w = 460.0f32.min(self.width - 40.0);
                 let h = 56.0;
                 let r = Rect::new(
                     (self.width - w) / 2.0,
-                    self.height - 28.0 - h - bot as f32 * (h + 10.0),
+                    self.height - 28.0 - h - stack[4] as f32 * (h + 10.0),
                     w,
                     h,
                 );
-                bot += 1;
+                stack[4] += 1;
                 let act = Rect::new(r.x + r.width - 110.0, r.y + 10.0, 96.0, h - 20.0);
                 (r, act)
             } else {
                 let w = 320.0f32.min(self.width - 40.0);
-                let h = 76.0;
-                let r = Rect::new(self.width - w - 20.0, 20.0 + top as f32 * (h + 10.0), w, h);
-                top += 1;
-                let act = Rect::new(r.x + r.width - 100.0, r.y + h - 34.0, 86.0, 26.0);
+                let h = if kind == 1 { 56.0 } else { 76.0 };
+                let slot = if corner == 4 { 1 } else { corner } as usize;
+                let step = stack[slot] as f32 * (h + 10.0);
+                let x = if slot == 0 || slot == 2 {
+                    20.0
+                } else {
+                    self.width - w - 20.0
+                };
+                let y = if slot <= 1 {
+                    20.0 + step
+                } else {
+                    self.height - 20.0 - h - step
+                };
+                stack[slot] += 1;
+                let r = Rect::new(x, y, w, h);
+                let act = if kind == 1 {
+                    Rect::new(r.x + r.width - 110.0, r.y + 10.0, 96.0, h - 20.0)
+                } else {
+                    Rect::new(r.x + r.width - 100.0, r.y + h - 34.0, 86.0, 26.0)
+                };
                 (r, act)
             };
             out.push((i, r, act));
@@ -2731,6 +2749,8 @@ impl Renderer {
                 theme.background
             };
             canvas.clear(clear);
+            let clip_map = self.tree.clip_map();
+            let flag_map = self.tree.flag_map();
             self.tree.for_each(|id, node| {
                 if node.rect.x <= OFF_LIMIT || node.rect.y <= OFF_LIMIT {
                     return;
@@ -2744,13 +2764,35 @@ impl Renderer {
                 {
                     return;
                 }
+                let outer = clip_map.get(id.index()).copied().flatten();
+                if let Some(c) = outer {
+                    if c.width <= 0.0
+                        || c.height <= 0.0
+                        || r.x > c.x + c.width
+                        || r.y > c.y + c.height
+                        || r.x + r.width < c.x
+                        || r.y + r.height < c.y
+                    {
+                        return;
+                    }
+                    canvas.push_clip(c);
+                }
+                let flags = flag_map.get(id.index()).copied().unwrap_or(0);
+                let is_off = flags & 1 != 0;
+                let is_pwd = flags & 2 != 0;
                 let mut style = node.style;
-                if focused == Some(id) {
+                if focused == Some(id) && !is_off {
                     merge_style(&mut style, &node.style_focus);
                 }
                 let is_button = matches!(node.kind, NodeKind::Button { .. });
-                if hot == Some(id) && !is_button {
+                if hot == Some(id) && !is_button && !is_off {
                     merge_style(&mut style, &node.style_hover);
+                }
+                if is_off {
+                    style.text = Some(theme.track);
+                    if !matches!(node.kind, NodeKind::Container) {
+                        style.fill = Some(theme.track);
+                    }
                 }
                 let (cf, cl, cw);
                 let (format, format_left, format_wrap) =
@@ -3060,6 +3102,9 @@ impl Renderer {
                         let r = node.rect;
                         let n = values.len();
                         if n == 0 {
+                            if outer.is_some() {
+                                canvas.pop_clip();
+                            }
                             return;
                         }
                         let base = Rect::new(r.x, r.y + r.height - 2.0, r.width, 2.0);
@@ -4130,6 +4175,16 @@ impl Renderer {
                         canvas.pop_clip();
                     }
                     NodeKind::TextBox { state } => {
+                        let mut masked = crate::tree::TextState::new();
+                        let state = if is_pwd {
+                            masked.text = vec![0x2022u16; state.text.len()];
+                            masked.caret = state.caret.min(masked.text.len());
+                            masked.anchor = state.anchor.min(masked.text.len());
+                            masked.scroll = state.scroll;
+                            &masked
+                        } else {
+                            state
+                        };
                         if node.multiline {
                             let r = node.rect;
                             let is_focused = focused == Some(id);
@@ -4192,6 +4247,9 @@ impl Renderer {
                                 canvas.fill_rounded_rect(caret, 1.0, theme.accent);
                             }
                             canvas.pop_clip();
+                            if outer.is_some() {
+                                canvas.pop_clip();
+                            }
                             return;
                         }
                         let r = node.rect;
@@ -4394,6 +4452,9 @@ impl Renderer {
                         }
                         canvas.pop_clip();
                     }
+                }
+                if outer.is_some() {
+                    canvas.pop_clip();
                 }
             });
 

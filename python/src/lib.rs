@@ -709,6 +709,7 @@ struct Note {
 }
 
 impl Note {
+    #[allow(clippy::too_many_arguments)]
     fn push(
         &self,
         kind: u8,
@@ -716,6 +717,7 @@ impl Note {
         text: Vec<u16>,
         action: Vec<u16>,
         secs: f32,
+        corner: u8,
         on: Option<PyObject>,
     ) {
         let texts = self.texts.clone();
@@ -737,37 +739,66 @@ impl Note {
             action,
             secs,
             kind,
+            corner,
             cb,
         });
     }
 }
 
+fn corner_code(s: &str) -> u8 {
+    match s {
+        "tl" => 0,
+        "tr" => 1,
+        "bl" => 2,
+        "br" => 3,
+        _ => 4,
+    }
+}
+
 #[pymethods]
 impl Note {
-    /// Уведомление в правом верхнем углу; `on()` по кнопке действия.
-    #[pyo3(signature = (title, text, *, secs=4.0, action="", on=None))]
+    /// Уведомление в углу окна; `corner` — tl, tr, bl, br.
+    #[pyo3(signature = (title, text, *, secs=4.0, action="", corner="tr", on=None))]
     fn __call__(
         &self,
         title: &str,
         text: &str,
         secs: f32,
         action: &str,
+        corner: &str,
         on: Option<PyObject>,
     ) -> PyResult<()> {
-        self.push(0, utf16(title), utf16(text), utf16(action), secs, on);
+        self.push(
+            0,
+            utf16(title),
+            utf16(text),
+            utf16(action),
+            secs,
+            corner_code(corner),
+            on,
+        );
         Ok(())
     }
 
-    /// Снэкбар внизу окна; `on()` по кнопке действия.
-    #[pyo3(signature = (text, *, secs=4.0, action="", on=None))]
+    /// Снэкбар; без `corner` — по центру внизу окна.
+    #[pyo3(signature = (text, *, secs=4.0, action="", corner="", on=None))]
     fn snack(
         &self,
         text: &str,
         secs: f32,
         action: &str,
+        corner: &str,
         on: Option<PyObject>,
     ) -> PyResult<()> {
-        self.push(1, Vec::new(), utf16(text), utf16(action), secs, on);
+        self.push(
+            1,
+            Vec::new(),
+            utf16(text),
+            utf16(action),
+            secs,
+            corner_code(corner),
+            on,
+        );
         Ok(())
     }
 }
@@ -3652,6 +3683,34 @@ impl PyWindow {
     #[pyo3(signature = (n, on=true))]
     fn chk(&mut self, n: PyNode, on: bool) -> PyResult<()> {
         self.val(n, if on { 1.0 } else { 0.0 })
+    }
+
+    /// Доступность узла и всего его поддерева.
+    #[pyo3(signature = (n, on=true))]
+    fn enable(&mut self, n: PyNode, on: bool) -> PyResult<()> {
+        let v = if on { 1.0 } else { 0.0 };
+        match self.tree.as_mut() {
+            Some(tree) => tree.set_enabled(n.id, on),
+            None => self
+                .canvas_queue
+                .borrow_mut()
+                .push((n.id, 12, v, 0.0, 0.0, 0.0)),
+        }
+        Ok(())
+    }
+
+    /// Показывает содержимое поля точками, не меняя значения.
+    #[pyo3(signature = (n, on=true))]
+    fn pwd(&mut self, n: PyNode, on: bool) -> PyResult<()> {
+        let v = if on { 1.0 } else { 0.0 };
+        match self.tree.as_mut() {
+            Some(tree) => tree.set_password(n.id, on),
+            None => self
+                .canvas_queue
+                .borrow_mut()
+                .push((n.id, 13, v, 0.0, 0.0, 0.0)),
+        }
+        Ok(())
     }
 
     /// Выбранный пункт выпадающего списка, вкладки или списка.
