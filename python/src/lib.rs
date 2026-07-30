@@ -11,9 +11,9 @@ use pyo3::wrap_pyfunction;
 use ssui_core::platform::{dpi, Window as CoreWindow, WindowOpts};
 use ssui_core::tree::{
     Anim, AnimQueue, Axis, BuildQueue, CssQueue, DialogData, DialogQueue, Ease, FileQueue,
-    FileReq, FocusQueue, NodeId, NodeKind, CanvasQueue, NoteData, NoteQueue, PointerCb,
-    Props, RectTable, Shape, TextQueue, TextState, TimerKill, TimerQueue, TimerReq, Tree,
-    TreeGeom, TreeItem, TreeQueue, WheelCb, LIST_ROW, OFF_COORD,
+    FileReq, FocusQueue, MenuQueue, NodeId, NodeKind, CanvasQueue, NoteData, NoteQueue,
+    PointerCb, Props, RectTable, Shape, TextQueue, TextState, TimerKill, TimerQueue,
+    TimerReq, Tree, TreeGeom, TreeItem, TreeQueue, WheelCb, LIST_ROW, OFF_COORD,
 };
 use pyo3::types::PyAnyMethods;
 
@@ -892,6 +892,8 @@ struct PyWindow {
     tree_queue: TreeQueue,
     css_queue: CssQueue,
     str_queue: TextQueue,
+    menu_queue: MenuQueue,
+    menu_cb: Rc<RefCell<Option<PyObject>>>,
     spins: SpinTable,
     build_queue: BuildQueue,
     tree_geom: TreeGeom,
@@ -964,6 +966,7 @@ impl PyWindow {
         let css_queue = tree.css_queue();
         let build_queue = tree.build_queue();
         let str_queue = tree.text_queue();
+        let menu_queue = tree.menu_queue();
         let tree_geom = tree.tree_geom();
         let file_queue = tree.file_queue();
         let bindings: Bindings = Rc::new(RefCell::new(Vec::new()));
@@ -996,6 +999,8 @@ impl PyWindow {
             css_queue,
             build_queue,
             str_queue,
+            menu_queue,
+            menu_cb: Rc::new(RefCell::new(None)),
             spins: Rc::new(RefCell::new(Vec::new())),
             tree_geom,
             file_queue,
@@ -3957,16 +3962,19 @@ impl PyWindow {
     fn rmb(&mut self, node: PyNode, f: PyObject) -> PyResult<()> {
         let texts = self.bindings.clone();
         let values = self.value_bindings.clone();
-        let tree = self.tree.as_mut().ok_or_else(consumed)?;
-        let cb: PointerCb = Box::new(move |t, _, x, y| {
-            Python::with_gil(|py| {
-                if let Err(e) = f.bind(py).call1((x, y)) {
-                    report(py, e);
-                }
-                refresh_all(py, t, &texts, &values);
+        {
+            let tree = self.tree.as_mut().ok_or_else(consumed)?;
+            let cb: PointerCb = Box::new(move |t, _, x, y| {
+                Python::with_gil(|py| {
+                    if let Err(e) = f.bind(py).call1((x, y)) {
+                        report(py, e);
+                    }
+                    refresh_all(py, t, &texts, &values);
+                });
             });
-        });
-        tree.set_on_point(node.id, 9, cb);
+            tree.set_on_point(node.id, 9, cb);
+        }
+        self.arm_menu_handler();
         Ok(())
     }
 
@@ -4102,21 +4110,32 @@ impl PyWindow {
     #[pyo3(signature = (items, *, on_select=None))]
     fn menu(&mut self, items: Vec<String>, on_select: Option<PyObject>) -> PyResult<()> {
         let its: Vec<Vec<u16>> = items.iter().map(|s| utf16(s)).collect();
-        let texts = self.bindings.clone();
-        let values = self.value_bindings.clone();
-        let tree = self.tree.as_mut().ok_or_else(consumed)?;
-        tree.set_menu(its);
-        let root = tree.root();
-        tree.set_on_change(root, move |t, v| {
-            Python::with_gil(|py| {
-                if let Some(cb) = &on_select {
-                    if let Err(e) = cb.bind(py).call1((v as i64,)) {
-                        report(py, e);
-                    }
-                }
-                refresh_all(py, t, &texts, &values);
-            });
-        });
+        {
+            let tree = self.tree.as_mut().ok_or_else(consumed)?;
+            tree.set_menu(its);
+        }
+        if on_select.is_some() {
+            *self.menu_cb.borrow_mut() = on_select;
+        }
+        self.arm_menu_handler();
+        Ok(())
+    }
+
+    /// Открывает меню в точке окна; пустой список закрывает его.
+    #[pyo3(signature = (items, x, y, *, on_select=None))]
+    fn popup(
+        &mut self,
+        items: Vec<String>,
+        x: f32,
+        y: f32,
+        on_select: Option<PyObject>,
+    ) -> PyResult<()> {
+        if on_select.is_some() {
+            *self.menu_cb.borrow_mut() = on_select;
+            self.arm_menu_handler();
+        }
+        let its: Vec<Vec<u16>> = items.iter().map(|s| utf16(s)).collect();
+        *self.menu_queue.borrow_mut() = Some((its, x, y));
         Ok(())
     }
 
@@ -4163,6 +4182,26 @@ impl PyWindow {
 }
 
 impl PyWindow {
+    fn arm_menu_handler(&mut self) {
+        let slot = self.menu_cb.clone();
+        let texts = self.bindings.clone();
+        let values = self.value_bindings.clone();
+        if let Some(tree) = self.tree.as_mut() {
+            let root = tree.root();
+            tree.set_on_change(root, move |t, v| {
+                Python::with_gil(|py| {
+                    let cb = slot.borrow().as_ref().map(|c| c.clone_ref(py));
+                    if let Some(cb) = cb {
+                        if let Err(e) = cb.bind(py).call1((v as i64,)) {
+                            report(py, e);
+                        }
+                    }
+                    refresh_all(py, t, &texts, &values);
+                });
+            });
+        }
+    }
+
     fn set3(&mut self, n: PyNode, a: f32, b: f32, c: f32) -> PyResult<()> {
         match self.tree.as_mut() {
             Some(tree) => tree.set_input3(n.id, a, b, c),

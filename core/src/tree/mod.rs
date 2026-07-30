@@ -790,6 +790,9 @@ pub type TreeQueue = Rc<RefCell<Vec<(NodeId, u8, Vec<usize>)>>>;
 /// Заявка на CSS: текст и флаг полной замены накопленного источника.
 pub type CssQueue = Rc<RefCell<Vec<(String, bool)>>>;
 
+/// Заявка на показ меню: пункты и точка окна; пустой список закрывает.
+pub type MenuQueue = Rc<RefCell<Option<(Vec<Vec<u16>>, f32, f32)>>>;
+
 /// Заявка со строками: узел, операция, набор строк.
 /// Операция: 0 — текст поля ввода, 1 — пункты списка.
 pub type TextQueue = Rc<RefCell<Vec<(NodeId, u8, Vec<Vec<u16>>)>>>;
@@ -856,6 +859,8 @@ pub struct Tree {
     anims: Vec<Anim>,
     pending: AnimQueue,
     menu_items: Vec<Vec<u16>>,
+    menu_live: Vec<Vec<u16>>,
+    pending_menu: MenuQueue,
     pending_dialog: DialogQueue,
     pending_notes: NoteQueue,
     pending_theme: Rc<RefCell<Option<usize>>>,
@@ -927,6 +932,8 @@ impl Tree {
             anims: Vec::new(),
             pending: Rc::new(RefCell::new(Vec::new())),
             menu_items: Vec::new(),
+            menu_live: Vec::new(),
+            pending_menu: Rc::new(RefCell::new(None)),
             pending_dialog: Rc::new(RefCell::new(Vec::new())),
             pending_notes: Rc::new(RefCell::new(Vec::new())),
             pending_theme: Rc::new(RefCell::new(None)),
@@ -2380,14 +2387,39 @@ impl Tree {
         self.menu_items = items;
     }
 
-    /// Число пунктов контекстного меню.
-    pub fn menu_len(&self) -> usize {
+    /// Число пунктов оконного меню, объявленного заранее.
+    pub fn window_menu_len(&self) -> usize {
         self.menu_items.len()
     }
 
-    /// Возвращает пункт контекстного меню по индексу.
+    /// Готовит к показу оконное меню.
+    pub fn arm_menu(&mut self) {
+        self.menu_live = self.menu_items.clone();
+    }
+
+    /// Задаёт пункты меню, показываемого прямо сейчас.
+    pub fn set_menu_live(&mut self, items: Vec<Vec<u16>>) {
+        self.menu_live = items;
+    }
+
+    /// Возвращает очередь заявок на показ меню.
+    pub fn menu_queue(&self) -> MenuQueue {
+        self.pending_menu.clone()
+    }
+
+    /// Забирает заявку на показ меню.
+    pub fn take_menu_req(&mut self) -> Option<(Vec<Vec<u16>>, f32, f32)> {
+        self.pending_menu.borrow_mut().take()
+    }
+
+    /// Число пунктов показываемого меню.
+    pub fn menu_len(&self) -> usize {
+        self.menu_live.len()
+    }
+
+    /// Возвращает пункт показываемого меню по индексу.
     pub fn menu_item(&self, index: usize) -> Option<&Vec<u16>> {
-        self.menu_items.get(index)
+        self.menu_live.get(index)
     }
 
     /// Возвращает очередь диалогов для внешнего показа.

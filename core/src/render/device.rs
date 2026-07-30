@@ -526,9 +526,12 @@ impl Renderer {
     /// Продвигает анимации, таймеры и спиннеры; true — нужна перерисовка.
     pub fn pump(&mut self) -> bool {
         let posted = self.tree.fire_frame();
-        let built = self.tree.apply_build_queue()
+        let mut built = self.tree.apply_build_queue()
             | self.tree.apply_css_queue()
             | self.tree.apply_text_queue();
+        if self.poll_menu() {
+            built = true;
+        }
         let scrolled =
             self.tree.apply_canvas_queue() | self.tree.apply_tree_queue() | built;
         self.tree.sync_tree_geom();
@@ -1015,6 +1018,21 @@ impl Renderer {
             return false;
         }
         if let Some(mut id) = self.tree.hit_test(x, y) {
+            if self.tree.is_tree(id) {
+                match self.tree_row_at(id, y) {
+                    Some(item) => {
+                        let held = if self.tree.is_tree_msel(id) {
+                            self.tree.tree_multi(id).contains(&item)
+                        } else {
+                            self.tree.tree_selected(id) == Some(item)
+                        };
+                        if !held {
+                            self.select_tree_row(id, item);
+                        }
+                    }
+                    None => self.clear_tree_selection(id),
+                }
+            }
             let mut guard = 0;
             loop {
                 if self.tree.has_point(id, 9) {
@@ -1030,10 +1048,11 @@ impl Renderer {
                 }
             }
         }
-        let n = self.tree.menu_len();
+        let n = self.tree.window_menu_len();
         if n == 0 {
             return false;
         }
+        self.tree.arm_menu();
         self.close_dropdown();
         let mw = 220.0;
         let mh = n as f32 * MENU_ROW;
@@ -1042,6 +1061,54 @@ impl Renderer {
         self.open_menu = Some((mx, my));
         self.menu_hover = None;
         true
+    }
+
+    fn poll_menu(&mut self) -> bool {
+        let req = self.tree.take_menu_req();
+        let Some((items, x, y)) = req else {
+            return false;
+        };
+        if items.is_empty() {
+            self.tree.set_menu_live(Vec::new());
+            self.open_menu = None;
+            self.menu_hover = None;
+            return true;
+        }
+        let n = items.len();
+        self.tree.set_menu_live(items);
+        self.close_dropdown();
+        let mw = 220.0;
+        let mh = n as f32 * MENU_ROW;
+        let mx = x.min((self.width - mw).max(0.0)).max(0.0);
+        let my = y.min((self.height - mh).max(0.0)).max(0.0);
+        self.open_menu = Some((mx, my));
+        self.menu_hover = None;
+        true
+    }
+
+    fn tree_row_at(&self, id: NodeId, y: f32) -> Option<usize> {
+        let r = self.tree.get(id).rect;
+        let head = self.tree.tree_head(id);
+        if y < r.y + head {
+            return None;
+        }
+        let scroll = self.tree.tree_scroll(id);
+        let vis = self.tree.tree_visible(id);
+        let i = ((y - r.y - head + scroll) / LIST_ROW).floor();
+        if i < 0.0 || (i as usize) >= vis.len() {
+            return None;
+        }
+        Some(vis[i as usize])
+    }
+
+    fn clear_tree_selection(&mut self, id: NodeId) {
+        self.tree.set_tree_selected(id, None);
+        if self.tree.is_tree_msel(id) {
+            self.tree.set_tree_multi(id, Vec::new());
+            self.tree.fire_point(id, 7, -1, 0.0, 0.0);
+        } else {
+            self.tree.fire_change(id, -1.0);
+        }
     }
 
     fn menu_rect(&self) -> Option<Rect> {
@@ -1824,6 +1891,8 @@ impl Renderer {
                             }
                         }
                     }
+                } else {
+                    self.clear_tree_selection(id);
                 }
                 self.focused = Some(id);
                 return true;
