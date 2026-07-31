@@ -128,7 +128,11 @@ GUI-библиотека для Windows на Rust (Direct3D 11 + Direct2D + Dire
 - `win.lst_sel(node, indexes)`
 - `tbl(columns, rows, *, pr=None, ch=None, bg=None, hl=0.0, vl=0.0, pd=0.0, gp=0.0, w=None, h=None)`
 - `win.tbl_see(node, row)`
-- `win.cols(node, *, widths=None, mins=None)` — ширины и минимумы колонок `tbl` и `tre`
+- `win.cols(node, *, widths=None, mins=None, head=None, resize=None, on_cols=None)` — колонки и шапка `tbl` и `tre`
+- `head` — высота шапки; выше умолчания в 34 px заголовок переносится по словам, работает и `\n`
+- Границы колонок тянутся мышью в шапке: захват ±4 px, ход ограничен минимумами соседей, общая ширина пары сохраняется
+- Первое перетаскивание фиксирует все колонки в текущих пикселях; двойной клик по границе — автоширина по содержимому
+- `resize=False` запрещает перетаскивание; `on_cols(widths)` приходит после отпускания и после автоширины, задаётся до показа окна
 
 ### Управление состоянием ввода
 - `win.val(node, value)` — числовое состояние: `sl`, `pb`, `gau`, `mtr`, `dial`, `ch`, `sw`, `tgl`, `rd`, `dd`, `tab`, `stk`, `lst`, `pgr`, `rat`, `spin`
