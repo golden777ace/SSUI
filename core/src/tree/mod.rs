@@ -861,6 +861,8 @@ pub struct Tree {
     menu_items: Vec<Vec<u16>>,
     menu_live: Vec<Vec<u16>>,
     pending_menu: MenuQueue,
+    heads: HashMap<usize, f32>,
+    no_resize: HashSet<usize>,
     pending_dialog: DialogQueue,
     pending_notes: NoteQueue,
     pending_theme: Rc<RefCell<Option<usize>>>,
@@ -934,6 +936,8 @@ impl Tree {
             menu_items: Vec::new(),
             menu_live: Vec::new(),
             pending_menu: Rc::new(RefCell::new(None)),
+            heads: HashMap::new(),
+            no_resize: HashSet::new(),
             pending_dialog: Rc::new(RefCell::new(Vec::new())),
             pending_notes: Rc::new(RefCell::new(Vec::new())),
             pending_theme: Rc::new(RefCell::new(None)),
@@ -1621,7 +1625,9 @@ impl Tree {
                 10 => self.set_input(id, a),
                 11 => self.set_input3(id, a, b, c),
                 12 => self.set_enabled(id, a >= 0.5),
-                _ => self.set_password(id, a >= 0.5),
+                13 => self.set_password(id, a >= 0.5),
+                14 => self.set_head(id, a),
+                _ => self.set_col_resize(id, a >= 0.5),
             }
         }
         true
@@ -2368,7 +2374,7 @@ impl Tree {
     /// Прокручивает таблицу так, чтобы строка была видна.
     pub fn reveal_table(&mut self, id: NodeId, row: usize) {
         let r = self.nodes[id.0].rect;
-        let view = (r.height - TABLE_HEADER).max(0.0);
+        let view = (r.height - self.table_head(id)).max(0.0);
         let top = row as f32 * TABLE_ROW;
         let mut s = self.table_scroll(id);
         if top < s {
@@ -2869,8 +2875,119 @@ impl Tree {
         if self.tree_cols(id) == 0 {
             0.0
         } else {
-            TREE_HEADER
+            self.heads.get(&id.0).copied().unwrap_or(TREE_HEADER)
         }
+    }
+
+    /// Высота шапки таблицы.
+    pub fn table_head(&self, id: NodeId) -> f32 {
+        self.heads.get(&id.0).copied().unwrap_or(TABLE_HEADER)
+    }
+
+    /// Задаёт высоту шапки; ноль возвращает умолчание.
+    pub fn set_head(&mut self, id: NodeId, h: f32) {
+        if h > 0.0 {
+            self.heads.insert(id.0, h);
+        } else {
+            self.heads.remove(&id.0);
+        }
+        self.dirty = true;
+    }
+
+    /// Копия высот шапок по индексам узлов; ноль — шапки нет.
+    pub fn head_map(&self) -> Vec<f32> {
+        (0..self.nodes.len())
+            .map(|i| {
+                let id = NodeId(i);
+                match &self.nodes[i].kind {
+                    NodeKind::Table { .. } => self.table_head(id),
+                    NodeKind::TreeView { .. } => self.tree_head(id),
+                    _ => 0.0,
+                }
+            })
+            .collect()
+    }
+
+    /// Разрешено ли тянуть границы колонок мышью.
+    pub fn set_col_resize(&mut self, id: NodeId, on: bool) {
+        if on {
+            self.no_resize.remove(&id.0);
+        } else {
+            self.no_resize.insert(id.0);
+        }
+    }
+
+    /// Можно ли менять ширину колонок мышью.
+    pub fn can_resize_cols(&self, id: NodeId) -> bool {
+        !self.no_resize.contains(&id.0)
+            && matches!(
+                self.nodes[id.0].kind,
+                NodeKind::Table { .. } | NodeKind::TreeView { .. }
+            )
+    }
+
+    /// Границы колонок таблицы или дерева.
+    pub fn col_bounds(&self, id: NodeId) -> Vec<(f32, f32)> {
+        match &self.nodes[id.0].kind {
+            NodeKind::Table { .. } => self.table_bounds(id),
+            NodeKind::TreeView { .. } => self.tree_bounds(id),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Текущие ширины колонок в пикселях.
+    pub fn col_widths(&self, id: NodeId) -> Vec<f32> {
+        self.col_bounds(id).iter().map(|(_, w)| *w).collect()
+    }
+
+    /// Действующие минимумы колонок с учётом умолчания.
+    pub fn col_mins(&self, id: NodeId) -> Vec<f32> {
+        let (n, mins) = match &self.nodes[id.0].kind {
+            NodeKind::Table { columns, mins, .. } => (columns.len().max(1), mins.clone()),
+            NodeKind::TreeView { cols, mins, .. } => (cols.len().max(1), mins.clone()),
+            _ => return Vec::new(),
+        };
+        (0..n)
+            .map(|i| {
+                let m = mins.get(i).copied().unwrap_or(0.0);
+                if m > 0.0 {
+                    m
+                } else {
+                    COL_MIN
+                }
+            })
+            .collect()
+    }
+
+    /// Тексты колонки: заголовок и содержимое ячеек.
+    pub fn col_texts(&self, id: NodeId, col: usize) -> Vec<Vec<u16>> {
+        let mut out = Vec::new();
+        match &self.nodes[id.0].kind {
+            NodeKind::Table { columns, rows, .. } => {
+                if let Some(h) = columns.get(col) {
+                    out.push(h.clone());
+                }
+                for r in rows.iter().take(4000) {
+                    if let Some(c) = r.get(col) {
+                        out.push(c.clone());
+                    }
+                }
+            }
+            NodeKind::TreeView { cols, items, .. } => {
+                if let Some(h) = cols.get(col) {
+                    out.push(h.clone());
+                }
+                for it in items.iter().take(4000) {
+                    if col == 0 {
+                        out.push(it.label.clone());
+                    } else if let Some(v) = it.values.get(col - 1) {
+                        out.push(v.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
+        out
     }
 
     /// Границы колонок дерева в оконных координатах.

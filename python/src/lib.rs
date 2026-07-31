@@ -4080,13 +4080,16 @@ impl PyWindow {
         Ok(PyNode { id })
     }
 
-    /// Ширины и минимумы колонок таблицы или дерева, в пикселях.
-    #[pyo3(signature = (node, *, widths=None, mins=None))]
+    /// Ширины, минимумы и высота шапки таблицы или дерева.
+    #[pyo3(signature = (node, *, widths=None, mins=None, head=None, resize=None, on_cols=None))]
     fn cols(
-        &self,
+        &mut self,
         node: PyNode,
         widths: Option<Vec<f32>>,
         mins: Option<Vec<f32>>,
+        head: Option<f32>,
+        resize: Option<bool>,
+        on_cols: Option<PyObject>,
     ) -> PyResult<()> {
         let px = |v: Vec<f32>| -> Vec<usize> {
             v.iter().map(|x| x.max(0.0).round() as usize).collect()
@@ -4096,6 +4099,32 @@ impl PyWindow {
         }
         if let Some(v) = mins {
             self.tree_queue.borrow_mut().push((node.id, 7, px(v)));
+        }
+        if let Some(h) = head {
+            self.canvas_queue
+                .borrow_mut()
+                .push((node.id, 14, h, 0.0, 0.0, 0.0));
+        }
+        if let Some(on) = resize {
+            let v = if on { 1.0 } else { 0.0 };
+            self.canvas_queue
+                .borrow_mut()
+                .push((node.id, 15, v, 0.0, 0.0, 0.0));
+        }
+        if let Some(f) = on_cols {
+            let texts = self.bindings.clone();
+            let values = self.value_bindings.clone();
+            let tree = self.tree.as_mut().ok_or_else(consumed)?;
+            let cb: PointerCb = Box::new(move |t, _, _, _| {
+                let ws = t.col_widths(node.id);
+                Python::with_gil(|py| {
+                    if let Err(e) = f.bind(py).call1((ws,)) {
+                        report(py, e);
+                    }
+                    refresh_all(py, t, &texts, &values);
+                });
+            });
+            tree.set_on_point(node.id, 10, cb);
         }
         Ok(())
     }

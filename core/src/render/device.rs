@@ -24,9 +24,9 @@ use super::canvas::Canvas;
 use super::types::{Color, Rect};
 use crate::theme::Theme;
 use crate::tree::{
-    NodeId, NodeKind, Style, Tree, ACC_HEADER, BAR_ITEM, CAL_HEADER, CAL_WEEK, DOCK_HEADER,
-    GROUP_HEADER, LIST_ROW, OFF_LIMIT, POPUP_ROW, SCROLLBAR_W, SPLIT_ARROW, SPLIT_W,
-    TABLE_HEADER, TABLE_ROW, TAB_HEADER, TERM_INPUT, TERM_ROW,
+    NodeId, NodeKind, Style, Tree, ACC_HEADER, BAR_ITEM, CAL_HEADER, CAL_WEEK, COL_MIN,
+    DOCK_HEADER, GROUP_HEADER, LIST_ROW, OFF_LIMIT, POPUP_ROW, SCROLLBAR_W, SPLIT_ARROW,
+    SPLIT_W, TABLE_HEADER, TABLE_ROW, TAB_HEADER, TERM_INPUT, TERM_ROW,
 };
 
 const MONTHS: [&str; 12] = [
@@ -209,6 +209,7 @@ pub struct Renderer {
     focus_ring: bool,
     scroll_drag: Option<NodeId>,
     split_drag: Option<NodeId>,
+    col_drag: Option<(NodeId, usize)>,
     range_drag: Option<(NodeId, bool)>,
     knob_drag: Option<(NodeId, f32, f32)>,
     color_drag: Option<(NodeId, u8)>,
@@ -432,6 +433,7 @@ impl Renderer {
                 focus_ring: false,
                 scroll_drag: None,
                 split_drag: None,
+                col_drag: None,
                 range_drag: None,
                 knob_drag: None,
                 color_drag: None,
@@ -956,8 +958,9 @@ impl Renderer {
         } else {
             let n = self.tree.table_len(id);
             let content = n as f32 * TABLE_ROW;
-            let visible = (r.height - TABLE_HEADER).max(0.0);
-            ((content - visible).max(0.0), r.y + TABLE_HEADER, visible)
+            let visible = (r.height - self.tree.table_head(id)).max(0.0);
+            let th = self.tree.table_head(id);
+            ((content - visible).max(0.0), r.y + th, visible)
         };
         if max_scroll <= 0.0 || track_h <= 0.0 {
             return;
@@ -997,7 +1000,7 @@ impl Renderer {
 
     fn reveal_table_row(&mut self, id: NodeId, row: usize) {
         let r = self.tree.get(id).rect;
-        let visible = (r.height - TABLE_HEADER).max(0.0);
+        let visible = (r.height - self.tree.table_head(id)).max(0.0);
         let row_top = row as f32 * TABLE_ROW;
         let row_bot = row_top + TABLE_ROW;
         let mut scroll = self.tree.table_scroll(id);
@@ -1185,8 +1188,79 @@ impl Renderer {
         0.0
     }
 
+    fn col_edge_at(&self, x: f32, y: f32) -> Option<(NodeId, usize)> {
+        let id = self.tree.hit_test(x, y)?;
+        if !self.tree.can_resize_cols(id) {
+            return None;
+        }
+        let r = self.tree.get(id).rect;
+        let head = if self.tree.is_tree(id) {
+            self.tree.tree_head(id)
+        } else {
+            self.tree.table_head(id)
+        };
+        if head <= 0.0 || y < r.y || y > r.y + head {
+            return None;
+        }
+        let bounds = self.tree.col_bounds(id);
+        if bounds.len() < 2 {
+            return None;
+        }
+        for i in 0..bounds.len() - 1 {
+            let edge = bounds[i].0 + bounds[i].1;
+            if (x - edge).abs() <= 4.0 {
+                return Some((id, i));
+            }
+        }
+        None
+    }
+
+    fn set_col_from(&mut self, id: NodeId, col: usize, x: f32) {
+        let bounds = self.tree.col_bounds(id);
+        let mins = self.tree.col_mins(id);
+        if col + 1 >= bounds.len() {
+            return;
+        }
+        let mut widths: Vec<f32> = bounds.iter().map(|(_, w)| *w).collect();
+        let total = widths[col] + widths[col + 1];
+        let lo = mins.get(col).copied().unwrap_or(COL_MIN);
+        let hi = (total - mins.get(col + 1).copied().unwrap_or(COL_MIN)).max(lo);
+        let w = (x - bounds[col].0).clamp(lo, hi);
+        widths[col] = w;
+        widths[col + 1] = total - w;
+        self.tree.set_columns(id, false, widths);
+    }
+
+    fn autofit_col(&mut self, id: NodeId, col: usize) {
+        let mut want = 0.0f32;
+        for t in self.tree.col_texts(id, col) {
+            let w = x_at_index(&self.dwrite, &self.text_format_left, &t, t.len());
+            want = want.max(w);
+        }
+        want += 24.0;
+        let bounds = self.tree.col_bounds(id);
+        let mins = self.tree.col_mins(id);
+        if col + 1 >= bounds.len() {
+            return;
+        }
+        let mut widths: Vec<f32> = bounds.iter().map(|(_, w)| *w).collect();
+        let total = widths[col] + widths[col + 1];
+        let lo = mins.get(col).copied().unwrap_or(COL_MIN);
+        let hi = (total - mins.get(col + 1).copied().unwrap_or(COL_MIN)).max(lo);
+        widths[col] = want.clamp(lo, hi);
+        widths[col + 1] = total - widths[col];
+        self.tree.set_columns(id, false, widths);
+    }
+
     /// Тип курсора под текущим положением мыши.
     pub fn cursor_kind(&self) -> CursorKind {
+        if self.col_drag.is_some() {
+            return CursorKind::Hand;
+        }
+        let (mx, my) = self.mouse;
+        if self.col_edge_at(mx, my).is_some() {
+            return CursorKind::Hand;
+        }
         match self.hot {
             Some(id) if self.tree.is_interactive(id) => CursorKind::Hand,
             Some(id) if self.tree.is_dropdown(id) => CursorKind::Hand,
@@ -1273,7 +1347,7 @@ impl Renderer {
     fn table_row_at(&self, id: NodeId, y: f32) -> Option<usize> {
         let r = self.tree.get(id).rect;
         let n = self.tree.table_len(id);
-        let top = r.y + TABLE_HEADER;
+        let top = r.y + self.tree.table_head(id);
         if y < top || n == 0 {
             return None;
         }
@@ -1356,6 +1430,10 @@ impl Renderer {
         }
         if let Some(id) = self.split_drag {
             self.set_split_from(id, x, y);
+            dirty = true;
+        }
+        if let Some((id, col)) = self.col_drag {
+            self.set_col_from(id, col, x);
             dirty = true;
         }
         if let Some((id, upper)) = self.range_drag {
@@ -1506,6 +1584,16 @@ impl Renderer {
         let new_focus = hit.filter(|&id| self.tree.is_textbox(id) || self.tree.is_slider(id));
         self.focused = new_focus;
 
+        if let Some((id, col)) = self.col_edge_at(x, y) {
+            if self.is_double_click(x, y) {
+                self.autofit_col(id, col);
+                self.tree.fire_point(id, 10, col as i32, 0.0, 0.0);
+                return true;
+            }
+            self.col_drag = Some((id, col));
+            self.focused = Some(id);
+            return true;
+        }
         if let Some(id) = self.splitter_bar_at(x, y) {
             if self.is_double_click(x, y) {
                 self.tree.set_split_ratio(id, 0.5);
@@ -1924,6 +2012,9 @@ impl Renderer {
         let was_pressed = self.pressed.take().is_some();
         let was_dragging = self.dragging.take().is_some();
         let was_scroll = self.scroll_drag.take().is_some();
+        if let Some((id, col)) = self.col_drag.take() {
+            self.tree.fire_point(id, 10, col as i32, 0.0, 0.0);
+        }
         let was_split = self.split_drag.take().is_some();
         let was_range = self.range_drag.take().is_some();
         let was_knob = self.knob_drag.take().is_some();
@@ -2820,6 +2911,7 @@ impl Renderer {
             canvas.clear(clear);
             let clip_map = self.tree.clip_map();
             let flag_map = self.tree.flag_map();
+            let head_map = self.tree.head_map();
             self.tree.for_each(|id, node| {
                 if node.rect.x <= OFF_LIMIT || node.rect.y <= OFF_LIMIT {
                     return;
@@ -3329,7 +3421,11 @@ impl Renderer {
                         let head_h = if cols.is_empty() {
                             0.0
                         } else {
-                            crate::tree::TREE_HEADER
+                            head_map
+                                .get(id.index())
+                                .copied()
+                                .filter(|v| *v > 0.0)
+                                .unwrap_or(crate::tree::TREE_HEADER)
                         };
                         if !cols.is_empty() {
                             canvas.fill_rounded_rect(
@@ -4422,7 +4518,12 @@ impl Renderer {
                         canvas.fill_rounded_rect(r, 8.0, bg);
                         let ncol = columns.len().max(1);
                         let bnd = crate::tree::column_bounds_min(r, ncol, widths, mins);
-                        let top = r.y + TABLE_HEADER;
+                        let head = head_map
+                            .get(id.index())
+                            .copied()
+                            .filter(|v| *v > 0.0)
+                            .unwrap_or(TABLE_HEADER);
+                        let top = r.y + head;
                         let hover_row = if hot == Some(id) && mouse.1 >= top {
                             let ri = ((mouse.1 - top + *scroll) / TABLE_ROW).floor();
                             if ri >= 0.0 {
@@ -4490,22 +4591,26 @@ impl Renderer {
                                 );
                             }
                         }
-                        let header = Rect::new(r.x, r.y, r.width, TABLE_HEADER);
+                        let header = Rect::new(r.x, r.y, r.width, head);
                         canvas.fill_rounded_rect(header, 8.0, theme.track);
                         for (c, col) in columns.iter().enumerate() {
                             let (cx, col_w) = match bnd.get(c) {
                                 Some(v) => *v,
                                 None => continue,
                             };
-                            let hr =
-                                Rect::new(cx + 10.0, r.y, (col_w - 20.0).max(0.0), TABLE_HEADER);
-                            canvas.draw_text(col, format_left, hr, theme.content);
+                            let hr = Rect::new(cx + 10.0, r.y, (col_w - 20.0).max(0.0), head);
+                            let hf = if head > TABLE_HEADER {
+                                format_wrap
+                            } else {
+                                format_left
+                            };
+                            canvas.draw_text(col, hf, hr, theme.content);
                         }
                         let body = Rect::new(
                             r.x,
-                            r.y + TABLE_HEADER,
+                            r.y + head,
                             r.width,
-                            (r.height - TABLE_HEADER).max(0.0),
+                            (r.height - head).max(0.0),
                         );
                         draw_scrollbar(
                             &canvas,
