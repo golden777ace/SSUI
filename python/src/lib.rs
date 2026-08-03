@@ -10,10 +10,10 @@ use pyo3::wrap_pyfunction;
 
 use ssui_core::platform::{dpi, Window as CoreWindow, WindowOpts};
 use ssui_core::tree::{
-    Anim, AnimQueue, Axis, BuildQueue, CssQueue, DialogData, DialogQueue, Ease, FileQueue,
-    FileReq, FocusQueue, MenuQueue, NodeId, NodeKind, CanvasQueue, NoteData, NoteQueue,
-    PointerCb, Props, RectTable, Shape, TextQueue, TextState, TimerKill, TimerQueue,
-    TimerReq, Tree, TreeGeom, TreeItem, TreeQueue, WheelCb, LIST_ROW, OFF_COORD,
+    intern_font, Anim, AnimQueue, Axis, BuildQueue, CssQueue, DialogData, DialogQueue, Ease,
+    FileQueue, FileReq, FocusQueue, MenuQueue, NodeId, NodeKind, CanvasQueue, NoteData,
+    NoteQueue, PointerCb, Props, RectTable, Shape, Style, TextQueue, TextState, TimerKill,
+    TimerQueue, TimerReq, Tree, TreeGeom, TreeItem, TreeQueue, WheelCb, LIST_ROW, OFF_COORD,
 };
 use pyo3::types::PyAnyMethods;
 
@@ -21,6 +21,35 @@ type ShapeSpec = (String, Vec<f32>, String, String);
 
 /// Числовое поле: контейнер, надпись, значение, минимум, максимум, шаг.
 type SpinTable = Rc<RefCell<Vec<(NodeId, NodeId, Rc<Cell<f32>>, f32, f32, f32)>>>;
+
+fn color_of(s: &str) -> Option<ssui_core::render::Color> {
+    ssui_core::render::parse_hex(s)
+}
+
+fn center_mode(v: Option<&Bound<'_, PyAny>>, def: u8) -> u8 {
+    let Some(v) = v else {
+        return def;
+    };
+    if let Ok(b) = v.extract::<bool>() {
+        return if b { 2 } else { 0 };
+    }
+    match v.extract::<String>().unwrap_or_default().as_str() {
+        "screen" => 2,
+        "parent" => 1,
+        _ => 0,
+    }
+}
+
+fn close_hwnd(h: isize) {
+    if h == 0 {
+        return;
+    }
+    ALIVE.with(|v| {
+        if let Some(win) = v.borrow().iter().find(|x| x.handle() == h) {
+            win.close();
+        }
+    });
+}
 
 fn hexa(s: &str) -> u32 {
     ssui_core::render::parse_hex(s)
@@ -918,7 +947,8 @@ struct PyWindow {
     modal: bool,
     frameless: bool,
     topmost: bool,
-    center: bool,
+    center: u8,
+    pos: Option<(i32, i32)>,
     resizable: bool,
     minbox: bool,
     maxbox: bool,
@@ -933,7 +963,7 @@ impl PyWindow {
     #[new]
     #[pyo3(signature = (
         ttl="SSUI", w=1280, h=720, thm="drk", glass=false, tint=0.0, blur=false,
-        frameless=false, topmost=false, center=false, resizable=true,
+        frameless=false, topmost=false, center=None, resizable=true,
         minbox=true, maxbox=true, closebox=true, insp=false
     ))]
     #[allow(clippy::too_many_arguments)]
@@ -947,13 +977,14 @@ impl PyWindow {
         blur: bool,
         frameless: bool,
         topmost: bool,
-        center: bool,
+        center: Option<&Bound<'_, PyAny>>,
         resizable: bool,
         minbox: bool,
         maxbox: bool,
         closebox: bool,
         insp: bool,
     ) -> Self {
+        let center = center_mode(center, 0);
         let mut tree = Tree::new();
         tree.set_inspect(insp);
         tree.set_theme(theme_index(thm));
@@ -1030,6 +1061,7 @@ impl PyWindow {
             frameless,
             topmost,
             center,
+            pos: None,
             resizable,
             minbox,
             maxbox,
@@ -1042,9 +1074,9 @@ impl PyWindow {
 
     /// Создаёт дочернее окно с собственным деревом виджетов.
     #[pyo3(signature = (
-        ttl="", w=520, h=420, *, thm="drk", modal=false, center=true,
+        ttl="", w=520, h=420, *, thm="drk", modal=false, center=None,
         frameless=false, topmost=false, resizable=true,
-        minbox=false, maxbox=false, closebox=true,
+        minbox=false, maxbox=false, closebox=true, x=None, y=None,
         glass=false, tint=0.0, blur=false, insp=false, on_close=None
     ))]
     #[allow(clippy::too_many_arguments)]
@@ -1056,23 +1088,30 @@ impl PyWindow {
         h: i32,
         thm: &str,
         modal: bool,
-        center: bool,
+        center: Option<&Bound<'_, PyAny>>,
         frameless: bool,
         topmost: bool,
         resizable: bool,
         minbox: bool,
         maxbox: bool,
         closebox: bool,
+        x: Option<i32>,
+        y: Option<i32>,
         glass: bool,
         tint: f32,
         blur: bool,
         insp: bool,
         on_close: Option<PyObject>,
     ) -> PyResult<Py<PyWindow>> {
+        let mode = center_mode(center, 2);
         let mut child = PyWindow::new(
-            ttl, w, h, thm, glass, tint, blur, frameless, topmost, center, resizable,
+            ttl, w, h, thm, glass, tint, blur, frameless, topmost, None, resizable,
             minbox, maxbox, closebox, insp,
         );
+        child.center = mode;
+        if let (Some(px), Some(py)) = (x, y) {
+            child.pos = Some((px, py));
+        }
         child.owner = self.hwnd.get();
         child.modal = modal;
         child.on_close = on_close;
@@ -1082,6 +1121,121 @@ impl PyWindow {
             self.value_bindings.clone(),
         ));
         Py::new(py, child)
+    }
+
+    /// Всплывающее сообщение поверх всех окон, независимое от родителя.
+    #[pyo3(signature = (
+        title="", text="", *, secs=3.0, w=200, h=150, x=None, y=None,
+        bg="#202632", fg="#eef3ff", font=None, size=16.0, rad=8.0,
+        pd=10.0, gp=6.0, click=true, on_close=None
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn push(
+        &self,
+        py: Python,
+        title: &str,
+        text: &str,
+        secs: f32,
+        w: i32,
+        h: i32,
+        x: Option<i32>,
+        y: Option<i32>,
+        bg: &str,
+        fg: &str,
+        font: Option<String>,
+        size: f32,
+        rad: f32,
+        pd: f32,
+        gp: f32,
+        click: bool,
+        on_close: Option<PyObject>,
+    ) -> PyResult<Py<PyWindow>> {
+        let mut child = PyWindow::new(
+            "", w, h, "drk", false, 0.0, false, true, true, None, false, false, false,
+            false, false,
+        );
+        child.center = 2;
+        if let (Some(px), Some(py)) = (x, y) {
+            child.pos = Some((px, py));
+        }
+        child.owner = self.hwnd.get();
+        child.on_close = on_close;
+        let share = child.share.clone();
+        {
+            let fam = font.as_deref().map(intern_font);
+            let paint = Style {
+                text: color_of(fg),
+                font: fam,
+                size: Some(size),
+                wrap: Some(true),
+                ..Style::default()
+            };
+            let tree = child.tree.as_mut().ok_or_else(consumed)?;
+            let root = tree.root();
+            let frame = tree.add_child(
+                root,
+                NodeKind::Frame { radius: rad },
+                make_props("v", pd, gp, None, None),
+            );
+            tree.set_style(
+                frame,
+                Style {
+                    fill: color_of(bg),
+                    radius: Some(rad),
+                    ..Style::default()
+                },
+            );
+            let mut ids = vec![frame];
+            if !title.is_empty() {
+                let mut p = make_props("v", 0.0, 0.0, None, Some(size * 1.8));
+                p.cross = 2;
+                let n = tree.add_child(
+                    frame,
+                    NodeKind::Label {
+                        text: utf16(title),
+                    },
+                    p,
+                );
+                let mut s = paint;
+                s.size = Some(size * 1.15);
+                tree.set_style(n, s);
+                ids.push(n);
+            }
+            let mut p = make_props("v", 0.0, 0.0, None, None);
+            p.grow = 1.0;
+            let body = tree.add_child(
+                frame,
+                NodeKind::Label {
+                    text: utf16(text),
+                },
+                p,
+            );
+            tree.set_style(body, paint);
+            ids.push(body);
+            if click {
+                for id in ids {
+                    let s = share.clone();
+                    tree.set_on_click(id, move |_| {
+                        close_hwnd(s.hwnd.load(Ordering::Acquire));
+                    });
+                }
+            }
+            if secs > 0.0 {
+                let s = share.clone();
+                let id = TIMER_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+                child.timer_queue.borrow_mut().push(TimerReq {
+                    id,
+                    ms: secs * 1000.0,
+                    once: true,
+                    cb: Box::new(move |_| {
+                        close_hwnd(s.hwnd.load(Ordering::Acquire));
+                    }),
+                });
+            }
+        }
+        let obj = Py::new(py, child)?;
+        PyWindow::show(obj.bind(py), None, true)?;
+        Ok(obj)
     }
 
     /// Закрывает окно программно.
@@ -4316,6 +4470,7 @@ impl PyWindow {
             frameless: self.frameless,
             topmost: self.topmost,
             center: self.center,
+            pos: self.pos,
             resizable: self.resizable,
             minbox: self.minbox,
             maxbox: self.maxbox,

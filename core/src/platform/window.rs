@@ -5,7 +5,9 @@ use std::sync::Once;
 use windows::core::*;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::{
-    CreateSolidBrush, DeleteObject, FillRect, InvalidateRect, UpdateWindow, ValidateRect, HDC,
+    CreateSolidBrush, DeleteObject, FillRect, GetMonitorInfoW, InvalidateRect, MonitorFromWindow,
+    UpdateWindow, ValidateRect, HDC, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    MONITOR_DEFAULTTOPRIMARY,
 };
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryW};
 use windows::Win32::UI::Input::Ime::{
@@ -55,7 +57,8 @@ pub struct WindowOpts {
     pub blur: bool,
     pub frameless: bool,
     pub topmost: bool,
-    pub center: bool,
+    pub center: u8,
+    pub pos: Option<(i32, i32)>,
     pub resizable: bool,
     pub minbox: bool,
     pub maxbox: bool,
@@ -78,7 +81,8 @@ impl Default for WindowOpts {
             blur: false,
             frameless: false,
             topmost: false,
-            center: false,
+            center: 0,
+            pos: None,
             resizable: true,
             minbox: true,
             maxbox: true,
@@ -143,6 +147,7 @@ impl Window {
             frameless,
             topmost,
             center,
+            pos,
             resizable,
             minbox,
             maxbox,
@@ -212,26 +217,35 @@ impl Window {
                 _ => HWND::default(),
             };
 
-            let (px, py) = if center {
-                let (sw, sh) = if owner_hwnd.0.is_null() {
-                    (
-                        GetSystemMetrics(SM_CXSCREEN),
-                        GetSystemMetrics(SM_CYSCREEN),
-                    )
+            let (px, py) = if let Some((x, y)) = pos {
+                (x, y)
+            } else if center > 0 {
+                let has_owner = !owner_hwnd.0.is_null();
+                let mut area = RECT::default();
+                if center == 1 && has_owner {
+                    let _ = GetWindowRect(owner_hwnd, &mut area);
                 } else {
-                    let mut rc = RECT::default();
-                    let _ = GetWindowRect(owner_hwnd, &mut rc);
-                    (rc.right - rc.left, rc.bottom - rc.top)
-                };
-                let mut ox = 0;
-                let mut oy = 0;
-                if !owner_hwnd.0.is_null() {
-                    let mut rc = RECT::default();
-                    let _ = GetWindowRect(owner_hwnd, &mut rc);
-                    ox = rc.left;
-                    oy = rc.top;
+                    let flag = if has_owner {
+                        MONITOR_DEFAULTTONEAREST
+                    } else {
+                        MONITOR_DEFAULTTOPRIMARY
+                    };
+                    let mon = MonitorFromWindow(owner_hwnd, flag);
+                    let mut mi = MONITORINFO {
+                        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                        ..Default::default()
+                    };
+                    if GetMonitorInfoW(mon, &mut mi).as_bool() {
+                        area = mi.rcWork;
+                    } else {
+                        area.right = GetSystemMetrics(SM_CXSCREEN);
+                        area.bottom = GetSystemMetrics(SM_CYSCREEN);
+                    }
                 }
-                (ox + (sw - width) / 2, oy + (sh - height) / 2)
+                (
+                    area.left + (area.right - area.left - width) / 2,
+                    area.top + (area.bottom - area.top - height) / 2,
+                )
             } else {
                 (CW_USEDEFAULT, CW_USEDEFAULT)
             };
