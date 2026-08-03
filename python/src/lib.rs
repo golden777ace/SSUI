@@ -103,11 +103,17 @@ fn pair_cb(f: PyObject, texts: Bindings, values: Bindings) -> PointerCb {
 
 /// Разбирает строки дерева: старые кортежи и новые словари.
 fn tree_rows(items: &Bound<'_, PyAny>) -> PyResult<Vec<TreeItem>> {
+    Ok(tree_rows_keep(items)?.0)
+}
+
+fn tree_rows_keep(items: &Bound<'_, PyAny>) -> PyResult<(Vec<TreeItem>, Vec<bool>)> {
     let mut out = Vec::new();
+    let mut forced = Vec::new();
     for obj in items.try_iter()? {
         let obj = obj?;
         if let Ok((d, s, leaf)) = obj.extract::<(usize, String, bool)>() {
             out.push(TreeItem::new(d, utf16(&s), true, leaf));
+            forced.push(false);
             continue;
         }
         let pick = |k: &str| obj.get_item(k).ok();
@@ -120,9 +126,9 @@ fn tree_rows(items: &Bound<'_, PyAny>) -> PyResult<Vec<TreeItem>> {
         let leaf = pick("leaf")
             .and_then(|v| v.extract::<bool>().ok())
             .unwrap_or(false);
-        let open = pick("open")
-            .and_then(|v| v.extract::<bool>().ok())
-            .unwrap_or(true);
+        let open_key = pick("open").and_then(|v| v.extract::<bool>().ok());
+        forced.push(open_key.is_some());
+        let open = open_key.unwrap_or(true);
         let values = pick("values")
             .and_then(|v| v.extract::<Vec<String>>().ok())
             .unwrap_or_default();
@@ -154,7 +160,7 @@ fn tree_rows(items: &Bound<'_, PyAny>) -> PyResult<Vec<TreeItem>> {
             cfg: paint("cfg"),
         });
     }
-    Ok(out)
+    Ok((out, forced))
 }
 
 #[pyclass(name = "N")]
@@ -2658,7 +2664,7 @@ impl PyWindow {
 
     /// Дерево; строка — кортеж `(глубина, текст, лист)` либо словарь.
     #[pyo3(signature = (items, *, pr=None, cols=None, widths=None, multi=false,
-                        bind=None, ch=None, clk=None, dbl=None,
+                        bind=None, ch=None, clk=None, dbl=None, on_open=None,
                         pd=0.0, gp=0.0, w=None, h=None))]
     #[allow(clippy::too_many_arguments)]
     fn tre(
@@ -2673,6 +2679,7 @@ impl PyWindow {
         ch: Option<PyObject>,
         clk: Option<PyObject>,
         dbl: Option<PyObject>,
+        on_open: Option<PyObject>,
         pd: f32,
         gp: f32,
         w: Option<f32>,
@@ -2684,6 +2691,7 @@ impl PyWindow {
             Some(f) => tree_rows(&f.bind(py).call0()?)?,
             None => tree_rows(items)?,
         };
+        let _ = &on_open;
         let heads: Vec<Vec<u16>> = cols
             .unwrap_or_default()
             .iter()
@@ -2741,10 +2749,29 @@ impl PyWindow {
             let cb = pair_cb(f, self.bindings.clone(), self.value_bindings.clone());
             tree.set_on_point(id, 6, cb);
         }
+        if let Some(f) = on_open {
+            let ot = self.bindings.clone();
+            let ov = self.value_bindings.clone();
+            let cb: PointerCb = Box::new(move |t, i, v, _| {
+                Python::with_gil(|py| {
+                    if let Err(e) = f.bind(py).call1((i as i64, v >= 0.5)) {
+                        report(py, e);
+                    }
+                    refresh_all(py, t, &ot, &ov);
+                });
+            });
+            tree.set_on_point(id, 11, cb);
+        }
         if let Some(f) = bind {
             self.extra.tre.borrow_mut().push((id, f));
         }
         Ok(PyNode { id })
+    }
+
+    /// Индексы раскрытых строк дерева.
+    fn tre_opened(&self, node: PyNode) -> PyResult<Vec<usize>> {
+        let tree = self.tree.as_ref().ok_or_else(consumed)?;
+        Ok(tree.tree_opened(node.id))
     }
 
     /// Кнопка с меню; `clk` — основное действие, `ch(i)` — пункт меню.
@@ -4622,8 +4649,8 @@ fn refresh_all(py: Python, t: &mut Tree, texts: &Bindings, values: &Bindings) {
     TREE_BINDINGS.with(|c| {
         for (id, f) in c.borrow().iter() {
             let Some(r) = run_binding(py, f) else { continue };
-            match tree_rows(&r) {
-                Ok(rows) => t.set_tree_items(*id, rows),
+            match tree_rows_keep(&r) {
+                Ok((rows, forced)) => t.set_tree_items_keep(*id, rows, &forced),
                 Err(e) => report(py, e),
             }
         }

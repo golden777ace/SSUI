@@ -1627,7 +1627,14 @@ impl Tree {
                 12 => self.set_enabled(id, a >= 0.5),
                 13 => self.set_password(id, a >= 0.5),
                 14 => self.set_head(id, a),
-                _ => self.set_col_resize(id, a >= 0.5),
+                15 => self.set_col_resize(id, a >= 0.5),
+                _ => {
+                    let i = b.max(0.0) as usize;
+                    let on = a >= 0.5;
+                    if self.set_tree_open(id, i, on) {
+                        self.fire_point(id, 11, i as i32, a, 0.0);
+                    }
+                }
             }
         }
         true
@@ -2834,6 +2841,40 @@ impl Tree {
 
     /// Заменяет строки дерева, сохраняя выбор в пределах длины.
     pub fn set_tree_items(&mut self, id: NodeId, data: Vec<TreeItem>) {
+        self.set_tree_items_keep(id, data, &[]);
+    }
+
+    /// Заменяет строки дерева, сохраняя раскрытие там, где оно не задано.
+    /// `forced` — маска строк, у которых `open` задан явно.
+    pub fn set_tree_items_keep(&mut self, id: NodeId, mut data: Vec<TreeItem>, forced: &[bool]) {
+        let keep: Vec<(usize, Vec<u16>, bool)> =
+            if let NodeKind::TreeView { items, .. } = &self.nodes[id.0].kind {
+                items
+                    .iter()
+                    .map(|it| (it.depth, it.label.clone(), it.open))
+                    .collect()
+            } else {
+                return;
+            };
+        if !keep.is_empty() {
+            for (i, it) in data.iter_mut().enumerate() {
+                if forced.get(i).copied().unwrap_or(true) || it.leaf {
+                    continue;
+                }
+                let same = keep
+                    .get(i)
+                    .filter(|(d, l, _)| *d == it.depth && *l == it.label)
+                    .map(|(_, _, o)| *o)
+                    .or_else(|| {
+                        keep.iter()
+                            .find(|(d, l, _)| *d == it.depth && *l == it.label)
+                            .map(|(_, _, o)| *o)
+                    });
+                if let Some(o) = same {
+                    it.open = o;
+                }
+            }
+        }
         if let NodeKind::TreeView {
             items,
             selected,
@@ -2850,6 +2891,47 @@ impl Tree {
             *items = data;
             self.dirty = true;
         }
+    }
+
+    /// Индексы раскрытых строк дерева.
+    pub fn tree_opened(&self, id: NodeId) -> Vec<usize> {
+        if let NodeKind::TreeView { items, .. } = &self.nodes[id.0].kind {
+            items
+                .iter()
+                .enumerate()
+                .filter(|(_, it)| !it.leaf && it.open)
+                .map(|(i, _)| i)
+                .collect()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Раскрыта ли строка дерева.
+    pub fn tree_is_open(&self, id: NodeId, index: usize) -> bool {
+        if let NodeKind::TreeView { items, .. } = &self.nodes[id.0].kind {
+            items.get(index).map(|it| it.open).unwrap_or(false)
+        } else {
+            false
+        }
+    }
+
+    /// Раскрывает или сворачивает строку; `true` — состояние изменилось.
+    pub fn set_tree_open(&mut self, id: NodeId, index: usize, on: bool) -> bool {
+        let mut hit = false;
+        if let NodeKind::TreeView { items, .. } = &mut self.nodes[id.0].kind {
+            if let Some(it) = items.get_mut(index) {
+                if !it.leaf && it.open != on {
+                    it.open = on;
+                    hit = true;
+                }
+            }
+        }
+        if hit {
+            self.clamp_tree_scroll(id);
+            self.dirty = true;
+        }
+        hit
     }
 
     /// Число строк дерева.
@@ -3362,17 +3444,25 @@ impl Tree {
                 }
                 _ => {
                     let on = op == 2;
+                    let v = if on { 1.0 } else { 0.0 };
+                    let mut fired = Vec::new();
                     if arg.is_empty() {
                         let n = self.tree_len(id);
                         for i in 0..n {
-                            self.set_tree_open(id, i, on);
+                            if self.set_tree_open(id, i, on) {
+                                fired.push(i);
+                            }
                         }
                     } else {
                         for i in arg {
                             self.open_subtree(id, i, on);
+                            fired.push(i);
                         }
                     }
                     self.clamp_tree_scroll(id);
+                    for i in fired {
+                        self.fire_point(id, 11, i as i32, v, 0.0);
+                    }
                 }
             }
         }
@@ -3440,7 +3530,7 @@ impl Tree {
         }
     }
 
-    fn set_tree_open(&mut self, id: NodeId, index: usize, on: bool) {
+    fn set_row_open(&mut self, id: NodeId, index: usize, on: bool) {
         if let NodeKind::TreeView { items, .. } = &mut self.nodes[id.0].kind {
             if let Some(it) = items.get_mut(index) {
                 if !it.leaf {
@@ -3462,11 +3552,11 @@ impl Tree {
         let Some(base) = self.item_depth(id, index) else {
             return;
         };
-        self.set_tree_open(id, index, on);
+        let _ = self.set_tree_open(id, index, on);
         let n = self.tree_len(id);
         for i in index + 1..n {
             match self.item_depth(id, i) {
-                Some(d) if d > base => self.set_tree_open(id, i, on),
+                Some(d) if d > base => self.set_row_open(id, i, on),
                 _ => break,
             }
         }
@@ -3481,7 +3571,7 @@ impl Tree {
             i -= 1;
             if let Some(d) = self.item_depth(id, i) {
                 if d < want {
-                    self.set_tree_open(id, i, true);
+                    let _ = self.set_tree_open(id, i, true);
                     want = d;
                 }
             }
@@ -3657,10 +3747,9 @@ impl Tree {
 
     /// Переключает раскрытие строки дерева.
     pub fn toggle_tree(&mut self, id: NodeId, index: usize) {
-        if let NodeKind::TreeView { items, .. } = &mut self.nodes[id.0].kind {
-            if let Some(it) = items.get_mut(index) {
-                it.open = !it.open;
-            }
+        let on = !self.tree_is_open(id, index);
+        if self.set_tree_open(id, index, on) {
+            self.fire_point(id, 11, index as i32, if on { 1.0 } else { 0.0 }, 0.0);
         }
     }
 
