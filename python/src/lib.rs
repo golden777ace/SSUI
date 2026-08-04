@@ -1151,7 +1151,7 @@ impl PyWindow {
         on_close: Option<PyObject>,
     ) -> PyResult<Py<PyWindow>> {
         let mut child = PyWindow::new(
-            "", w, h, "drk", false, 0.0, false, true, true, None, false, false, false,
+            "", w, h, "drk", true, 0.0, false, true, true, None, false, false, false,
             false, false,
         );
         child.center = 2;
@@ -1215,6 +1215,7 @@ impl PyWindow {
             if click {
                 for id in ids {
                     let s = share.clone();
+                    tree.set_clickable(id, true);
                     tree.set_on_click(id, move |_| {
                         close_hwnd(s.hwnd.load(Ordering::Acquire));
                     });

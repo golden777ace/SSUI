@@ -80,6 +80,12 @@ def main():
     files = ssui.sgnl("файлов нет")
     padv = ssui.sgnl(10.0)
     gapv = ssui.sgnl(6.0)
+    psecs = ssui.sgnl(3.0)
+    psize = ssui.sgnl(16.0)
+    pbg = ssui.sgnl(0)
+    pcorner = ssui.sgnl(1)
+    pcenter = ssui.sgnl(0)
+    pushes = ssui.sgnl(0)
     query = ssui.sgnl("")
     online = ssui.sgnl(False)
     items30 = [f"Элемент {i}" for i in range(1, 31)]
@@ -92,6 +98,17 @@ def main():
         ["Егор", "DevOps", "Отошёл"],
     ]
 
+    PUSH_BG = [
+        ("Тёмный", "#202632", "#eef3ff"),
+        ("Успех", "#14532d", "#dcfce7"),
+        ("Ошибка", "#7f1d1d", "#fee2e2"),
+        ("Внимание", "#78350f", "#fef3c7"),
+    ]
+    PUSH_FONT = [None, "Consolas", "Georgia", "Segoe UI"]
+    CORNERS = [("Слева вверху", "tl"), ("Справа вверху", "tr"),
+               ("Слева внизу", "bl"), ("Справа внизу", "br")]
+    CENTERS = [("screen", "screen"), ("parent", "parent"), ("нет", False)]
+
     def run_cmd(cmd):
         c = cmd.strip()
         if c == "help":
@@ -103,6 +120,19 @@ def main():
         if not c:
             return ""
         return f"неизвестная команда: {c}"
+
+    def open_child(mode):
+        sub = win.subwin("Дочернее окно", 420, 260, center=mode)
+        with sub.bx(pr=sub.rt(), pd=16.0, gp=10.0):
+            sub.lb(f"Центрирование: {mode}", h=30.0)
+            sub.lb("screen — центр монитора по рабочей области.\n"
+                   "parent — центр главного окна.\n"
+                   "нет — позиция от системы.",
+                   h=90.0, wrap=True)
+            sub.bt("Закрыть", h=44.0, clk=sub.close)
+        sub.css(CSS)
+        sub.show()
+        act.st(f"окно: center={mode}")
 
     def scene(cx, rr):
         px = 20.0 + cx * 320.0
@@ -526,6 +556,73 @@ def main():
                         win.bt("0%", h=40.0, clk=lambda: fx(vol, 0.0, dur=0.4))
                         win.bt("50%", h=40.0, clk=lambda: fx(vol, 0.5, dur=0.4))
                         win.bt("100%", h=40.0, clk=lambda: fx(vol, 1.0, dur=0.4))
+
+                    win.sep()
+                    win.lb("Уведомления по углам окна", h=26.0)
+                    win.dd([c[0] for c in CORNERS], sel=1, h=44.0,
+                           ch=lambda i: pcorner.st(i))
+                    with win.bx(ax="h", gp=8.0, h=48.0) as nrow:
+                        win.cls(nrow, "clear")
+                        win.bt("Уведомление", h=40.0,
+                               clk=lambda: nt("Обмен", "Прочитано 24 регистра",
+                                              secs=4.0,
+                                              corner=CORNERS[pcorner()][1]))
+                        win.bt("Снэкбар", h=40.0,
+                               clk=lambda: nt.snack("Записано",
+                                                    corner=CORNERS[pcorner()][1]))
+                        win.bt("Снэкбар внизу", h=40.0,
+                               clk=lambda: nt.snack("По центру внизу"))
+
+                with win.bx(pd=16.0, gp=10.0):
+                    win.lb("push — поверх всех окон", h=26.0)
+                    win.lb("Отдельное безрамочное окно по центру "
+                           "монитора. Гаснет по клику и по времени.",
+                           h=52.0, wrap=True)
+
+                    win.lb("Оформление:", h=24.0)
+                    win.dd([p[0] for p in PUSH_BG], h=44.0,
+                           ch=lambda i: pbg.st(i))
+                    win.lb("Шрифт:", h=24.0)
+                    pfont = ssui.sgnl(0)
+                    win.dd(["как в теме", "Consolas", "Georgia", "Segoe UI"],
+                           h=44.0, ch=lambda i: pfont.st(i))
+
+                    win.lb(bind=lambda: f"Размер шрифта: {psize():.0f}",
+                           h=24.0)
+                    win.sl(0.3, h=34.0,
+                           ch=lambda v: psize.st(11.0 + v * 17.0))
+                    win.lb(bind=lambda: f"Время показа: {psecs():.1f} с",
+                           h=24.0)
+                    win.sl(0.3, h=34.0,
+                           ch=lambda v: psecs.st(v * 10.0))
+
+                    def fire_push(x=None, y=None):
+                        name, bg, fg = PUSH_BG[pbg()]
+                        pushes.st(pushes() + 1)
+                        win.push(
+                            name,
+                            f"Сообщение №{pushes()}.\n"
+                            "Клик закрывает окно досрочно.",
+                            secs=psecs(), bg=bg, fg=fg,
+                            font=PUSH_FONT[pfont()], size=psize(), x=x, y=y,
+                            on_close=lambda: act.st("push закрыт"),
+                        )
+
+                    with win.bx(ax="h", gp=8.0, h=48.0) as prow2:
+                        win.cls(prow2, "clear")
+                        win.bt("По центру", h=40.0, clk=fire_push)
+                        win.bt("В угол 40·40", h=40.0,
+                               clk=lambda: fire_push(40, 40))
+                        win.bt("Без таймера", h=40.0,
+                               clk=lambda: (psecs.st(0.0), fire_push()))
+                    win.lb(bind=lambda: f"Показано push: {pushes()}", h=24.0)
+
+                    win.sep()
+                    win.lb("Центрирование дочернего окна", h=26.0)
+                    win.dd([c[0] for c in CENTERS], h=44.0,
+                           ch=lambda i: pcenter.st(i))
+                    win.bt("Открыть окно", h=44.0,
+                           clk=lambda: open_child(CENTERS[pcenter()][1]))
 
         # --- CSS ---
         with win.bx(pr=tabs, ax="h", pd=8.0, gp=12.0) as p6:

@@ -889,6 +889,7 @@ pub struct Tree {
     hidden: HashSet<usize>,
     clips: Vec<Option<Rect>>,
     disabled: HashSet<usize>,
+    clickable: HashSet<usize>,
     pwd: HashSet<usize>,
     offs: Vec<bool>,
     fronts: HashSet<usize>,
@@ -964,6 +965,7 @@ impl Tree {
             hidden: HashSet::new(),
             clips: Vec::new(),
             disabled: HashSet::new(),
+            clickable: HashSet::new(),
             pwd: HashSet::new(),
             offs: Vec::new(),
             fronts: HashSet::new(),
@@ -2521,6 +2523,16 @@ impl Tree {
             || self.is_radio(id)
             || self.is_toggle(id)
             || self.is_link(id)
+            || self.clickable.contains(&id.0)
+    }
+
+    /// Помечает узел как принимающий клик наравне с кнопкой.
+    pub fn set_clickable(&mut self, id: NodeId, on: bool) {
+        if on {
+            self.clickable.insert(id.0);
+        } else {
+            self.clickable.remove(&id.0);
+        }
     }
 
     /// Является ли узел ссылкой.
