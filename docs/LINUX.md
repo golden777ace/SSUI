@@ -86,6 +86,10 @@ pub enum Event { Mouse(..), Key(..), Char(..), Resize(..),
 
 ## 4. Cargo
 
+Реализовано: фича `linux-skia` в `core` и `python`, по умолчанию
+выключена. Сборка на Linux: `maturin develop --release --features
+linux-skia`. На Windows фича не влияет ни на что.
+
 ```toml
 [features]
 default = []
@@ -122,12 +126,26 @@ Python-API (`python/src/lib.rs`) не меняется вообще.
   бенчмарки не просели.
 - **L1 — Окно.** winit + glutin + GL-контекст, Skia surface,
   `clear` работает. Критерий: пустое окно 60 FPS, resize, DPI.
+  Сделано: `core/src/backend/linux/mod.rs` — `Window::show()`
+  создаёт окно в `resumed`, Skia-поверхность пересоздаётся на
+  `Resized`, кадр чистится фоном темы дерева.
 - **L2 — Painter.** Все примитивы на Skia. Критерий:
   тест-сцена Canvas (rect/circle/line/gradient) идентична Windows.
+  Сделано: `backend/linux/painter.rs` — `SkiaPainter`, формат текста
+  `TextFormat`; текст пока однострочный, параграфы придут в L3.
 - **L3 — Текст.** SkParagraph + кэш по TextKey; width/caret/
   hit/ranges. Критерий: Label, Button, TextBox, TextArea, Term.
-- **L4 — Паритет виджетов.** Весь каталог; hidden-страницы,
-  poll_dialog, тултипы. Критерий: showcase.py работает целиком.
+  Сделано: `backend/linux/text.rs` — `SkiaText`, кэш параграфов по
+  «текст + формат + ширина + цвет», индексы UTF-16 ↔ UTF-8.
+- **L4 — Виджеты.** Делится на шаги: L4-a — абстракция форматов
+  (`FormatSource`, сделано: `WinFormats` и `SkiaFormats`); L4-b —
+  реализации `TextEngine`: `WinText` (DirectWrite) и `SkiaText`
+  (SkParagraph), обе сделаны; далее вызовы в `device.rs` переходят
+  на трейт;
+  L4-c — обход дерева становится generic по `Painter`; начат:
+  `core/src/render/paint.rs` — `PaintCtx`, `ImageSource`, ветки
+  Frame/Image/Label/Toggle. Остальные ветки переносятся по одной.
+  Перенос всех веток `NodeKind` из `device.rs`
 - **L5 — Интеграции.** Clipboard (arboard), диалоги (portal),
   drag&drop, IME (Wayland text-input-v3; XIM ограниченно).
 - **L6 — Выпуск.** Wheels в CI, README/DESC, чек-лист

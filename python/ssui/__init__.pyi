@@ -1180,6 +1180,8 @@ class W:
         lb: str = "",
         *,
         pr: Optional[Node] = None,
+        icon: Optional[str] = None,
+        tip: Optional[str] = None,
         on: bool = False,
         clk: Optional[Callable[[bool], None]] = None,
         sig: Optional[S] = None,
@@ -1190,7 +1192,9 @@ class W:
     ) -> Node:
         """Кнопка-переключатель (двухпозиционная).
 
-        `sig` хранит состояние и связан в обе стороны.
+        `sig` хранит состояние и связан в обе стороны. `icon` — путь
+        к картинке; при пустом `lb` кнопка становится чисто иконочной,
+        `tip` — всплывающая подсказка.
         """
     def dd(
         self,

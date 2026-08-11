@@ -3399,12 +3399,14 @@ impl PyWindow {
     }
 
     /// Добавляет кнопку-переключатель; `clk(on)` при смене состояния.
-    #[pyo3(signature = (lb="", *, pr=None, on=false, clk=None, sig=None, pd=0.0, gp=0.0, w=None, h=None))]
+    #[pyo3(signature = (lb="", *, pr=None, icon=None, tip=None, on=false, clk=None, sig=None, pd=0.0, gp=0.0, w=None, h=None))]
     #[allow(clippy::too_many_arguments)]
     fn tgl(
         &mut self,
         lb: &str,
         pr: Option<PyNode>,
+        icon: Option<String>,
+        tip: Option<String>,
         on: bool,
         clk: Option<PyObject>,
         sig: Option<PyObject>,
@@ -3420,6 +3422,12 @@ impl PyWindow {
         let back = sig.as_ref().map(|s| Python::with_gil(|py| s.clone_ref(py)));
         let tree = self.tree.as_mut().ok_or_else(consumed)?;
         let id = tree.add_child(parent, NodeKind::Toggle { label: utf16(lb), on }, props);
+        if let Some(ic) = &icon {
+            tree.set_icon(id, ic);
+        }
+        if let Some(tp) = &tip {
+            tree.set_tip(id, utf16(tp));
+        }
         tree.set_on_change(id, move |t, v| {
             Python::with_gil(|py| {
                 if let Some(s) = &sig {

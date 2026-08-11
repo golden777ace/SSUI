@@ -1,3 +1,4 @@
+#[cfg(windows)]
 use windows::Win32::Graphics::Direct2D::Common::{D2D1_COLOR_F, D2D_RECT_F};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -63,6 +64,7 @@ impl Color {
         }
     }
 
+    #[cfg(windows)]
     pub(crate) fn to_d2d(self) -> D2D1_COLOR_F {
         D2D1_COLOR_F {
             r: self.r,
@@ -114,6 +116,7 @@ impl Rect {
         x >= self.x && x <= self.x + self.width && y >= self.y && y <= self.y + self.height
     }
 
+    #[cfg(windows)]
     pub(crate) fn to_d2d(self) -> D2D_RECT_F {
         D2D_RECT_F {
             left: self.x,

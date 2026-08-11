@@ -10,6 +10,7 @@ use windows::Win32::Graphics::Gdi::{
     MONITOR_DEFAULTTOPRIMARY,
 };
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryW};
+use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::Ime::{
     ImmGetCompositionStringW, ImmGetContext, ImmReleaseContext, ImmSetCompositionWindow, CFS_POINT,
     COMPOSITIONFORM, GCS_RESULTSTR,
@@ -30,6 +31,7 @@ use windows::Win32::System::Com::{
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
+use crate::backend::PlatformWindow;
 use crate::render::{CursorKind, Renderer};
 use crate::tree::Tree;
 
@@ -389,6 +391,36 @@ impl Window {
         }
     }
 
+    /// Меняет заголовок окна.
+    pub fn set_title(&self, title: &str) {
+        let w = wide0(title);
+        unsafe {
+            let _ = SetWindowTextW(self.hwnd, PCWSTR(w.as_ptr()));
+        }
+    }
+
+    /// Помечает окно грязным и просит перерисовку.
+    pub fn request_redraw(&self) {
+        unsafe {
+            let _ = InvalidateRect(Some(self.hwnd), None, false);
+        }
+    }
+
+    /// Масштаб окна: 1.0 при 96 DPI.
+    pub fn scale(&self) -> f32 {
+        let dpi = unsafe { GetDpiForWindow(self.hwnd) };
+        if dpi == 0 {
+            1.0
+        } else {
+            dpi as f32 / 96.0
+        }
+    }
+
+    /// Размер клиентской области этого окна в пикселях.
+    pub fn size(&self) -> (f32, f32) {
+        Window::client_size(self.hwnd.0 as isize)
+    }
+
     /// Будит цикл сообщений окна по HWND; безопасно из любого потока.
     pub fn wake(handle: isize) {
         if handle == 0 {
@@ -484,6 +516,36 @@ impl Window {
                 DispatchMessageW(&msg);
             }
         }
+    }
+}
+
+impl PlatformWindow for Window {
+    fn run(&self) {
+        Window::run(self);
+    }
+
+    fn request_redraw(&self) {
+        Window::request_redraw(self);
+    }
+
+    fn set_title(&self, title: &str) {
+        Window::set_title(self, title);
+    }
+
+    fn client_size(&self) -> (f32, f32) {
+        Window::size(self)
+    }
+
+    fn scale(&self) -> f32 {
+        Window::scale(self)
+    }
+
+    fn raise(&self) {
+        Window::raise(self);
+    }
+
+    fn close(&self) {
+        Window::close(self);
     }
 }
 

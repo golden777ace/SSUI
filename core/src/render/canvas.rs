@@ -11,6 +11,7 @@ use std::hash::{Hash, Hasher};
 use hashbrown::Equivalent;
 
 use super::types::{Color, Rect};
+use crate::backend::{GradDir, ImageFit, Painter};
 
 pub type LayoutCache = hashbrown::HashMap<TextKey, IDWriteTextLayout>;
 
@@ -395,6 +396,104 @@ impl<'a> Canvas<'a> {
                 self.rt.PopAxisAlignedClip();
             }
         }
+    }
+}
+
+impl Painter for Canvas<'_> {
+    type Format = IDWriteTextFormat;
+    type Image = ID2D1Bitmap;
+
+    fn clear(&mut self, color: Color) {
+        Canvas::clear(self, color);
+    }
+
+    fn fill_rounded_rect(&mut self, rect: Rect, radius: f32, color: Color) {
+        Canvas::fill_rounded_rect(self, rect, radius, color);
+    }
+
+    fn stroke_rect(&mut self, rect: Rect, width: f32, color: Color) {
+        Canvas::stroke_rect(self, rect, width, color);
+    }
+
+    fn fill_ellipse(&mut self, rect: Rect, color: Color) {
+        Canvas::fill_ellipse(self, rect, color);
+    }
+
+    fn stroke_ellipse(&mut self, rect: Rect, width: f32, color: Color) {
+        Canvas::stroke_ellipse(self, rect, width, color);
+    }
+
+    fn draw_line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, width: f32, color: Color) {
+        Canvas::draw_line(self, x1, y1, x2, y2, width, color);
+    }
+
+    fn fill_rounded_gradient(
+        &mut self,
+        rect: Rect,
+        radius: f32,
+        from: Color,
+        to: Color,
+        dir: GradDir,
+    ) {
+        Canvas::fill_rounded_gradient(self, rect, radius, from, to, dir);
+    }
+
+    fn fill_polygon(&mut self, pts: &[(f32, f32)], color: Color) {
+        Canvas::fill_polygon(self, pts, color);
+    }
+
+    fn stroke_polyline(&mut self, pts: &[(f32, f32)], width: f32, color: Color) {
+        Canvas::stroke_polyline(self, pts, width, color);
+    }
+
+    fn stroke_polygon(&mut self, pts: &[(f32, f32)], width: f32, color: Color) {
+        Canvas::stroke_polygon(self, pts, width, color);
+    }
+
+    fn draw_arrow(
+        &mut self,
+        x1: f32,
+        y1: f32,
+        x2: f32,
+        y2: f32,
+        width: f32,
+        head: f32,
+        color: Color,
+    ) {
+        Canvas::draw_arrow(self, x1, y1, x2, y2, width, head, color);
+    }
+
+    fn stroke_arc(
+        &mut self,
+        cx: f32,
+        cy: f32,
+        r: f32,
+        start: f32,
+        sweep: f32,
+        width: f32,
+        color: Color,
+    ) {
+        Canvas::stroke_arc(self, cx, cy, r, start, sweep, width, color);
+    }
+
+    fn fill_sector(&mut self, cx: f32, cy: f32, r: f32, start: f32, sweep: f32, color: Color) {
+        Canvas::fill_sector(self, cx, cy, r, start, sweep, color);
+    }
+
+    fn draw_text(&mut self, text: &[u16], format: &IDWriteTextFormat, rect: Rect, color: Color) {
+        Canvas::draw_text(self, text, format, rect, color);
+    }
+
+    fn push_clip(&mut self, rect: Rect) {
+        Canvas::push_clip(self, rect);
+    }
+
+    fn pop_clip(&mut self) {
+        Canvas::pop_clip(self);
+    }
+
+    fn draw_bitmap(&mut self, image: &ID2D1Bitmap, rect: Rect, fit: ImageFit) {
+        Canvas::draw_bitmap(self, image, rect, fit);
     }
 }
 

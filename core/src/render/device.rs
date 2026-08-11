@@ -3214,16 +3214,24 @@ impl Renderer {
                     }
                     NodeKind::Toggle { label, on } => {
                         let r = node.rect;
-                        let radius = 10.0;
+                        let radius = style.radius.unwrap_or(10.0);
+                        let icon_only = label.is_empty() && node.icon.is_some();
                         if focused == Some(id) {
                             let ring =
                                 Rect::new(r.x - 3.0, r.y - 3.0, r.width + 6.0, r.height + 6.0);
                             canvas.fill_rounded_rect(ring, radius + 3.0, theme.content);
                         }
-                        let fill = if *on {
+                        let base = if *on {
                             style.fill.unwrap_or(theme.accent)
                         } else {
                             style.fill.unwrap_or(theme.surface)
+                        };
+                        let fill = if pressed == Some(id) {
+                            base.darken(0.1)
+                        } else if hovered == Some(id) {
+                            base.lighten(0.1)
+                        } else {
+                            base
                         };
                         canvas.fill_rounded_rect(r, radius, fill);
                         let tc = if *on {
@@ -3231,7 +3239,31 @@ impl Renderer {
                         } else {
                             style.text.unwrap_or(theme.content)
                         };
-                        canvas.draw_text(label, format, r, tc);
+                        let mut tr = r;
+                        if let Some(icon) = &node.icon {
+                            if let Some(Some(bmp)) = img_cache.get(icon) {
+                                if icon_only {
+                                    let side = (r.width.min(r.height) - 12.0).max(0.0);
+                                    let ix = r.x + (r.width - side) / 2.0;
+                                    let iy = r.y + (r.height - side) / 2.0;
+                                    canvas.draw_bitmap(bmp, Rect::new(ix, iy, side, side), 0);
+                                } else {
+                                    let sz = (r.height - 10.0).clamp(12.0, 26.0);
+                                    let iy = r.y + (r.height - sz) / 2.0;
+                                    canvas.draw_bitmap(bmp, Rect::new(r.x + 12.0, iy, sz, sz), 0);
+                                    let off = sz + 20.0;
+                                    tr = Rect::new(
+                                        r.x + off,
+                                        r.y,
+                                        (r.width - off).max(0.0),
+                                        r.height,
+                                    );
+                                }
+                            }
+                        }
+                        if !icon_only {
+                            canvas.draw_text(label, format, tr, tc);
+                        }
                     }
                     NodeKind::Separator { vertical } => {
                         let r = node.rect;
@@ -5185,6 +5217,111 @@ fn pick_format(
     }
     cache.borrow_mut().insert(key, fmt.clone());
     fmt
+}
+
+/// Источник форматов DirectWrite поверх фабрики и кэша рендерера.
+pub struct WinFormats<'a> {
+    dwrite: &'a IDWriteFactory,
+    cache: &'a std::cell::RefCell<HashMap<(u16, u32, u8), IDWriteTextFormat>>,
+}
+
+impl<'a> WinFormats<'a> {
+    /// Оборачивает фабрику и кэш форматов рендерера.
+    pub fn new(
+        dwrite: &'a IDWriteFactory,
+        cache: &'a std::cell::RefCell<HashMap<(u16, u32, u8), IDWriteTextFormat>>,
+    ) -> Self {
+        Self { dwrite, cache }
+    }
+}
+
+impl crate::backend::FormatSource for WinFormats<'_> {
+    type Format = IDWriteTextFormat;
+
+    fn format(
+        &self,
+        style: crate::tree::Style,
+        slot: u8,
+        bold: bool,
+        default_size: f32,
+    ) -> IDWriteTextFormat {
+        let weight = if bold {
+            DWRITE_FONT_WEIGHT_SEMI_BOLD
+        } else {
+            DWRITE_FONT_WEIGHT_NORMAL
+        };
+        pick_format(self.dwrite, self.cache, style, slot, weight, default_size)
+    }
+}
+
+/// Текстовый движок DirectWrite: измерение, каретка, попадание.
+pub struct WinText<'a> {
+    dwrite: &'a IDWriteFactory,
+}
+
+impl<'a> WinText<'a> {
+    /// Оборачивает фабрику DirectWrite рендерера.
+    pub fn new(dwrite: &'a IDWriteFactory) -> Self {
+        Self { dwrite }
+    }
+}
+
+impl crate::backend::TextEngine for WinText<'_> {
+    type Format = IDWriteTextFormat;
+
+    fn width(&mut self, text: &[u16], format: &IDWriteTextFormat) -> f32 {
+        text_width(self.dwrite, format, text)
+    }
+
+    fn height(&mut self, text: &[u16], format: &IDWriteTextFormat, width: f32) -> f32 {
+        if text.is_empty() {
+            return 0.0;
+        }
+        unsafe {
+            if let Ok(layout) =
+                self.dwrite
+                    .CreateTextLayout(text, format, width.max(1.0), 100000.0)
+            {
+                let mut m = DWRITE_TEXT_METRICS::default();
+                if layout.GetMetrics(&mut m).is_ok() {
+                    return m.height;
+                }
+            }
+        }
+        0.0
+    }
+
+    fn caret(
+        &mut self,
+        text: &[u16],
+        format: &IDWriteTextFormat,
+        width: f32,
+        pos: usize,
+    ) -> crate::backend::Point {
+        let (x, y, _) = wrapped_caret(self.dwrite, format, text, width, pos);
+        crate::backend::Point::new(x, y)
+    }
+
+    fn hit(
+        &mut self,
+        text: &[u16],
+        format: &IDWriteTextFormat,
+        width: f32,
+        p: crate::backend::Point,
+    ) -> usize {
+        wrapped_index(self.dwrite, format, text, width, p.x, p.y)
+    }
+
+    fn ranges(
+        &mut self,
+        text: &[u16],
+        format: &IDWriteTextFormat,
+        width: f32,
+        a: usize,
+        b: usize,
+    ) -> Vec<Rect> {
+        wrapped_ranges(self.dwrite, format, text, width, a, b)
+    }
 }
 
 fn text_width(dwrite: &IDWriteFactory, format: &IDWriteTextFormat, text: &[u16]) -> f32 {

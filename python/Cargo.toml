@@ -10,6 +10,10 @@ repository = "https://github.com/golden777ace/SSUI"
 name = "_ssui"
 crate-type = ["cdylib"]
 
+[features]
+default = []
+linux-skia = ["ssui-core/linux-skia"]
+
 [dependencies]
 ssui-core = { path = "../core" }
 

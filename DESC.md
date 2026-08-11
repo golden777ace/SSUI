@@ -107,7 +107,8 @@ GUI-библиотека для Windows на Rust (Direct3D 11 + Direct2D + Dire
 
 ### Кнопки и действия
 - `bt(lb="", *, pr=None, rad=10.0, icon=None, tip=None, toast=None, pd=0.0, gp=0.0, w=None, h=None, clk=None, elev=0.0)`
-- `tgl(lb="", *, pr=None, on=False, clk=None, pd=0.0, gp=0.0, w=None, h=None)`
+- `tgl(lb="", *, pr=None, icon=None, tip=None, on=False, clk=None, sig=None, pd=0.0, gp=0.0, w=None, h=None)`
+- Пустой `lb` при заданном `icon` даёт иконочную кнопку тулбара; фон меняется по состоянию `on`
 - `dd(options, *, pr=None, sel=0, ch=None, pd=0.0, gp=0.0, w=None, h=None)`
 - `lnk(lb="", *, pr=None, clk=None, pd=0.0, gp=0.0, w=None, h=None)`
 - `sbt(lb, opts, *, pr=None, clk=None, ch=None, rad=10.0, pd=0.0, gp=0.0, w=None, h=None)`
