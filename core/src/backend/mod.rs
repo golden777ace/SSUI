@@ -1,6 +1,12 @@
 #[cfg(all(target_os = "linux", feature = "linux-skia"))]
 pub mod linux;
 
+/// Окно текущей платформы: Win32 на Windows, winit+Skia на Linux.
+#[cfg(windows)]
+pub use crate::platform::Window as NativeWindow;
+#[cfg(all(target_os = "linux", feature = "linux-skia"))]
+pub use linux::Window as NativeWindow;
+
 use crate::render::types::{Color, Rect};
 
 /// Точка в пикселях поверхности.

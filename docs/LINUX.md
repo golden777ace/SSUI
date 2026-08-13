@@ -112,6 +112,10 @@ Python-API (`python/src/lib.rs`) не меняется вообще.
 
 ## 5. Wheels и CI
 
+Сделано: `.github/workflows/wheels.yml` — матрица
+`windows-latest` × `ubuntu-22.04`, Python 3.11–3.13,
+тег `manylinux_2_28`, кэш `skia-binaries`.
+
 - maturin, тег `manylinux_2_28` (skia-safe требует свежий clang).
 - `skia-binaries` кэшировать в CI (архив ~100 МБ).
 - GitHub Actions matrix: `windows-latest`, `ubuntu-22.04`;
@@ -142,7 +146,12 @@ Python-API (`python/src/lib.rs`) не меняется вообще.
   реализации `TextEngine`: `WinText` (DirectWrite) и `SkiaText`
   (SkParagraph), обе сделаны; далее вызовы в `device.rs` переходят
   на трейт;
-  L4-c — обход дерева становится generic по `Painter`; начат:
+  L4-c — обход дерева становится generic по `Painter`; на Linux
+  обход уже работает (`backend/linux/render.rs`), раскладка идёт
+  через `Tree::layout`. Долг: константы `SCROLLBAR_W`, `ACC_HEADER`,
+  `GROUP_HEADER`, `DOCK_HEADER`, `SPLIT_W`, `SPLIT_ARROW`, `BAR_ITEM`
+  продублированы в `device.rs` и `backend/linux/render.rs` — свести
+  в один модуль при переводе `device.rs` на `paint.rs`. Начат:
   `core/src/render/paint.rs` — `PaintCtx`, `ImageSource`, ветки
   Frame/Image/Label/Toggle. Остальные ветки переносятся по одной.
   Перенос всех веток `NodeKind` из `device.rs`

@@ -8,20 +8,9 @@ use crate::render::paint::{ImageSource, NodeState, PaintCtx};
 use crate::theme::Theme;
 use crate::tree::{NodeId, NodeKind, Tree};
 
-/// Ширина полосы прокрутки; совпадает с Windows-рендерером.
-const SCROLLBAR_W: f32 = 8.0;
-/// Высота шапки группы.
-const GROUP_HEADER: f32 = 22.0;
-/// Высота шапки секции аккордеона.
-const ACC_HEADER: f32 = 40.0;
-/// Высота шапки дока.
-const DOCK_HEADER: f32 = 28.0;
-/// Ширина полосы разделителя панелей.
-const SPLIT_W: f32 = 8.0;
-/// Ширина зоны стрелки у кнопки с меню.
-const SPLIT_ARROW: f32 = 28.0;
-/// Ширина пункта строки меню.
-const BAR_ITEM: f32 = 96.0;
+use crate::tree::{
+    ACC_HEADER, BAR_ITEM, DOCK_HEADER, GROUP_HEADER, SCROLLBAR_W, SPLIT_ARROW, SPLIT_W,
+};
 
 /// Кэш изображений Skia по ключу источника.
 #[derive(Default)]
@@ -43,6 +32,31 @@ impl Images {
     /// Загружено ли изображение по ключу.
     pub fn has(&self, key: &str) -> bool {
         self.map.contains_key(key)
+    }
+
+    /// Читает изображение с диска, если его ещё нет в кэше.
+    pub fn ensure(&mut self, key: &str) {
+        if self.map.contains_key(key) {
+            return;
+        }
+        if let Some(img) = super::system::load_image(key) {
+            self.map.insert(key.to_string(), img);
+        }
+    }
+
+    /// Загружает все изображения, встречающиеся в дереве.
+    pub fn preload(&mut self, tree: &Tree) {
+        let mut stack = vec![tree.root()];
+        while let Some(id) = stack.pop() {
+            let node = tree.get(id);
+            if let Some(icon) = &node.icon {
+                self.ensure(icon);
+            }
+            if let NodeKind::Image { path, .. } = &node.kind {
+                self.ensure(path);
+            }
+            stack.extend(node.children.iter().copied());
+        }
     }
 }
 

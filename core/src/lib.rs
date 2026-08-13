@@ -1,10 +1,11 @@
-//! Ядро кроссплатформенное: дерево, раскладка, CSS, темы и сигналы общие.
-//! Платформенное скрыто за трейтами `backend`; Windows-реализация —
-//! `platform`/`render`, Linux — `backend::linux`.
-
 pub mod backend;
 #[cfg(windows)]
 pub mod platform;
+
+#[cfg(all(target_os = "linux", feature = "linux-skia"))]
+pub mod platform {
+    pub use crate::backend::linux::{dpi, Window, WindowOpts};
+}
 pub mod render;
 pub mod theme;
 pub mod tree;

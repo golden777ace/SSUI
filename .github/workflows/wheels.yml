@@ -1,0 +1,63 @@
+name: wheels
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build wheel
+        run: |
+          pip install maturin
+          maturin build --release --out dist -i python
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-windows-${{ matrix.python }}
+          path: dist
+
+  linux:
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Cache skia-binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/skia-binaries
+          key: skia-${{ runner.os }}-${{ hashFiles('core/Cargo.toml') }}
+      - name: System deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libclang-dev pkg-config \
+            libx11-dev libxkbcommon-dev libwayland-dev libxcursor-dev \
+            libxrandr-dev libxi-dev libgl1-mesa-dev libegl1-mesa-dev \
+            libfontconfig1-dev
+      - name: Build wheel
+        run: |
+          pip install maturin
+          maturin build --release --features linux-skia \
+            --compatibility manylinux_2_28 --out dist -i python
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-linux-${{ matrix.python }}
+          path: dist

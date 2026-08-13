@@ -8,7 +8,15 @@ pub mod types;
 #[cfg(windows)]
 pub use canvas::Canvas;
 #[cfg(windows)]
-pub use device::{CursorKind, Renderer};
+pub use device::Renderer;
+
+/// Вид курсора над узлом.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CursorKind {
+    Arrow,
+    Hand,
+    IBeam,
+}
 pub use types::{parse_hex, Color, Rect};
 
 #[cfg(windows)]
@@ -23,8 +31,8 @@ thread_local! {
     static MEASURE_DW: RefCell<Option<IDWriteFactory>> = const { RefCell::new(None) };
 }
 
-/// Заглушки вне Windows: заменяются бэкендом Skia на фазе L2/L3.
-#[cfg(not(windows))]
+/// Заглушки для целей без Windows и без Linux-бэкенда.
+#[cfg(not(any(windows, all(target_os = "linux", feature = "linux-skia"))))]
 mod stub {
     /// Число кадров в файле изображения.
     pub fn frame_count(_path: &str) -> u32 {
@@ -38,15 +46,35 @@ mod stub {
     pub fn clipboard_get() -> String {
         String::new()
     }
-
-    /// Ширина и высота строки в пикселях.
-    pub fn measure_text(_text: &str, _family: &str, size: f32) -> (f32, f32) {
-        (0.0, size.max(1.0))
-    }
 }
 
-#[cfg(not(windows))]
-pub use stub::{clipboard_get, clipboard_set, frame_count, measure_text};
+#[cfg(not(any(windows, all(target_os = "linux", feature = "linux-skia"))))]
+pub use stub::{clipboard_get, clipboard_set, frame_count};
+
+#[cfg(all(target_os = "linux", feature = "linux-skia"))]
+pub use crate::backend::linux::system::{clipboard_get, clipboard_set, frame_count};
+
+/// Ширина и высота строки в пикселях; вне Windows считает Skia.
+#[cfg(all(target_os = "linux", feature = "linux-skia"))]
+pub fn measure_text(text: &str, family: &str, size: f32) -> (f32, f32) {
+    use crate::backend::linux::painter::TextFormat;
+    use crate::backend::linux::text::SkiaText;
+    use crate::backend::TextEngine;
+
+    let mut fmt = TextFormat::new(family, size);
+    fmt.align = 1;
+    let utf16: Vec<u16> = text.encode_utf16().collect();
+    let mut engine = SkiaText::new();
+    let w = engine.width(&utf16, &fmt);
+    let h = engine.height(&utf16, &fmt, w.max(1.0));
+    (w, h)
+}
+
+/// Ширина и высота строки в пикселях.
+#[cfg(not(any(windows, all(target_os = "linux", feature = "linux-skia"))))]
+pub fn measure_text(_text: &str, _family: &str, size: f32) -> (f32, f32) {
+    (0.0, size.max(1.0))
+}
 
 /// Число кадров в файле изображения; для GIF — длина анимации.
 #[cfg(windows)]

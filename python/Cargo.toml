@@ -1,6 +1,6 @@
 [package]
 name = "ssui-python"
-version = "1.14.1"
+version = "1.15.0"
 edition = "2021"
 license = "MIT"
 description = "Python-биндинги SSUI через PyO3."
@@ -13,6 +13,9 @@ crate-type = ["cdylib"]
 [features]
 default = []
 linux-skia = ["ssui-core/linux-skia"]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ssui-core = { path = "../core", features = ["linux-skia"] }
 
 [dependencies]
 ssui-core = { path = "../core" }

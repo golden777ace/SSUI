@@ -1,3 +1,5 @@
+#![cfg(windows)]
+
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -15,6 +17,10 @@ fn utf16(text: &str) -> Vec<u16> {
     text.encode_utf16().collect()
 }
 
+#[cfg(not(windows))]
+fn main() {}
+
+#[cfg(windows)]
 fn main() -> windows::core::Result<()> {
     dpi::enable_dpi_awareness();
 

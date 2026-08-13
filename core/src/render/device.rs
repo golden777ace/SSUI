@@ -151,12 +151,7 @@ fn color_code(h: f32, s: f32, v: f32) -> f32 {
     ((ri << 16) | (gi << 8) | bi) as f32
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum CursorKind {
-    Arrow,
-    Hand,
-    IBeam,
-}
+pub use super::CursorKind;
 
 struct DialogView {
     title: Vec<u16>,
